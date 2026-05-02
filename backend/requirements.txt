@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+pydantic
+httpx
+replicate
+supabase
+huggingface_hub
+requests
+wavespeed
+python-multipart
+Pillow

@@ -1,0 +1,56 @@
+motion control kling 3
+
+
+import wavespeed
+
+output = wavespeed.run(
+    "kwaivgi/kling-v3.0-std/motion-control",
+    {
+        "character_orientation": "video",
+        "element_list": [],
+        "image": "https://static.wavespeed.ai/examples/6cf36ce6b27f4ea1ab552a4e666cc92e/1772727630029955505_cOtDMW6g.png",
+        "keep_original_sound": true,
+        "shot_type": "customize",
+        "video": "https://static.wavespeed.ai/examples/6cf36ce6b27f4ea1ab552a4e666cc92e/1772726595574089790_WZ8iY7go.mp4"
+    }
+)
+
+print(output["outputs"][0])  # Output URL
+
+
+wan animate
+
+
+import wavespeed
+
+output = wavespeed.run(
+    "wavespeed-ai/wan-2.2/animate",
+    {
+        "image": "https://static.wavespeed.ai/examples/fc5e913e58ff4356837c70637cea7738/1758249761472387780_1IX3ZWSP.jpg",
+        "mode": "animate",
+        "prompt": "",
+        "resolution": "480p",
+        "seed": -1,
+        "video": "https://static.wavespeed.ai/examples/fc5e913e58ff4356837c70637cea7738/1758249797012635851_6ANKHEAx.mp4"
+    }
+)
+
+print(output["outputs"][0])  # Output URL
+
+
+steady dance
+
+
+import wavespeed
+
+output = wavespeed.run(
+    "wavespeed-ai/steady-dancer",
+    {
+        "image": "https://static.wavespeed.ai/examples/8e8079b933d64cdd9d7bdadfff0c6483/1765013854850617576_3IMUSQXW.png",
+        "resolution": "480p",
+        "seed": -1,
+        "video": "https://static.wavespeed.ai/examples/8e8079b933d64cdd9d7bdadfff0c6483/1765014111128070543_ZPXVTRPX.mp4"
+    }
+)
+
+print(output["outputs"][0])  # Output URL

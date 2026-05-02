@@ -1,0 +1,117 @@
+nanobanana multi
+
+import wavespeed
+
+output = wavespeed.run(
+    "google/nano-banana-pro/edit-multi",
+    {
+        "enable_base64_output": false,
+        "enable_sync_mode": false,
+        "images": [
+                "https://static.wavespeed.ai/examples/e325c1662d9344709dfbd625367adce2/1764044605524947897_RdNLTQPM.jpg",
+                "https://static.wavespeed.ai/examples/e325c1662d9344709dfbd625367adce2/1764045607625313785_zY531ZX5.jpg"
+        ],
+        "num_images": 2,
+        "output_format": "png",
+        "prompt": "Replace the man in the first image with the woman from the second image, matching his pose and perspective. Keep the original background intact, and blend the woman naturally into the scene with consistent lighting, shadows, and overall photorealistic style."
+    }
+)
+
+print(output["outputs"][0])  # Output URL
+
+nanobana edit
+
+import wavespeed
+
+output = wavespeed.run(
+    "google/nano-banana/edit",
+    {
+        "enable_base64_output": false,
+        "enable_sync_mode": false,
+        "images": [
+                "https://static.wavespeed.ai/examples/3794aaad70e9443bbeed5b7d6f764b3b/1756458671588525508_ACMHEBxu.jpeg"
+        ],
+        "output_format": "png",
+        "prompt": "Replace the stick in the girl's hand with a flame."
+    }
+)
+
+print(output["outputs"][0])  # Output URL
+
+nanobanana pro edit
+
+import wavespeed
+
+output = wavespeed.run(
+    "google/nano-banana-pro/edit",
+    {
+        "enable_base64_output": false,
+        "enable_sync_mode": false,
+        "images": [
+                "https://static.wavespeed.ai/examples/5de9a7fa417d445e8fc2c78e23a1c0be/1763632682843690209_yGVSOLHF.jpeg"
+        ],
+        "output_format": "png",
+        "prompt": "Make the hamburger made of glass.",
+        "resolution": "2k"
+    }
+)
+
+print(output["outputs"][0])  # Output URL
+
+nanobanana pro multi
+
+import wavespeed
+
+output = wavespeed.run(
+    "google/nano-banana-pro/edit-multi",
+    {
+        "enable_base64_output": false,
+        "enable_sync_mode": false,
+        "images": [
+                "https://static.wavespeed.ai/examples/e325c1662d9344709dfbd625367adce2/1764044605524947897_RdNLTQPM.jpg",
+                "https://static.wavespeed.ai/examples/e325c1662d9344709dfbd625367adce2/1764045607625313785_zY531ZX5.jpg"
+        ],
+        "num_images": 2,
+        "output_format": "png",
+        "prompt": "Replace the man in the first image with the woman from the second image, matching his pose and perspective. Keep the original background intact, and blend the woman naturally into the scene with consistent lighting, shadows, and overall photorealistic style."
+    }
+)
+
+print(output["outputs"][0])  # Output URL
+
+seedream 4.5 edit
+
+import wavespeed
+
+output = wavespeed.run(
+    "bytedance/seedream-v4.5/edit",
+    {
+        "enable_base64_output": false,
+        "enable_sync_mode": false,
+        "images": [
+                "https://static.wavespeed.ai/examples/20568785c65c48b78fc9035bb9e9bcf9/1764761316371833793_r5ZX531Z.jpeg"
+        ],
+        "prompt": "Keep the model's pose and the flowing shape of the liquid clothing unchanged. Change the clothing material from silver metal to completely transparent clear water (or glass). Through the liquid water flow, the details of the model's skin can be seen. The light and shadow change from reflection to refraction. Remove the watermark. change the background to a night city."
+    }
+)
+
+print(output["outputs"][0])  # Output URL
+
+seedream 5 seguential edit
+
+import wavespeed
+
+output = wavespeed.run(
+    "bytedance/seedream-v5.0-lite/edit-sequential",
+    {
+        "enable_base64_output": false,
+        "enable_sync_mode": false,
+        "images": [
+                "https://static.wavespeed.ai/examples/bb5731ffe0d94875963b82094e600611/8920de62-fc1a-4936-b6c4-001124ca9217.png"
+        ],
+        "max_images": 2,
+        "prompt": "2 images. First, The same young man sitting at the desk, but the books behind him start glowing with golden magical light, ancient runes floating out of the open book, his eyes wide with surprise, Harry Potter aesthetic, cinematic. Second, The young man back in the library, book closed, looking shaken at a tiny dragon sleeping on the stack of books beside him, warm cozy lighting, magical realism"
+    }
+)
+
+print(output["outputs"][0])  # Output URL

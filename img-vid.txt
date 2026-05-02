@@ -1,0 +1,85 @@
+kling 3
+
+
+import wavespeed
+
+output = wavespeed.run(
+    "kwaivgi/kling-v3.0-std/image-to-video",
+    {
+        "cfg_scale": 0.5,
+        "duration": 5,
+        "element_list": [
+                {
+                        "element_id": ""
+                }
+        ],
+        "image": "https://static.wavespeed.ai/examples/2ad78d470f664d37978769c31a83a73b/1770224996603470794_JTQYXUT0.jpeg",
+        "multi_prompt": [],
+        "prompt": "The young man in the denim shirt focuses intently on his notebook, his right hand moving steadily as he writes line by line with a black pen. His fingers grip the pen with slight natural adjustments. He occasionally pauses briefly, tilting his head slightly as if thinking, then resumes writing. The pages of the spiral notebook shift subtly with the pressure of his hand. In the blurred background, other students are also quietly studying, with minimal movement — turning a page, shifting posture. Soft, natural classroom lighting with gentle ambient sounds. Smooth, realistic motion, cinematic shallow depth of field. 4K, 24fps.",
+        "shot_type": "customize"
+    }
+)
+
+print(output["outputs"][0])  # Output URL
+
+veo 3.1
+
+import wavespeed
+
+output = wavespeed.run(
+    "google/veo3.1/image-to-video",
+    {
+        "aspect_ratio": "16:9",
+        "duration": 8,
+        "generate_audio": true,
+        "image": "https://static.wavespeed.ai/examples/d82aa3bd01ca47d98b220849ec4eca38/1759998783866689147_R2jfb7vs.jpeg",
+        "prompt": "Context: A Panda named Bamboo and a Red Fox named Tweed host a casual, witty podcast called \"Quantum Quibbles.\"\nTask: Write the absolute shortest, most punchy opening exchange for an episode on quantum entanglement. Focus only on quick introductions and the topic title.\nPanda (Bamboo): \"Welcome to Quantum Quibbles! I'm Bamboo.\"\nRed Fox (Tweed): \"And I'm Tweed!\"\nPanda (Bamboo): \"Today: Quantum Entanglement!\"\nRed Fox (Tweed): \"Let's dive in.\"",
+        "resolution": "1080p"
+        " last image":
+        " seed":
+    }
+)
+
+print(output["outputs"][0])  # Output URL
+
+
+seedance 2.0
+
+
+import wavespeed
+
+output = wavespeed.run(
+    "bytedance/seedance-2.0/image-to-video",
+    {
+        "duration": 5,
+        "enable_web_search": false,
+        "image": "https://static.wavespeed.ai/examples/75f58549f190433980f5cfe845f55bca/1775359057733435520_ECMpzIS1.jpeg",
+        "prompt": "Both accelerate hard out of a corner together — grandmother's wheelchair wobbles at the limit, she counter-steers with pure instinct, knuckles white on the joystick, her reading glasses flying off her face into the slipstream. The F1 driver glances over through his visor, visibly shaken. She doesn't look back. They hit the straight — the F1 car pulls away slowly, but she tucks into its wake and drafts, inching back up. Cut to the grandstands erupting.",
+        "resolution": "720p
+        "last imagee":string
+    }
+)
+
+print(output["outputs"][0])  # Output URL
+
+
+wan 2.7
+
+
+import wavespeed
+
+output = wavespeed.run("alibaba/wan-2.7/image-to-video", {
+    "duration": 15,
+    "enable_prompt_expansion": false,
+    "image": "https://static.wavespeed.ai/examples/60950866256d4e5b9fe157d93565d716/1774980762947991284_tCdfjnsv.jpeg",
+    "prompt": "A father and young daughter flying a green diamond kite together in a sunlit park. The man stands behind the girl, both arms raised holding the kite string, both gazing upward with joy. Lush green grass, dappled sunlight filtering through tree canopy in background. Camera slowly circles them from left to right at medium distance, slight crane up movement. Kite string sways gently in the breeze, kite dips and rises naturally. Warm golden afternoon light, soft lens flare, shallow depth of field with bokeh trees. Cinematic handheld feel",
+    "resolution": "720p",
+    "seed": -1
+})  "last-image":
+
+
+
+
+
+
+

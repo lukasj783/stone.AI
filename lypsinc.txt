@@ -1,0 +1,81 @@
+infinity talk fast
+
+import wavespeed
+
+output = wavespeed.run(
+    "wavespeed-ai/infinitetalk-fast",
+    {
+        "audio": "https://static.wavespeed.ai/examples/66187e8dac5f4aaeac340096c188ac3e/1763122158798703233_nsAxuqmj.mp3",
+        "image": "https://static.wavespeed.ai/examples/66187e8dac5f4aaeac340096c188ac3e/1763122894225862443_NgoKT2iu.png",
+        "seed": -1
+    }
+)
+
+print(output["outputs"][0])  # Output URL
+
+infinity talk fast-multi
+
+import wavespeed
+
+output = wavespeed.run(
+    "wavespeed-ai/infinitetalk-fast/multi",
+    {
+        "image": "https://static.wavespeed.ai/examples/a28f2117473642568eb19088d1bd3271/1757382264476270969_9FdH4ftJ.jpeg",
+        "left_audio": "https://static.wavespeed.ai/examples/a28f2117473642568eb19088d1bd3271/1757382247944669358_vAAwtpli.MP3",
+        "order": "meanwhile",
+        "right_audio": "https://static.wavespeed.ai/examples/a28f2117473642568eb19088d1bd3271/1757382246497020071_nwwxxwBG.MP3",
+        "seed": -1
+    }
+)
+
+print(output["outputs"][0])  # Output URL
+
+infinity talk video to video
+
+import wavespeed
+
+output = wavespeed.run(
+    "wavespeed-ai/infinitetalk-fast/video-to-video",
+    {
+        "audio": "https://static.wavespeed.ai/examples/02947af6308041fab3a691060aa4150a/1763287645528817353_UZ51YTQM.mp3",
+        "seed": -1,
+        "video": "https://static.wavespeed.ai/examples/02947af6308041fab3a691060aa4150a/1763288405575138283_Uvsolhec.mp4"
+    }
+)
+
+print(output["outputs"][0])  # Output URL
+
+infinity talk video to video multi
+
+import wavespeed
+
+output = wavespeed.run(
+    "wavespeed-ai/infinitetalk/video-to-video-multi",
+    {
+        "left_audio": "https://static.wavespeed.ai/examples/14091a9d94c84ea082beda94a1e40305/1773772693452351167_BbAJR1fo.mp3",
+        "order": "left_right",
+        "resolution": "480p",
+        "right_audio": "https://static.wavespeed.ai/examples/14091a9d94c84ea082beda94a1e40305/1773772703629149697_f1BLU3dn.mp3",
+        "seed": -1,
+        "video": "https://static.wavespeed.ai/examples/14091a9d94c84ea082beda94a1e40305/1773772179359798308_3ROX5fpz.mp4"
+    }
+)
+
+print(output["outputs"][0])  # Output URL
+
+longcat avatar
+
+
+import wavespeed
+
+output = wavespeed.run(
+    "wavespeed-ai/longcat-avatar",
+    {
+        "audio": "https://static.wavespeed.ai/examples/100e2a8895f44b35916ad6c0b74683f6/1754228417394011032_Ulc851YU.wav",
+        "image": "https://static.wavespeed.ai/examples/100e2a8895f44b35916ad6c0b74683f6/1766569970541670633_AXYVURZX.jpg",
+        "resolution": "480p",
+        "seed": -1
+    }
+)
+
+print(output["outputs"][0])  # Output URL

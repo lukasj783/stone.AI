@@ -1,0 +1,24 @@
+```plaintext
+Run black-forest-labs/flux-2-klein-9b using Replicate’s API. Check out the model's schema for an overview of inputs and outputs.
+
+output = replicate.run(
+    "black-forest-labs/flux-2-klein-9b",
+    input={
+        "images": [],
+        "prompt": "A surreal underwater or cosmic garden scene with bioluminescent flora against a deep navy blue to black background. Delicate, feather-like structures in pale icy blue and white emerge from the left side, resembling ethereal ferns or coral fronds with intricate fractal patterns. These luminous fronds transition into a cloud-like dispersal of particles and spores floating through the dark space, creating a dreamy, ethereal atmosphere. On the right side, dense clusters of vegetation in deep greens, blues, and purple-pink tones form an organic canopy. The foliage includes pine-like needles, flowering bushes in blue and magenta hues, and various plant forms creating depth and texture. Small glowing particles and orbs of light are scattered throughout the scene like floating pollen or bioluminescent plankton. The overall composition creates a mystical, otherworldly environment that blends elements of deep sea bioluminescence with alien botanical landscapes. Cinematic lighting with cool color palette dominated by blues, teals, and deep greens. Photorealistic rendering with soft focus effects and atmospheric depth. With large white text in the center: \"FLUX.2 [klein] 9B\"",
+        "go_fast": True,
+        "aspect_ratio": "1:1",
+        "output_format": "jpg",
+        "output_quality": 95,
+        "output_megapixels": "1"
+    }
+)
+
+# To access the file URL:
+print(output[0].url)
+#=> "http://example.com"
+
+# To write the file to disk:
+with open("my-image.png", "wb") as file:
+    file.write(output[0].read())
+```

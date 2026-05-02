@@ -1,0 +1,110 @@
+ kling 2.6 text to vid
+
+import wavespeed
+
+output = wavespeed.run(
+    "kwaivgi/kling-v2.6-std/text-to-video",
+    {
+        "aspect_ratio": "16:9",
+        "duration": 5,
+        "prompt": "1950s Film Noir style. A detective sitting in a smoky, dimly lit office, shadows from Venetian blinds cast across his face. He is peeking out the window. Black and white, film grain, mysterious atmosphere, dramatic lighting."
+    }
+)
+
+print(output["outputs"][0])  # Output URL
+
+
+
+kling 3.0 text to vid
+
+import wavespeed
+
+output = wavespeed.run(
+    "kwaivgi/kling-v3.0-pro/text-to-video",
+    {
+        "aspect_ratio": "16:9",
+        "cfg_scale": 0.5,
+        "duration": 5,
+        "element_list": [],
+        "multi_prompt": [],
+        "prompt": "Golden hour shot. A young woman with curly hair walking in a field of tall grass turns back to look at the camera and smiles genuinely. The low sun is behind her, creating a beautiful rim light (backlight) on her hair. Dust motes dancing in the light. Handheld camera feel, warm and nostalgic.",
+        "shot_type": "customize"
+    }
+)
+
+print(output["outputs"][0])  # Output URL
+
+
+google veo3
+
+
+import wavespeed
+
+output = wavespeed.run(
+    "google/veo3",
+    {
+        "aspect_ratio": "16:9",
+        "duration": 8,
+        "generate_audio": true,
+        "prompt": "A breaking news ident, followed by a TV news presenter excitedly telling us: We interrupt this programme to bring you some breaking news... Veo 3 is now live on WaveSpeedAI. Then she shouts: Let's go! The TV presenter is an epic and cool punk with pink and green hair and a t-shirt that says 'Veo 3 on WaveSpeedAI'",
+        "resolution": "720p"
+    }
+)
+
+print(output["outputs"][0])  # Output URL
+
+
+veo3.1
+
+
+import wavespeed
+
+output = wavespeed.run(
+    "google/veo3.1-fast/text-to-video",
+    {
+        "aspect_ratio": "16:9",
+        "duration": 8,
+        "generate_audio": true,
+        "prompt": "A fluffy cat sits on a desk beside a glowing monitor, looking directly at the camera.\n\"Meow… Wait. Did Veo 3.1 just make me talk?! Thanks, WaveSpeedAI, I sound adorable!\"\nWhimsical tone, ambient room light, playful background music.",
+        "resolution": "1080p"
+    }
+)
+
+print(output["outputs"][0])  # Output URL
+
+veo 3.1 fast-lite
+
+import wavespeed
+
+output = wavespeed.run(
+    "google/veo3.1-lite/text-to-video",
+    {
+        "aspect_ratio": "16:9",
+        "duration": 6,
+        "prompt": "A tall guy in a grocery store reaches for the last box of cereal on the top shelf — just as a woman on her tiptoes stretches for the same box from the other side. They both grab it at the same time, look at each other, then burst out laughing. He gestures \"go ahead.\" She hesitates, then splits it — hands him half. Handheld camera, fluorescent supermarket lighting, natural and candid feel.",
+        "resolution": "720p"
+    }
+)
+
+print(output["outputs"][0])  # Output URL
+
+
+wan 2.7
+
+import wavespeed
+
+output = wavespeed.run(
+    "alibaba/wan-2.7/text-to-video",
+    {
+        "aspect_ratio": "16:9",
+        "duration": 5,
+        "enable_prompt_expansion": false,
+        "prompt": "Close-up portrait of a woman pressing her palm against a rain-soaked window at night, shot from outside. Heavy rain streaks distort her face through the glass, neon signs from the street below cast fragmented magenta and cyan reflections across her skin. Camera slowly pushes in at 0.3x speed. Shallow depth of field, bokeh rain drops, dual-exposure ghosting of her reflection overlapping her face. Cinematic 4K, anamorphic lens flare, 24fps.",
+        "resolution": "720p",
+        "seed": -1
+    }
+)
+
+print(output["outputs"][0])  # Output URL
+
+

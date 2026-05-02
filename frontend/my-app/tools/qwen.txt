@@ -1,0 +1,31 @@
+ip install replicate
+
+Copy
+Import the client:
+import replicate
+
+Copy
+Run qwen/qwen-image-2512 using Replicate’s API. Check out the model's schema for an overview of inputs and outputs.
+
+output = replicate.run(
+    "qwen/qwen-image-2512",
+    input={
+        "prompt": "This is a modern slide with a deep blue gradient background. The title is \"Qwen Image 2512 Major Release\" in white sans serif bold font. \nOn the left a female portrait lacks detail. On the right a highly realistic young woman's portrait close to photographic quality. An arrow links the images labeled \"2512 Quality Upgrade\" \nFaint glow effects besides the arrow enhance dynamism\nText below reads: \"More realistic texture, finer details, enhanced text rendering\"",
+        "go_fast": True,
+        "guidance": 4,
+        "strength": 0.8,
+        "aspect_ratio": "16:9",
+        "output_format": "webp",
+        "output_quality": 95,
+        "negative_prompt": " ",
+        "num_inference_steps": 40
+    }
+)
+
+# To access the file URL:
+print(output[0].url)
+#=> "http://example.com"
+
+# To write the file to disk:
+with open("my-image.png", "wb") as file:
+    file.write(output[0].read())

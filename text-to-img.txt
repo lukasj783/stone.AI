@@ -1,0 +1,70 @@
+text to image...nanobanana 2
+
+import wavespeed
+
+output = wavespeed.run(
+    "google/nano-banana-2/text-to-image",
+    {
+        "enable_base64_output": false,
+        "enable_image_search": false,
+        "enable_sync_mode": false,
+        "enable_web_search": false,
+        "output_format": "png",
+        "prompt": "A young woman with short red hair and round glasses wearing a dark green trench coat, standing in a rainy Tokyo street at night. Neon signs reflected in puddles. Cinematic still, anamorphic lens look.",
+        "resolution": "1k"
+    }
+)
+
+print(output["outputs"][0])  # Output URL
+
+nanobanana multi
+
+
+import wavespeed
+
+output = wavespeed.run(
+    "google/nano-banana-pro/text-to-image-multi",
+    {
+        "aspect_ratio": "3:2",
+        "enable_base64_output": false,
+        "enable_sync_mode": false,
+        "num_images": 11,
+        "output_format": "png",
+        "prompt": "High-end beauty editorial photography. A graceful fashion model with flawless, dewy, glowing skin and gently pulled-back wet-look hair is sitting amidst the mossy, natural stone surface. Her elegant hand, with natural manicured nails, is gently dipping into the open clear glass jar of luxurious, rich white moisturizing cream. Dewy white orchid petals, green leaves, and splashing clear water droplets surround her and the product. Soft, natural diffused daylight illuminating her face and the creamy texture. Serene expression, eyes slightly closed in enjoyment. Organic, pure hydration concept. 8k details, shot on Hasselblad."
+    }
+)
+
+seedream 5
+
+import wavespeed
+
+output = wavespeed.run(
+    "bytedance/seedream-v5.0-lite",
+    {
+        "enable_base64_output": false,
+        "enable_sync_mode": false,
+        "prompt": "Street style photography, a stylish young woman in an oversized blazer and vintage sunglasses, urban backdrop, golden hour, shot on Leica",
+        "size": "1728*2304"
+    }
+)
+
+print(output["outputs"][0])  # Output URL
+
+
+seedream 4.5
+
+import wavespeed
+
+output = wavespeed.run(
+    "bytedance/seedream-v4.5",
+    {
+        "enable_base64_output": false,
+        "enable_sync_mode": false,
+        "prompt": "Nighttime outdoor photoshoot: A young man standsinside a public phone booth, holding a blue phonereceiver to his ear. One hand is casually tucked into his pocket, and he strikes a relaxed posture. He wears a white T-shirt with a pattern, loose brown pants, and jacket draped over his arm. The booth's glass reflects city streetlights with a bokeh effect, creating a vintage film style.",
+        "size": "2048*2048"
+    }
+)
+
+print(output["outputs"][0])  # Output URL
+
+print(output["outputs"][0])  # Output URL
