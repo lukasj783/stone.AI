@@ -289,10 +289,10 @@ export default function ChatToEditPage() {
         aspect_ratio: sizePresetToAspectRatio[sizePreset] ?? '4:3',
         num_images: numImages,
         image_mapping: uploadedMap,
-        ...(selectedModel.apiModel === 'nanobanana2' && { resolution: resolution.toLowerCase() })
+        ...(selectedModel.apiModel === 'nanobanana2' && { resolution: resolution })
       };
 
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/images/generate-with-image`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/image/generate-with-image`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

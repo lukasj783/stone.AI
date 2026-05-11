@@ -32,7 +32,7 @@ export async function batchDeleteImages(items: { id: number; url: string }[]): P
 
 
 export async function generateImage(payload: CreateImageRequest): Promise<CreateImageResponse> {
-  const response = await fetch(`${getApiBaseUrl()}/api/images/generate`, {
+  const response = await fetch(`${getApiBaseUrl()}/api/image/generate`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -61,7 +61,7 @@ export async function generateMultipleAngle(imageFile: File, prompt: string): Pr
   formData.append('image', imageFile);
   formData.append('prompt', prompt);
 
-  const response = await fetch(`${getApiBaseUrl()}/api/images/multiple-angle`, {
+  const response = await fetch(`${getApiBaseUrl()}/api/image/multiple-angle`, {
     method: 'POST',
     body: formData,
   });

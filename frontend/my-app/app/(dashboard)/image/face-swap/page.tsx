@@ -75,7 +75,7 @@ export default function FaceSwapPage() {
 
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-      const response = await fetch(`${apiUrl}/api/images/face-swap`, {
+      const response = await fetch(`${apiUrl}/api/image/face-swap`, {
         method: "POST",
         body: formData,
       });

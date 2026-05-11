@@ -1,5 +1,34 @@
 // Layer type definitions for the blend board
 
+export type BlendMode =
+  | 'source-over'
+  | 'multiply'
+  | 'screen'
+  | 'overlay'
+  | 'darken'
+  | 'lighten'
+  | 'soft-light'
+  | 'hard-light';
+
+export type InpaintTool = 'click-area' | 'manual-brush' | 'erase';
+
+export interface InpaintMaskPoint {
+  x: number;
+  y: number;
+}
+
+export interface InpaintMaskStroke {
+  id: string;
+  tool: InpaintTool;
+  size: number;
+  points: InpaintMaskPoint[];
+}
+
+export interface InpaintMaskSnapshot {
+  strokes: InpaintMaskStroke[];
+  isInverted: boolean;
+}
+
 export interface BaseLayer {
   id: string;
   x: number;
@@ -16,6 +45,7 @@ export interface ImageLayer extends BaseLayer {
   width: number;
   height: number;
   name: string;
+  blendMode?: BlendMode;
 }
 
 export interface TextLayer extends BaseLayer {
@@ -74,3 +104,72 @@ export const AVAILABLE_FONTS = [
   { value: 'Arial', label: 'Arial' },
   { value: 'Times New Roman', label: 'Times New Roman' },
 ] as const;
+
+export const AVAILABLE_BLEND_MODES: Array<{ value: BlendMode; label: string }> = [
+  { value: 'source-over', label: 'Normal' },
+  { value: 'multiply', label: 'Multiply' },
+  { value: 'screen', label: 'Screen' },
+  { value: 'overlay', label: 'Overlay' },
+  { value: 'darken', label: 'Darken' },
+  { value: 'lighten', label: 'Lighten' },
+  { value: 'soft-light', label: 'Soft Light' },
+  { value: 'hard-light', label: 'Hard Light' },
+];
+
+export interface EditorImageElement {
+  id: string;
+  type: 'image';
+  src: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  opacity: number;
+  blendMode: BlendMode;
+}
+
+export interface EditorTextElement {
+  id: string;
+  type: 'text';
+  x: number;
+  y: number;
+  width: number;
+  text: string;
+  fontSize: number;
+  fill: string;
+  opacity: number;
+}
+
+export interface EditorRectElement {
+  id: string;
+  type: 'rect';
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fill: string;
+  stroke: string;
+  strokeWidth: number;
+  opacity: number;
+  dash?: number[];
+}
+
+export type EditorElement = EditorImageElement | EditorTextElement | EditorRectElement;
+
+export interface BaseImageSettings {
+  opacity: number;
+  blendMode: BlendMode;
+}
+
+export interface BlendableTarget {
+  id: string;
+  kind: 'base-image' | 'image';
+  label: string;
+  blendMode: BlendMode;
+  opacity: number;
+}
+
+export const DEFAULT_BASE_IMAGE_SETTINGS: BaseImageSettings = {
+  opacity: 1,
+  blendMode: 'source-over',
+};

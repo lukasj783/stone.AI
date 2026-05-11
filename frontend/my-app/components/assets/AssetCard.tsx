@@ -25,7 +25,9 @@ export default function AssetCard({ id, generationId, type, url, isSelected, isS
           onToggleSelect?.();
         }
       }}
-      className={`group relative aspect-square rounded-2xl bg-zinc-900 border overflow-hidden shadow-2xl shadow-black/40 transition-all ${
+      className={`group relative rounded-2xl bg-zinc-900 border overflow-hidden shadow-2xl shadow-black/40 transition-all ${
+        type === 'video' ? 'aspect-video' : 'aspect-square'
+      } ${
         isSelectionMode ? 'cursor-pointer' : 'cursor-default'
       } ${
         isSelected ? 'border-blue-500 ring-2 ring-blue-500/50' : 'border-zinc-800/50 hover:border-zinc-700 ring-1 ring-white/5'

@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils';
 import { batchDeleteImages } from '@/lib/api/image-generation';
 import { batchDeleteVideos } from '@/lib/api/video-generation';
 import { supabase } from '@/lib/supabaseClient';
+import { ChevronDown, ChevronUp } from 'lucide-react';
 
 interface Asset {
   id: number;
@@ -32,6 +33,7 @@ export default function AssetsPage() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [scrollbarVisible, setScrollbarVisible] = useState(true);
 
   const toggleSelectionMode = () => {
     setIsSelectionMode(prev => {
@@ -46,6 +48,25 @@ export default function AssetsPage() {
   const [isDeleting, setIsDeleting] = useState(false);
 
   const tabs = ['Image', 'Video', 'Story', 'Audio', 'Albums'];
+
+  // Map zoom level (1-12) to actual Tailwind grid column classes
+  const getGridCols = (zoomLevel: number) => {
+    const colsMap: Record<number, string> = {
+      1: 'grid-cols-1',
+      2: 'grid-cols-2',
+      3: 'grid-cols-3',
+      4: 'grid-cols-4',
+      5: 'grid-cols-5',
+      6: 'grid-cols-6',
+      7: 'grid-cols-7',
+      8: 'grid-cols-8',
+      9: 'grid-cols-9',
+      10: 'grid-cols-10',
+      11: 'grid-cols-11',
+      12: 'grid-cols-12',
+    };
+    return colsMap[zoomLevel] || 'grid-cols-6';
+  };
   
   useEffect(() => {
     setSelectedIds(new Set()); // Reset selection on tab change
@@ -255,47 +276,70 @@ export default function AssetsPage() {
           activeTab={activeTab}
         />
 
-        {/* Assets Grid */}
-        <motion.section 
-          layout
+        {/* Scrollbar Toggle Button */}
+        <div className="flex items-center justify-end gap-2">
+          <button
+            onClick={() => setScrollbarVisible(prev => !prev)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-white hover:bg-zinc-800/50 border border-zinc-800/50 transition-all"
+            title={scrollbarVisible ? 'Hide scrollbar' : 'Show scrollbar'}
+          >
+            {scrollbarVisible ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            {scrollbarVisible ? 'Collapse Scrollbar' : 'Expand Scrollbar'}
+          </button>
+        </div>
+
+        {/* Assets Grid with Scrollable Container */}
+        <div 
           className={cn(
-            "grid gap-4 transition-all duration-500",
-            `grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-${zoom} xl:grid-cols-${zoom + 1}`
+            "max-h-[calc(100vh-340px)] overflow-y-auto pr-1 transition-all duration-300",
+            scrollbarVisible 
+              ? 'scrollbar-visible' 
+              : 'scrollbar-hidden'
           )}
         >
-          <AnimatePresence mode="popLayout">
-            {assets.map((asset) => (
-              <AssetCard 
-                key={`${activeTab}-${asset.id}`} 
-                {...asset} 
-                isSelected={selectedIds.has(asset.id)}
-                isSelectionMode={isSelectionMode}
-                onToggleSelect={() => handleToggleSelect(asset.id)}
-                onDelete={handleDeleteSingle}
-              />
-            ))}
-          </AnimatePresence>
-        </motion.section>
+          <motion.section 
+            layout
+            className={cn(
+              "grid gap-4 transition-all duration-500",
+              getGridCols(zoom),
+              "sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"
+            )}
+          >
+            <AnimatePresence mode="popLayout">
+              {assets.map((asset) => (
+                <AssetCard 
+                  key={`${activeTab}-${asset.id}`} 
+                  {...asset} 
+                  isSelected={selectedIds.has(asset.id)}
+                  isSelectionMode={isSelectionMode}
+                  onToggleSelect={() => handleToggleSelect(asset.id)}
+                  onDelete={handleDeleteSingle}
+                />
+              ))}
+            </AnimatePresence>
+          </motion.section>
 
-        {/* Empty State / Loading simulation */}
-        {assets.length === 0 && !loading && (
-          <div className="flex flex-col items-center justify-center py-32 space-y-4 text-center">
-            <div className="w-16 h-16 rounded-full bg-zinc-900 flex items-center justify-center border border-zinc-800 text-zinc-600">
-              ?
+          {/* Empty State / Loading simulation */}
+          {assets.length === 0 && !loading && (
+            <div className="flex flex-col items-center justify-center py-32 space-y-4 text-center">
+              <div className="w-16 h-16 rounded-full bg-zinc-900 flex items-center justify-center border border-zinc-800 text-zinc-600">
+                ?
+              </div>
+              <div className="space-y-1">
+                <div className="text-zinc-200 font-bold tracking-tight">No {activeTab}s yet</div>
+                <div className="text-sm text-zinc-500">Generate something to see it appear here.</div>
+              </div>
             </div>
-            <div className="space-y-1">
-              <div className="text-zinc-200 font-bold tracking-tight">No {activeTab}s yet</div>
-              <div className="text-sm text-zinc-500">Generate something to see it appear here.</div>
+          )}
+          
+          {loading && (
+            <div className="flex flex-col items-center justify-center py-32 space-y-4 text-center">
+               <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+               <div className="text-sm text-zinc-500">Loading {activeTab.toLowerCase()}s...</div>
             </div>
-          </div>
-        )}
-        
-        {loading && (
-          <div className="flex flex-col items-center justify-center py-32 space-y-4 text-center">
-             <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-             <div className="text-sm text-zinc-500">Loading {activeTab.toLowerCase()}s...</div>
-          </div>
-        )}
+          )}
+        </div>
+
 
         <DeleteConfirmationModal
           isOpen={isDeleteModalOpen}

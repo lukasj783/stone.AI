@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import Link from 'next/link';
 import { 
   Home, Undo, Redo, Cloud, LayoutTemplate, Film, 
@@ -8,8 +8,35 @@ import {
   Image as ImageIcon, Music, Mic, Type, Search, 
   UploadCloud, ChevronRight, Volume2, Gauge, 
   TrendingUp, TrendingDown, ZoomIn, ZoomOut, X,
-  Search as SearchIcon, ArrowRight
+  Search as SearchIcon, ArrowRight, Loader, CheckCircle, AlertCircle
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import { supabase } from '@/lib/supabaseClient';
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+interface UploadedAsset {
+  id: string;
+  name: string;
+  url: string;
+  type: 'video' | 'image' | 'audio';
+  size: number;
+  uploadedAt: number;
+}
+
+type AssetTab = 'video' | 'image' | 'music' | 'voice' | 'text';
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+const MAX_FILE_SIZE_MB = 100;
+const MAX_FILE_SIZE = MAX_FILE_SIZE_MB * 1024 * 1024;
+const STORAGE_BUCKET = 'user-images';
+
+const ACCEPT_MAP: Record<AssetTab, string> = {
+  video: 'video/*',
+  image: 'image/*',
+  music: 'audio/*',
+  voice: 'audio/*',
+  text: '.txt,.srt,.vtt',
+};
 
 const TopNav = () => (
   <header className="h-14 bg-[#18181b] border-b border-zinc-800 flex items-center justify-between px-4 shrink-0 z-50">
@@ -70,7 +97,332 @@ const TopNav = () => (
   </header>
 );
 
+// ─── Asset Thumbnail Components ──────────────────────────────────────────────
+function VideoThumbnail({ asset }: { asset: UploadedAsset }) {
+  return (
+    <div className="relative w-full aspect-video bg-zinc-900 rounded-md overflow-hidden border border-zinc-700 group">
+      <video src={asset.url} className="w-full h-full object-cover" muted preload="metadata" />
+      <div className="absolute inset-0 flex items-center justify-center bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity">
+        <Play size={16} className="fill-white text-white" />
+      </div>
+    </div>
+  );
+}
+
+function ImageThumbnail({ asset }: { asset: UploadedAsset }) {
+  return (
+    <div className="relative w-full aspect-square bg-zinc-900 rounded-md overflow-hidden border border-zinc-700 group">
+      <img src={asset.url} alt={asset.name} className="w-full h-full object-cover" loading="lazy" />
+    </div>
+  );
+}
+
+function AudioThumbnail({ asset }: { asset: UploadedAsset }) {
+  return (
+    <div className="bg-zinc-900/50 hover:bg-zinc-900 border border-zinc-800 hover:border-zinc-700 p-3 rounded-lg flex items-center justify-between group cursor-pointer transition-all">
+      <div className="flex items-center gap-3 min-w-0">
+        <button
+          className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center border border-zinc-700 shrink-0"
+          aria-label="Play sample"
+          onClick={(e) => {
+            e.stopPropagation();
+            const audio = document.getElementById(`audio-${asset.id}`) as HTMLAudioElement;
+            if (audio) {
+              if (audio.paused) {
+                audio.play();
+              } else {
+                audio.pause();
+              }
+            }
+          }}
+        >
+          <Play size={12} className="fill-white ml-0.5 text-white" />
+        </button>
+        <div className="space-y-0.5 min-w-0">
+          <p className="text-xs font-bold text-white leading-none truncate">{asset.name}</p>
+          <p className="text-[10px] text-zinc-500">{(asset.size / (1024 * 1024)).toFixed(1)} MB</p>
+        </div>
+      </div>
+      <audio id={`audio-${asset.id}`} src={asset.url} preload="metadata" className="hidden" />
+    </div>
+  );
+}
+
+// ─── Upload Status Badge ─────────────────────────────────────────────────────
+function UploadStatus({ status }: { status: 'idle' | 'uploading' | 'success' | 'error' }) {
+  if (status === 'idle') return null;
+  return (
+    <div className="absolute top-2 right-2 z-10">
+      {status === 'uploading' && <Loader size={16} className="animate-spin text-blue-400" />}
+      {status === 'success' && <CheckCircle size={16} className="text-green-400" />}
+      {status === 'error' && <AlertCircle size={16} className="text-red-400" />}
+    </div>
+  );
+}
+
+// ─── Main Page Component ─────────────────────────────────────────────────────
 export default function TimelineEditorPage() {
+  const [activeTab, setActiveTab] = useState<AssetTab>('music');
+
+  // Upload state per tab
+  const [assets, setAssets] = useState<Record<AssetTab, UploadedAsset[]>>({
+    video: [],
+    image: [],
+    music: [],
+    voice: [],
+    text: [],
+  });
+  const [uploadStatus, setUploadStatus] = useState<Record<AssetTab, 'idle' | 'uploading' | 'success' | 'error'>>({
+    video: 'idle',
+    image: 'idle',
+    music: 'idle',
+    voice: 'idle',
+    text: 'idle',
+  });
+  const [uploadError, setUploadError] = useState<Record<AssetTab, string | null>>({
+    video: null,
+    image: null,
+    music: null,
+    voice: null,
+    text: null,
+  });
+
+  // Hidden file input refs per tab
+  const fileInputRefs: Record<AssetTab, React.RefObject<HTMLInputElement | null>> = {
+    video: useRef<HTMLInputElement>(null),
+    image: useRef<HTMLInputElement>(null),
+    music: useRef<HTMLInputElement>(null),
+    voice: useRef<HTMLInputElement>(null),
+    text: useRef<HTMLInputElement>(null),
+  };
+
+  // ─── Upload Handler ──────────────────────────────────────────────────────
+  const handleUpload = async (tab: AssetTab, files: FileList | null) => {
+    if (!files || files.length === 0) return;
+
+    const validFiles = Array.from(files).filter((f) => {
+      // Validate file size
+      if (f.size > MAX_FILE_SIZE) {
+        setUploadError((prev) => ({ ...prev, [tab]: `File "${f.name}" exceeds ${MAX_FILE_SIZE_MB}MB limit` }));
+        return false;
+      }
+      return true;
+    });
+
+    if (validFiles.length === 0) return;
+
+    setUploadStatus((prev) => ({ ...prev, [tab]: 'uploading' }));
+    setUploadError((prev) => ({ ...prev, [tab]: null }));
+
+    const newAssets: UploadedAsset[] = [];
+
+    for (const file of validFiles) {
+      try {
+        const fileExt = file.name.split('.').pop();
+        const fileName = `${Date.now()}-${Math.random().toString(36).substring(2)}.${fileExt}`;
+        const filePath = `${fileName}`;
+
+        const { data: uploadData, error: uploadError } = await supabase.storage
+          .from(STORAGE_BUCKET)
+          .upload(filePath, file);
+
+        if (uploadError) throw uploadError;
+
+        const { data: publicUrlData } = supabase.storage
+          .from(STORAGE_BUCKET)
+          .getPublicUrl(filePath);
+
+        let assetType: 'video' | 'image' | 'audio' = 'image';
+        if (file.type.startsWith('video/')) assetType = 'video';
+        else if (file.type.startsWith('audio/')) assetType = 'audio';
+
+        newAssets.push({
+          id: `${Date.now()}-${Math.random().toString(36).substring(2)}`,
+          name: file.name,
+          url: publicUrlData.publicUrl,
+          type: assetType,
+          size: file.size,
+          uploadedAt: Date.now(),
+        });
+      } catch (err: any) {
+        setUploadError((prev) => ({ ...prev, [tab]: err.message || 'Upload failed' }));
+        setUploadStatus((prev) => ({ ...prev, [tab]: 'error' }));
+        return;
+      }
+    }
+
+    setAssets((prev) => ({
+      ...prev,
+      [tab]: [...prev[tab], ...newAssets],
+    }));
+    setUploadStatus((prev) => ({ ...prev, [tab]: 'success' }));
+
+    // Reset status after 3 seconds
+    setTimeout(() => {
+      setUploadStatus((prev) => ({ ...prev, [tab]: 'idle' }));
+    }, 3000);
+  };
+
+  // ─── Remove Asset ────────────────────────────────────────────────────────
+  const handleRemoveAsset = (tab: AssetTab, assetId: string) => {
+    setAssets((prev) => ({
+      ...prev,
+      [tab]: prev[tab].filter((a) => a.id !== assetId),
+    }));
+  };
+
+  // ─── Trigger File Input ──────────────────────────────────────────────────
+  const triggerFileInput = (tab: AssetTab) => {
+    fileInputRefs[tab].current?.click();
+  };
+
+  // ─── Tab Definitions ─────────────────────────────────────────────────────
+  const tabs: { key: AssetTab; label: string; icon: LucideIcon; iconOnly: boolean }[] = [
+    { key: 'video', label: 'Video', icon: Video, iconOnly: true },
+    { key: 'image', label: 'Image', icon: ImageIcon, iconOnly: true },
+    { key: 'music', label: 'Music', icon: Music, iconOnly: false },
+    { key: 'voice', label: 'Voice', icon: Mic, iconOnly: true },
+    { key: 'text', label: 'Text', icon: Type, iconOnly: true },
+  ];
+
+  // ─── Render Tab Content ──────────────────────────────────────────────────
+  const renderTabContent = (tab: AssetTab) => {
+    const tabAssets = assets[tab];
+    const status = uploadStatus[tab];
+    const error = uploadError[tab];
+    const hasAssets = tabAssets.length > 0;
+
+    const EmptyState = ({ icon: Icon, label }: { icon: LucideIcon; label: string }) => (
+      <div className="mt-2 text-center text-zinc-500 text-sm py-8">
+        <Icon size={32} className="mx-auto mb-2 text-zinc-600" />
+        <p>No {label} assets yet</p>
+        <p className="text-xs mt-1">Upload or browse to add {label}</p>
+      </div>
+    );
+
+    return (
+      <div className="flex-1 min-h-0 p-4 flex flex-col gap-4">
+        {/* Hidden file input */}
+        <input
+          ref={fileInputRefs[tab]}
+          type="file"
+          accept={ACCEPT_MAP[tab]}
+          multiple
+          className="hidden"
+          aria-label={`Upload ${tab} file`}
+          title={`Upload ${tab} file`}
+          onChange={(e) => handleUpload(tab, e.target.files)}
+        />
+
+        {/* Search & Actions */}
+        <div className="flex flex-col gap-2 shrink-0">
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <SearchIcon size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500" />
+              <input 
+                type="text" 
+                placeholder={`Search ${tab}...`}
+                className="w-full bg-zinc-900 border border-zinc-800 text-xs text-zinc-200 placeholder:text-zinc-500 rounded-md py-1.5 pl-8 pr-3 outline-hidden focus:border-zinc-600 transition-colors"
+              />
+            </div>
+            <button
+              onClick={() => triggerFileInput(tab)}
+              disabled={status === 'uploading'}
+              title="Upload files"
+              className="w-9 h-9 shrink-0 bg-zinc-800 hover:bg-zinc-700 transition-colors rounded-md flex items-center justify-center border border-zinc-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {status === 'uploading' ? (
+                <Loader size={16} className="animate-spin text-blue-400" />
+              ) : (
+                <UploadCloud size={16} className="text-zinc-300" />
+              )}
+            </button>
+            <button 
+              title="Browse Stock"
+              className="w-9 h-9 shrink-0 bg-[#1d3368] hover:bg-[#2a4585] text-blue-200 transition-colors rounded-md flex items-center justify-center border border-[#2e498c]"
+            >
+              <Search size={16} />
+            </button>
+          </div>
+        </div>
+
+        {/* Upload Error */}
+        {error && (
+          <div className="flex items-center gap-2 text-red-400 text-xs bg-red-900/20 border border-red-900/30 rounded-md p-2 shrink-0">
+            <AlertCircle size={14} />
+            <span>{error}</span>
+          </div>
+        )}
+
+        {/* Upload Success Indicator */}
+        {status === 'success' && !error && (
+          <div className="flex items-center gap-2 text-green-400 text-xs bg-green-900/20 border border-green-900/30 rounded-md p-2 shrink-0">
+            <CheckCircle size={14} />
+            <span>Upload complete!</span>
+          </div>
+        )}
+
+        {/* Asset Grid / List */}
+        {hasAssets ? (
+          <div className={`flex-1 overflow-y-auto pr-1 scrollbar-visible ${
+            (tab === 'video' || tab === 'image') 
+              ? 'grid grid-cols-2 gap-2 content-start' 
+              : 'space-y-2'
+          }`}>
+            {tabAssets.map((asset) => (
+              <div key={asset.id} className="relative group h-fit">
+                {/* Video Tab: thumbnails */}
+                {tab === 'video' && <VideoThumbnail asset={asset} />}
+                {/* Image Tab: thumbnails */}
+                {tab === 'image' && <ImageThumbnail asset={asset} />}
+                {/* Music / Voice Tabs: audio player rows */}
+                {(tab === 'music' || tab === 'voice') && <AudioThumbnail asset={asset} />}
+                {/* Text Tab: simple row */}
+                {tab === 'text' && (
+                  <div className="bg-zinc-900/50 hover:bg-zinc-900 border border-zinc-800 hover:border-zinc-700 p-3 rounded-lg flex items-center justify-between group cursor-pointer transition-all">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <Type size={16} className="text-zinc-500 shrink-0" />
+                      <div className="space-y-0.5 min-w-0">
+                        <p className="text-xs font-bold text-white leading-none truncate">{asset.name}</p>
+                        <p className="text-[10px] text-zinc-500">{(asset.size / 1024).toFixed(1)} KB</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Remove button */}
+                <button
+                  onClick={() => handleRemoveAsset(tab, asset.id)}
+                  className="absolute top-2 right-2 w-6 h-6 rounded-full bg-zinc-900/80 border border-zinc-700 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-900/50 hover:border-red-700 z-10"
+                  aria-label={`Remove ${asset.name}`}
+                >
+                  <X size={12} className="text-zinc-400 hover:text-red-400" />
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <EmptyState
+            icon={
+              tab === 'video' ? Video :
+              tab === 'image' ? ImageIcon :
+              tab === 'music' ? Music :
+              tab === 'voice' ? Mic :
+              Type
+            }
+            label={
+              tab === 'video' ? 'video' :
+              tab === 'image' ? 'image' :
+              tab === 'music' ? 'music' :
+              tab === 'voice' ? 'voice recordings' :
+              'text overlays'
+            }
+          />
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="flex flex-col h-screen bg-[#09090b] text-zinc-300 font-sans selection:bg-blue-500/30 overflow-hidden">
       <TopNav />
@@ -82,58 +434,40 @@ export default function TimelineEditorPage() {
         <aside className="w-80 bg-[#18181b] rounded-xl border border-zinc-800 overflow-hidden flex flex-col shrink-0">
           {/* Tabs */}
           <div className="flex items-center justify-between p-2 pb-0 border-b border-zinc-800">
-             <button aria-label="Video" className="flex-1 p-2 text-zinc-400 hover:text-white flex items-center justify-center"><Video size={18}/></button>
-             <button aria-label="Image" className="flex-1 p-2 text-zinc-400 hover:text-white flex items-center justify-center"><ImageIcon size={18}/></button>
-             <button aria-label="Music" className="flex-1 p-2 flex items-center justify-center text-white border-b-2 border-white gap-2 font-bold text-sm">
-                <Music size={16} /> Music
-             </button>
-             <button aria-label="Voice" className="flex-1 p-2 text-zinc-400 hover:text-white flex items-center justify-center"><Mic size={18}/></button>
-             <button aria-label="Text" className="flex-1 p-2 text-zinc-400 hover:text-white flex items-center justify-center"><Type size={18}/></button>
+            {tabs.map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeTab === tab.key;
+              const assetCount = assets[tab.key].length;
+              return (
+                <button
+                  key={tab.key}
+                  aria-label={tab.label}
+                  onClick={() => setActiveTab(tab.key)}
+                  className={`flex-1 p-2 flex items-center justify-center gap-2 transition-colors relative ${
+                    isActive
+                      ? 'text-white border-b-2 border-white font-bold text-sm'
+                      : 'text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  <Icon size={tab.iconOnly ? 18 : 16} />
+                  {!tab.iconOnly && tab.label}
+                  {assetCount > 0 && (
+                    <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full bg-blue-600 text-[10px] font-bold flex items-center justify-center text-white">
+                      {assetCount}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
           
-          <div className="p-4 flex flex-col gap-4">
-             {/* Search */}
-             <div className="relative">
-               <SearchIcon size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
-               <input 
-                 type="text" 
-                 placeholder="Search 200+ songs in library" 
-                 className="w-full bg-zinc-900 border border-zinc-800 text-sm text-zinc-200 placeholder:text-zinc-500 rounded-md py-2 pl-9 pr-4 outline-hidden focus:border-zinc-600 transition-colors"
-               />
-             </div>
-
-             {/* Action Buttons */}
-             <div className="flex gap-2">
-                 <button className="flex-1 bg-zinc-800 hover:bg-zinc-700 transition-colors rounded-md text-sm font-medium text-zinc-300 py-2.5 flex items-center justify-center gap-2 border border-zinc-700">
-                    <UploadCloud size={16} /> Upload
-                 </button>
-                 <button className="flex-1 bg-[#1d3368] hover:bg-[#2a4585] text-blue-200 transition-colors rounded-md text-sm font-bold flex items-center justify-center gap-2 border border-[#2e498c]">
-                    <Search size={16} /> Browse <ArrowRight size={14} />
-                 </button>
-             </div>
-
-             {/* Mock List */}
-             <div className="mt-2 space-y-2">
-                 <div className="bg-zinc-900/50 hover:bg-zinc-900 border border-zinc-800 hover:border-zinc-700 p-3 rounded-lg flex items-center justify-between group cursor-pointer transition-all">
-                    <div className="flex items-center gap-3">
-                       <button className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center border border-zinc-700" aria-label="Play sample">
-                          <Play size={12} className="fill-white ml-0.5 text-white" />
-                       </button>
-                       <div className="space-y-0.5">
-                          <p className="text-xs font-bold text-white leading-none">Papaoutai - Lovely Cover 😍....</p>
-                          <p className="text-[10px] text-zinc-500">1:00</p>
-                       </div>
-                    </div>
-                    <X size={14} className="text-zinc-600 hover:text-white" />
-                 </div>
-             </div>
-          </div>
+          {renderTabContent(activeTab)}
         </aside>
 
         {/* Center Canvas: Preview */}
         <section className="flex-1 bg-[#18181b] rounded-xl border border-zinc-800 flex flex-col items-center justify-center relative overflow-hidden min-w-0">
             {/* The vertical video preview mock */}
-            <div className="w-[320px] h-[550px] bg-black shadow-2xl relative overflow-hidden border border-zinc-900 flex flex-col justify-between">
+            <div className="w-[320px] h-137.5 bg-black shadow-2xl relative overflow-hidden border border-zinc-900 flex flex-col justify-between">
                 
                 <div className="absolute top-12 left-0 right-0 flex flex-col items-center z-10 px-4">
                    <div className="bg-white text-black px-2 py-0.5 text-xs font-black uppercase tracking-tight text-center leading-tight shadow-md">SIKILIZENI MAONI YA</div>
@@ -153,7 +487,7 @@ export default function TimelineEditorPage() {
         </section>
 
         {/* Right Panel: Inspector */}
-        <aside className="w-[300px] bg-[#18181b] rounded-xl border border-zinc-800 flex flex-col shrink-0 overflow-y-auto hide-scrollbar">
+        <aside className="w-75 bg-[#18181b] rounded-xl border border-zinc-800 flex flex-col shrink-0 overflow-y-auto hide-scrollbar">
            <div className="p-4 border-b border-zinc-800 flex items-center gap-2 text-xs font-bold text-zinc-400">
                <span className="flex items-center gap-1 hover:text-white cursor-pointer"><ImageIcon size={14}/> Still Image <ChevronRight size={14} className="text-zinc-600"/></span>
                <span className="flex items-center gap-1 text-white border-b-2 border-white pb-0.5"><Video size={14}/> Video</span>
@@ -264,7 +598,7 @@ export default function TimelineEditorPage() {
                 </div>
 
                 {/* Track Content Timeline items */}
-                <div className="flex-1 relative min-w-[1200px] pt-4 px-2">
+                <div className="flex-1 relative min-w-300 pt-4 px-2">
                     
                     {/* Video Track line */}
                     <div className="h-16 flex items-center gap-0.5">
@@ -283,18 +617,24 @@ export default function TimelineEditorPage() {
 
                     {/* Audio Track line */}
                     <div className="h-12 mt-4">
-                       <div className="h-10 ml-4 w-[400px] bg-[#253e7d] border border-blue-500/50 rounded-md overflow-hidden flex items-center px-1">
+                       <div className="h-10 ml-4 w-100 bg-[#253e7d] border border-blue-500/50 rounded-md overflow-hidden flex items-center px-1">
                           {/* Fake Waveform Gen */}
-                          {[...Array(80)].map((_, i) => (
-                             <div key={i} className="w-1 bg-blue-300/30 rounded-full mx-[1px]" style={{ height: `${Math.max(20, Math.random() * 80)}%` }}></div>
-                          ))}
+                          {[...Array(80)].map((_, i) => {
+                             // Deterministic pseudo-random heights to avoid hydration mismatch
+                             const seed = (i * 2654435761) & 0xFFFFFFFF;
+                             const pseudoRandom = ((seed * 1103515245 + 12345) >>> 0) / 0xFFFFFFFF;
+                             const height = Math.max(20, pseudoRandom * 80);
+                             return (
+                               <div key={i} className="w-1 bg-blue-300/30 rounded-full mx-px" style={{ height: `${height}%` }}></div>
+                             );
+                          })}
                        </div>
                     </div>
 
                     {/* Playhead Marker */}
-                    <div className="absolute top-0 bottom-0 left-[240px] w-px bg-white z-10 pointer-events-none">
+                    <div className="absolute top-0 bottom-0 left-60 w-px bg-white z-10 pointer-events-none">
                        {/* Playhead Grabber */}
-                       <div className="absolute -top-3 -left-1.5 w-3.5 h-4 bg-white rounded-[2px] cursor-grab pointer-events-auto shadow-md">
+                       <div className="absolute -top-3 -left-1.5 w-3.5 h-4 bg-white rounded-xs cursor-grab pointer-events-auto shadow-md">
                           <div className="w-0.5 h-2 bg-black/30 mx-auto mt-1"></div>
                        </div>
                     </div>
