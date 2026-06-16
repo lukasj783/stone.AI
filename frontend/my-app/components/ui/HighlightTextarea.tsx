@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useMemo } from 'react';
 
 interface HighlightTextareaProps extends React.TextareaHTMLAttributes<HTMLTextAreaElement> {
   value: string;
@@ -6,9 +6,16 @@ interface HighlightTextareaProps extends React.TextareaHTMLAttributes<HTMLTextAr
   tags?: string[];
 }
 
-export function HighlightTextarea({ value, onChange, tags = [], className, ...props }: HighlightTextareaProps) {
+export function HighlightTextarea({
+  value,
+  onChange,
+  className,
+  tags = [],
+  ...textareaProps
+}: HighlightTextareaProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
+  const tagSet = useMemo(() => new Set(tags), [tags]);
 
   // Sync scrolling between textarea and backdrop
   const handleScroll = () => {
@@ -31,9 +38,8 @@ export function HighlightTextarea({ value, onChange, tags = [], className, ...pr
     const parts = value.split(regex);
 
     return parts.map((part, i) => {
-      if (part.match(regex)) {
-        // Tag found - Check if it's actually in our tags (or just any valid [imageX])
-        // Here we just highlight any valid [imageX] pattern
+      const tag = part.slice(1, -1);
+      if (part.match(regex) && (tagSet.size === 0 || tagSet.has(tag))) {
         return (
           <span key={i} className="text-blue-400 bg-blue-500/20 rounded">
             {part}
@@ -75,7 +81,7 @@ export function HighlightTextarea({ value, onChange, tags = [], className, ...pr
         style={{
           fontFamily: 'inherit'
         }}
-        {...props}
+        {...textareaProps}
       />
     </div>
   );

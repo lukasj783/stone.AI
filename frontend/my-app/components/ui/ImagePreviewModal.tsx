@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect } from "react";
+import Image from "next/image";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, ChevronLeft, ChevronRight, Download, Share2 } from "lucide-react";
 
@@ -111,10 +112,13 @@ export default function ImagePreviewModal({
             {/* Image Section */}
             <div className="flex-1 relative flex items-center justify-center bg-zinc-950/50 p-2">
               <div className="relative w-full h-full max-h-[70vh] md:max-h-full flex items-center justify-center">
-                <img
+                <Image
                   src={currentImage.url}
                   alt={currentImage.prompt}
-                  className="max-w-full max-h-full object-contain"
+                  fill
+                  unoptimized
+                  sizes="(min-width: 768px) calc(95vw - 24rem), 95vw"
+                  className="object-contain"
                 />
               </div>
             </div>

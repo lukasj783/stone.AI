@@ -41,6 +41,7 @@ body {
 /* Custom Scrollbar Styles */
 .scrollbar-visible::-webkit-scrollbar {
   width: 6px;
+  height: 6px;
 }
 
 .scrollbar-visible::-webkit-scrollbar-track {

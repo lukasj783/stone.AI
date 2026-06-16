@@ -12,6 +12,8 @@ export interface CreateImageRequest {
 }
 
 export interface CreateImageResponse {
-  model: ImageModel;
+  model: string;
   images: string[];
 }
+
+export type InpaintModel = 'wavespeed-ai/flux-fill-dev' | 'google/nano-banana-pro/edit';

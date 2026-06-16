@@ -1,0 +1,10 @@
+# Setup Database Instructions
+
+To fix the "Failed to load last project" error, you need to create the `projects` table in your Supabase project.
+
+1. Go to your [Supabase Dashboard](https://app.supabase.com/)
+2. Open the project matching the URL in your .env.local: `https://pvbenawpvavqjyavqiho.supabase.co`
+3. Navigate to the **SQL Editor** in the left sidebar.
+4. Copy the entire contents of `supabase_projects.sql` from your project root and paste it into the editor.
+5. Click **Run** to execute the SQL.
+6. Once completed, your database tables will be ready and the project loading error will be resolved.

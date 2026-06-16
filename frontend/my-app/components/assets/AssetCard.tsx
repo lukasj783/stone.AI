@@ -1,6 +1,6 @@
 "use client";
 import React from 'react';
-import { Download, Trash2, Share2, MoreVertical, Star, CheckSquare } from 'lucide-react';
+import { Download, Trash2, Share2, MoreVertical, CheckSquare } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 interface AssetCardProps {
@@ -12,9 +12,10 @@ interface AssetCardProps {
   isSelectionMode?: boolean;
   onToggleSelect?: () => void;
   onDelete?: (assetId: number, generationId: number, url: string) => void;
+  onPreview?: () => void;
 }
 
-export default function AssetCard({ id, generationId, type, url, isSelected, isSelectionMode, onToggleSelect, onDelete }: AssetCardProps) {
+export default function AssetCard({ id, generationId, type, url, isSelected, isSelectionMode, onToggleSelect, onDelete, onPreview }: AssetCardProps) {
   return (
     <motion.div 
       initial={{ opacity: 0, scale: 0.95 }}
@@ -23,12 +24,14 @@ export default function AssetCard({ id, generationId, type, url, isSelected, isS
       onClick={() => {
         if (isSelectionMode) {
           onToggleSelect?.();
+        } else if (type === 'image') {
+          onPreview?.();
         }
       }}
       className={`group relative rounded-2xl bg-zinc-900 border overflow-hidden shadow-2xl shadow-black/40 transition-all ${
         type === 'video' ? 'aspect-video' : 'aspect-square'
       } ${
-        isSelectionMode ? 'cursor-pointer' : 'cursor-default'
+        isSelectionMode || type === 'image' ? 'cursor-pointer' : 'cursor-default'
       } ${
         isSelected ? 'border-blue-500 ring-2 ring-blue-500/50' : 'border-zinc-800/50 hover:border-zinc-700 ring-1 ring-white/5'
       }`}

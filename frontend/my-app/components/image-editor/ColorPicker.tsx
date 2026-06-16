@@ -65,7 +65,7 @@ export default function ColorPicker({ color, onChange, label }: ColorPickerProps
         <button
           type="button"
           onClick={() => setIsOpen(!isOpen)}
-          className="w-10 h-10 rounded-lg border-2 border-zinc-800 hover:border-zinc-700 transition-colors cursor-pointer shadow-inner [background-color:var(--swatch-color)]"
+          className="w-10 h-10 rounded-lg border-2 border-zinc-800 hover:border-zinc-700 transition-colors cursor-pointer shadow-inner bg-(--swatch-color)"
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           {...({ style: { '--swatch-color': color } } as any)}
           title="Click to open color picker"

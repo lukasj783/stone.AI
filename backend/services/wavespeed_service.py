@@ -10,9 +10,110 @@ class WaveSpeedServiceError(Exception):
     pass
 
 
+MULTI_IMAGE_ASPECT_RATIOS = {"3:2", "2:3", "3:4", "4:3"}
+NANO_BANANA_ASPECT_RATIOS = {
+    "1:1", "3:2", "2:3", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"
+}
+NANO_BANANA_2_ASPECT_RATIOS = NANO_BANANA_ASPECT_RATIOS | {"1:4", "4:1", "1:8", "8:1"}
+NANO_BANANA_RESOLUTIONS = {"1k", "2k", "4k"}
+NANO_BANANA_2_RESOLUTIONS = {"0.5k", "1k", "2k", "4k"}
+OUTPUT_FORMATS = {"png", "jpeg"}
+INPAINT_MODELS = {"wavespeed-ai/flux-fill-dev", "google/nano-banana-pro/edit"}
+
+
 def _create_wavespeed_client() -> wavespeed.Client:
     api_key = os.environ.get("WAVESPEED_API_KEY")
     return wavespeed.Client(api_key=api_key) if api_key else wavespeed.Client()
+
+
+def _normalize_output_format(output_format: str | None) -> str:
+    normalized = (output_format or "png").strip().lower()
+    if normalized == "jpg":
+        normalized = "jpeg"
+    return normalized if normalized in OUTPUT_FORMATS else "png"
+
+
+def _normalize_resolution(resolution: str | None, allowed: set[str], fallback: str = "1k") -> str:
+    normalized = (resolution or fallback).strip().lower()
+    return normalized if normalized in allowed else fallback
+
+
+def _normalize_aspect_ratio(aspect_ratio: str | None, allowed: set[str], fallback: str = "4:3") -> str:
+    normalized = (aspect_ratio or fallback).strip()
+    return normalized if normalized in allowed else fallback
+
+
+def _size_from_aspect_ratio(aspect_ratio: str | None) -> str:
+    mapping = {
+        "1:1": "1024*1024",
+        "3:2": "1216*832",
+        "2:3": "832*1216",
+        "3:4": "864*1152",
+        "4:3": "1152*864",
+        "4:5": "896*1120",
+        "5:4": "1120*896",
+        "9:16": "768*1344",
+        "16:9": "1344*768",
+        "21:9": "1536*640",
+    }
+    return mapping.get((aspect_ratio or "").strip(), "1024*1024")
+
+
+def _size_from_dimensions(width: int | None, height: int | None, aspect_ratio: str | None) -> str:
+    if not width or not height or width <= 0 or height <= 0:
+        return _size_from_aspect_ratio(aspect_ratio)
+
+    output_width = float(width)
+    output_height = float(height)
+    max_dimension = max(output_width, output_height)
+    min_dimension = min(output_width, output_height)
+
+    if max_dimension > 1536:
+        scale = 1536 / max_dimension
+        output_width *= scale
+        output_height *= scale
+    elif min_dimension < 256:
+        scale = 256 / min_dimension
+        output_width *= scale
+        output_height *= scale
+
+    return f"{round(output_width)}*{round(output_height)}"
+
+
+def _normalize_num_images(num_images: int | None, maximum: int = 4) -> int:
+    if num_images is None:
+        return 1
+    return min(maximum, max(1, num_images))
+
+
+def _extract_input_images(payload: CreateImageRequest) -> list[str]:
+    if payload.image_mapping:
+        raw_images = list(payload.image_mapping.values())
+    else:
+        raw_images = payload.image_input or []
+
+    images = [image for image in raw_images if isinstance(image, str) and image.startswith(("http://", "https://"))]
+    if raw_images and len(images) != len(raw_images):
+        raise WaveSpeedServiceError(
+            "WaveSpeed image edit requires publicly accessible HTTP image URLs. "
+            "Local data/blob URLs must be uploaded before generation."
+        )
+    return images
+
+
+def _extract_output_urls(output: object) -> list[str]:
+    if not isinstance(output, dict):
+        return []
+
+    outputs = output.get("outputs")
+    if outputs is None and isinstance(output.get("data"), dict):
+        outputs = output["data"].get("outputs")
+
+    if isinstance(outputs, list):
+        return [item for item in outputs if isinstance(item, str)]
+    if isinstance(outputs, str):
+        return [outputs]
+    return []
 
 
 def generate_wavespeed_images(payload: CreateImageRequest) -> CreateImageResponse:
@@ -25,52 +126,52 @@ def generate_wavespeed_images(payload: CreateImageRequest) -> CreateImageRespons
         }
 
         model_name = payload.model
-        
-        # Format correction (Wavespeed only accepts "png" or "jpeg")
-        output_fmt = "jpeg" if payload.output_format == "jpg" else (payload.output_format or "png")
+        output_fmt = _normalize_output_format(payload.output_format)
+        input_images = _extract_input_images(payload)
 
-        # Extract images array from frontend mapping
-        input_images = []
-        if payload.image_mapping:
-            input_images = list(payload.image_mapping.values())
-        elif payload.image_input:
-            input_images = payload.image_input
+        is_edit_model = "edit" in model_name
+        if is_edit_model and not input_images:
+            raise WaveSpeedServiceError(f"{model_name} requires at least one input image URL.")
 
         if input_images:
             params["images"] = input_images
 
         # Text-to-image params
         if "nano-banana-pro/text-to-image-multi" in model_name:
-            params["aspect_ratio"] = payload.aspect_ratio
-            params["num_images"] = str(payload.num_images)
+            params["aspect_ratio"] = _normalize_aspect_ratio(payload.aspect_ratio, MULTI_IMAGE_ASPECT_RATIOS)
+            params["num_images"] = 2
             params["output_format"] = output_fmt
         elif "nano-banana-2/text-to-image" in model_name:
+            params["aspect_ratio"] = _normalize_aspect_ratio(payload.aspect_ratio, NANO_BANANA_2_ASPECT_RATIOS, "1:1")
             params["output_format"] = output_fmt
-            params["resolution"] = payload.resolution or "1k"
-            params["enable_image_search"] = payload.image_search
-            params["enable_web_search"] = payload.google_search
+            params["resolution"] = _normalize_resolution(payload.resolution, NANO_BANANA_2_RESOLUTIONS)
+            params["enable_image_search"] = bool(payload.image_search)
+            params["enable_web_search"] = bool(payload.google_search)
         elif "seedream" in model_name and "edit" not in model_name:
-            # Simple resolution mapping for seedream text-to-image
-            size_map = {"4:3": "1024*768", "16:9": "1280*720", "1:1": "1024*1024"}
-            params["size"] = size_map.get(payload.aspect_ratio, "1024*1024")
+            params["size"] = _size_from_aspect_ratio(payload.aspect_ratio)
             
         # Image-to-image params
         elif "edit-multi" in model_name:
-            # Wavespeed edit-multi ONLY supports exactly 2 or 4 images natively currently
-            # We map any request > 2 to 4, otherwise to 2 to prevent validation errors
-            params["num_images"] = 4 if payload.num_images > 2 else 2
+            params["aspect_ratio"] = _normalize_aspect_ratio(payload.aspect_ratio, MULTI_IMAGE_ASPECT_RATIOS)
+            params["num_images"] = 2
             params["output_format"] = output_fmt
         elif "nano-banana/edit" in model_name or "nano-banana-pro/edit" in model_name:
+            params["aspect_ratio"] = _normalize_aspect_ratio(payload.aspect_ratio, NANO_BANANA_ASPECT_RATIOS, "1:1")
             params["output_format"] = output_fmt
-            if payload.resolution:
-                params["resolution"] = payload.resolution
+            if "nano-banana-pro/edit" in model_name:
+                params["resolution"] = _normalize_resolution(payload.resolution, NANO_BANANA_RESOLUTIONS)
         elif "seedream-v5.0-lite/edit-sequential" in model_name:
+            params["size"] = _size_from_aspect_ratio(payload.aspect_ratio)
             params["max_images"] = payload.num_images
+            params["output_format"] = output_fmt
+        elif "seedream-v4.5/edit" in model_name:
+            params["size"] = _size_from_aspect_ratio(payload.aspect_ratio)
 
         output = client.run(model_name, params)
-        images = []
-        if "outputs" in output and isinstance(output["outputs"], list):
-            images = output["outputs"]
+        images = _extract_output_urls(output)
+
+        if not images:
+            raise WaveSpeedServiceError(f"No images were returned by WaveSpeed. Last output: {output!r}")
 
         return CreateImageResponse(
             model=model_name,
@@ -78,6 +179,74 @@ def generate_wavespeed_images(payload: CreateImageRequest) -> CreateImageRespons
         )
     except Exception as e:
         raise WaveSpeedServiceError(f"Wavespeed API Error: {str(e)}") from e
+
+
+def upload_inpaint_image(file_bytes: bytes, filename: str, content_type: str, role: str) -> str:
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "png"
+    safe_ext = ext if ext in {"png", "jpg", "jpeg", "webp"} else "png"
+    safe_role = "mask" if role == "mask" else "base"
+    storage_name = f"inpaint_{safe_role}_{uuid.uuid4().hex}.{safe_ext}"
+    normalized_content_type = content_type or f"image/{'jpeg' if safe_ext == 'jpg' else safe_ext}"
+    return _upload_bytes_to_bucket("output-images", file_bytes, storage_name, normalized_content_type)
+
+
+def generate_wavespeed_inpaint(
+    model: str,
+    prompt: str,
+    base_image_url: str,
+    mask_image_url: str,
+    aspect_ratio: str = "1:1",
+    resolution: str | None = "1k",
+    output_format: str = "png",
+    num_images: int = 1,
+    source_width: int | None = None,
+    source_height: int | None = None,
+) -> CreateImageResponse:
+    if model not in INPAINT_MODELS:
+        raise WaveSpeedServiceError(f"Unsupported inpaint model: {model}")
+
+    try:
+        client = _create_wavespeed_client()
+        output_fmt = _normalize_output_format(output_format)
+
+        if model == "wavespeed-ai/flux-fill-dev":
+            params: dict[str, object] = {
+                "image": base_image_url,
+                "mask_image": mask_image_url,
+                "prompt": prompt,
+                "size": _size_from_dimensions(source_width, source_height, aspect_ratio),
+                "num_images": _normalize_num_images(num_images),
+                "num_inference_steps": 28,
+                "guidance_scale": 30,
+                "seed": 0,
+                "loras": [],
+            }
+        else:
+            guided_prompt = (
+                "Use the first image as the source image. Use the second image as a black-and-white mask: "
+                "white pixels mark the only area to edit, and black pixels must be preserved exactly. "
+                "Do not change unmasked areas. Edit the masked area with this instruction: "
+                f"{prompt}"
+            )
+            params = {
+                "prompt": guided_prompt,
+                "images": [base_image_url, mask_image_url],
+                "aspect_ratio": _normalize_aspect_ratio(aspect_ratio, NANO_BANANA_ASPECT_RATIOS, "1:1"),
+                "resolution": _normalize_resolution(resolution, NANO_BANANA_RESOLUTIONS),
+                "output_format": output_fmt,
+                "enable_sync_mode": False,
+                "enable_base64_output": False,
+            }
+
+        output = client.run(model, params)
+        images = _extract_output_urls(output)
+
+        if not images:
+            raise WaveSpeedServiceError(f"No images were returned by WaveSpeed. Last output: {output!r}")
+
+        return CreateImageResponse(model=model, images=images)
+    except Exception as e:
+        raise WaveSpeedServiceError(f"Wavespeed inpaint API Error: {str(e)}") from e
 
 
 def _download_file_bytes(file_url: str) -> bytes:

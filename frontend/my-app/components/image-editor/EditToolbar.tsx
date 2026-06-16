@@ -15,9 +15,9 @@ import {
 
 export default function EditToolbar({ 
   activeMode = 'select', 
-  setActiveMode = (mode: string) => {},
-  zoomLevel = 1,
-  setZoomLevel = (zoom: number) => {},
+  setActiveMode = (mode: string) => {
+    void mode;
+  },
   onFitView = () => {}
 }: { 
   activeMode?: string; 
@@ -75,18 +75,20 @@ export default function EditToolbar({
 
         <div className="w-px h-6 bg-zinc-700 mx-1"></div>
 
-        <button 
-          onClick={() => setZoomLevel(zoomLevel === 1 ? 1.5 : zoomLevel === 1.5 ? 2 : zoomLevel === 2 ? 0.5 : 1)}
-          className="flex items-center gap-2 hover:bg-zinc-800 px-3 py-1.5 rounded-md transition-colors text-zinc-200"
+        <button
+          type="button"
+          disabled
+          className="flex items-center gap-2 px-3 py-1.5 rounded-md transition-colors text-zinc-500 opacity-60 cursor-not-allowed"
         >
-          <span className="text-sm font-semibold">{Math.round(zoomLevel * 100)}%</span>
+          <span className="text-sm font-semibold">100%</span>
           <ChevronDown size={14} />
         </button>
 
         <button
           type="button"
           onClick={onFitView}
-          className="flex items-center gap-2 border border-zinc-700 px-3 py-1.5 rounded-md transition-colors text-zinc-200 hover:bg-zinc-800"
+          disabled
+          className="flex items-center gap-2 border border-zinc-700 px-3 py-1.5 rounded-md transition-colors text-zinc-500 opacity-60 cursor-not-allowed"
         >
           <Maximize size={16} />
           <span className="text-sm font-medium">Fit View</span>

@@ -4,6 +4,7 @@ import StorageBanner from '@/components/assets/StorageBanner';
 import AssetToolbar from '@/components/assets/AssetToolbar';
 import AssetCard from '@/components/assets/AssetCard';
 import DeleteConfirmationModal from '@/components/ui/DeleteConfirmationModal';
+import ImagePreviewModal from '@/components/ui/ImagePreviewModal';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { batchDeleteImages } from '@/lib/api/image-generation';
@@ -16,6 +17,11 @@ interface Asset {
   generationId?: number;
   type: string;
   url: string;
+  prompt?: string;
+  model?: string;
+  width?: number;
+  height?: number;
+  aspect_ratio?: string;
 }
 
 interface PendingDeleteItem {
@@ -34,6 +40,9 @@ export default function AssetsPage() {
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [scrollbarVisible, setScrollbarVisible] = useState(true);
+
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [previewIndex, setPreviewIndex] = useState(0);
 
   const toggleSelectionMode = () => {
     setIsSelectionMode(prev => {
@@ -93,14 +102,27 @@ export default function AssetsPage() {
 
           if (data) {
             const loadedAssets: Asset[] = [];
-            data.forEach((row: any) => {
+            data.forEach((row: {
+              id: number;
+              result_images?: string[];
+              prompt?: string;
+              model?: string;
+              width?: number;
+              height?: number;
+              aspect_ratio?: string;
+            }) => {
               if (row.result_images && Array.isArray(row.result_images)) {
                 row.result_images.forEach((imgUrl: string, idx: number) => {
                   loadedAssets.push({
                     id: row.id * 1000 + idx, // uniqueish id
                     generationId: row.id,
                     type: 'image',
-                    url: imgUrl
+                    url: imgUrl,
+                    prompt: row.prompt || 'No prompt provided',
+                    model: row.model || 'Unknown',
+                    width: row.width,
+                    height: row.height,
+                    aspect_ratio: row.aspect_ratio
                   });
                 });
               }
@@ -121,7 +143,10 @@ export default function AssetsPage() {
 
           if (data) {
             const loadedAssets: Asset[] = [];
-            data.forEach((row: any) => {
+            data.forEach((row: {
+              id: number;
+              result_video_url?: string;
+            }) => {
               if (row.result_video_url) {
                 loadedAssets.push({
                   id: row.id,
@@ -306,7 +331,7 @@ export default function AssetsPage() {
             )}
           >
             <AnimatePresence mode="popLayout">
-              {assets.map((asset) => (
+              {assets.map((asset, index) => (
                 <AssetCard 
                   key={`${activeTab}-${asset.id}`} 
                   {...asset} 
@@ -314,6 +339,10 @@ export default function AssetsPage() {
                   isSelectionMode={isSelectionMode}
                   onToggleSelect={() => handleToggleSelect(asset.id)}
                   onDelete={handleDeleteSingle}
+                  onPreview={() => {
+                    setPreviewIndex(index);
+                    setIsPreviewOpen(true);
+                  }}
                 />
               ))}
             </AnimatePresence>
@@ -350,6 +379,30 @@ export default function AssetsPage() {
           isPending={isDeleting}
           onConfirm={handleConfirmDelete}
           onCancel={closeDeleteModal}
+        />
+
+        <ImagePreviewModal
+          isOpen={isPreviewOpen}
+          onClose={() => setIsPreviewOpen(false)}
+          images={assets.filter(a => a.type === 'image').map(a => ({
+            id: a.id.toString(),
+            url: a.url,
+            prompt: a.prompt || '',
+            model: a.model || 'Unknown',
+            width: a.width,
+            height: a.height,
+            aspect_ratio: a.aspect_ratio
+          }))}
+          selectedIndex={Math.max(0, assets.filter(a => a.type === 'image').findIndex(a => a.id === assets[previewIndex]?.id))}
+          onNavigate={(newIndex: number) => {
+            const imageAssets = assets.filter(a => a.type === 'image');
+            if (imageAssets[newIndex]) {
+              const globalIndex = assets.findIndex(a => a.id === imageAssets[newIndex].id);
+              if (globalIndex !== -1) {
+                setPreviewIndex(globalIndex);
+              }
+            }
+          }}
         />
       </div>
   );

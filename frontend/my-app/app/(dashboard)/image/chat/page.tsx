@@ -495,6 +495,7 @@ export default function ChatToEditPage() {
                     <HighlightTextarea
                       value={message}
                       onChange={(e) => setMessage(e.target.value)}
+                      tags={uploadedImages.map((img) => img.tag)}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
                           e.preventDefault();

@@ -9,7 +9,13 @@ from core.supabase_client import get_supabase_client
 from schemas.image_generation import CreateImageRequest, CreateImageResponse, ImageModel, BatchDeleteRequest
 from services.replicate_service import ReplicateConfigurationError, generate_images
 from services.huggingface_service import hf_face_swap, hf_multiple_angle, HuggingFaceServiceError
-from services.wavespeed_service import generate_wavespeed_images, WaveSpeedServiceError
+from services.wavespeed_service import (
+    INPAINT_MODELS,
+    generate_wavespeed_images,
+    generate_wavespeed_inpaint,
+    upload_inpaint_image,
+    WaveSpeedServiceError,
+)
 
 
 router = APIRouter(prefix="/api/image", tags=["images"])
@@ -163,6 +169,73 @@ async def generate_image_with_file(
         raise HTTPException(status_code=500, detail=str(error)) from error
     except Exception as error:
         raise HTTPException(status_code=400, detail=f"Image generation failed: {str(error)}") from error
+
+
+@router.post("/inpaint", response_model=CreateImageResponse)
+async def inpaint_image(
+    model: str = Form(...),
+    prompt: str = Form(...),
+    base_image: UploadFile = File(...),
+    mask_image: UploadFile = File(...),
+    aspect_ratio: str = Form("1:1"),
+    resolution: str = Form("1k"),
+    output_format: str = Form("png"),
+    num_images: int = Form(1),
+    source_width: int | None = Form(None),
+    source_height: int | None = Form(None),
+) -> CreateImageResponse:
+    if model not in INPAINT_MODELS:
+        raise HTTPException(status_code=400, detail=f"Unsupported inpaint model: {model}")
+
+    if not prompt.strip():
+        raise HTTPException(status_code=400, detail="Prompt is required")
+
+    if not (base_image.content_type or "").startswith("image/"):
+        raise HTTPException(status_code=400, detail="base_image must be an image")
+
+    if not (mask_image.content_type or "").startswith("image/"):
+        raise HTTPException(status_code=400, detail="mask_image must be an image")
+
+    try:
+        base_bytes = await base_image.read()
+        mask_bytes = await mask_image.read()
+
+        if not base_bytes:
+            raise HTTPException(status_code=400, detail="base_image is empty")
+        if not mask_bytes:
+            raise HTTPException(status_code=400, detail="mask_image is empty")
+
+        base_url = upload_inpaint_image(
+            file_bytes=base_bytes,
+            filename=base_image.filename or "base.png",
+            content_type=base_image.content_type or "image/png",
+            role="base",
+        )
+        mask_url = upload_inpaint_image(
+            file_bytes=mask_bytes,
+            filename=mask_image.filename or "mask.png",
+            content_type=mask_image.content_type or "image/png",
+            role="mask",
+        )
+
+        return generate_wavespeed_inpaint(
+            model=model,
+            prompt=prompt.strip(),
+            base_image_url=base_url,
+            mask_image_url=mask_url,
+            aspect_ratio=aspect_ratio,
+            resolution=resolution,
+            output_format=output_format,
+            num_images=min(4, max(1, num_images)),
+            source_width=source_width,
+            source_height=source_height,
+        )
+    except HTTPException:
+        raise
+    except WaveSpeedServiceError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Inpaint generation failed: {str(error)}") from error
 
 @router.post("/face-swap")
 async def face_swap_route(

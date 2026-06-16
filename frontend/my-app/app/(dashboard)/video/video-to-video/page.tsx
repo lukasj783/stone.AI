@@ -4,13 +4,10 @@ import { usePathname } from 'next/navigation';
 import {
   CreditCard,
   Video,
-  Type,
   Image as LucideImage,
   Layers,
   ChevronDown,
-  Upload,
   PlayCircle,
-  Clock,
   Volume2,
   Search,
   Calendar,
@@ -20,6 +17,7 @@ import {
   Check,
 } from 'lucide-react';
 import Link from 'next/link';
+import Image from 'next/image';
 import VideoTrimmerModal from '@/components/ui/VideoTrimmerModal';
 
 const checkVideoDuration = (file: File): Promise<number> => {
@@ -138,7 +136,7 @@ export default function VideoToVideoPage() {
         let errorMessage = `Generation failed: ${errorText}`;
         try {
           const errorJson = JSON.parse(errorText);
-          let rawMessage = errorJson.detail || errorJson.message || errorText;
+          const rawMessage = errorJson.detail || errorJson.message || errorText;
           
           if (typeof rawMessage === 'string' && rawMessage.includes('HTTP 400:')) {
             try {
@@ -149,13 +147,13 @@ export default function VideoToVideoPage() {
               } else {
                  errorMessage = rawMessage;
               }
-            } catch (e) {
+            } catch {
                errorMessage = rawMessage;
             }
           } else {
              errorMessage = typeof rawMessage === 'string' ? rawMessage : JSON.stringify(rawMessage);
           }
-        } catch (e) {
+        } catch {
           // Ignore parse error, use original message
         }
         alert(errorMessage);
@@ -173,9 +171,10 @@ export default function VideoToVideoPage() {
       }
       
       alert('Generation request was sent successfully!');
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Error starting generation:', error);
-      alert(error.message || 'Failed to start generation. Check the console and make sure the backend is running.');
+      const errorMessage = error instanceof Error ? error.message : 'Failed to start generation. Check the console and make sure the backend is running.';
+      alert(errorMessage);
     } finally {
       setIsGenerating(false);
     }
@@ -431,7 +430,7 @@ export default function VideoToVideoPage() {
                       <input type="file" accept="image/jpeg,image/png,image/webp" className="hidden" onChange={(e) => setSourceImage(e.target.files?.[0] || null)} />
                       {sourceImage ? (
                         <>
-                          <img src={URL.createObjectURL(sourceImage)} alt="Source" className="w-full h-full object-cover" />
+                          <Image src={URL.createObjectURL(sourceImage)} alt="Source" fill className="object-cover" unoptimized />
                           <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center backdrop-blur-sm">
                             <span className="text-white text-xs font-bold bg-black/50 px-3 py-1.5 rounded-lg backdrop-blur-md">Change Image</span>
                           </div>
@@ -501,7 +500,7 @@ export default function VideoToVideoPage() {
                         <input type="file" accept="image/jpeg,image/png,image/webp" className="hidden" onChange={(e) => setSourceImage(e.target.files?.[0] || null)} />
                         {sourceImage ? (
                           <>
-                            <img src={URL.createObjectURL(sourceImage)} alt="Source Image Preview for Lipsync" className="w-full h-full object-contain bg-black" />
+                            <Image src={URL.createObjectURL(sourceImage)} alt="Source Image Preview for Lipsync" fill className="object-contain bg-black" unoptimized />
                             <div className="absolute top-2 right-2 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center backdrop-blur-sm rounded-lg overflow-hidden">
                               <span className="text-white text-xs font-bold bg-black/50 px-3 py-1.5 hover:bg-white/20 transition-colors pointer-events-none">Change Image</span>
                             </div>

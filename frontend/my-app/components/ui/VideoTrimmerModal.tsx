@@ -20,11 +20,9 @@ export default function VideoTrimmerModal({ file, maxDuration, minDuration = 1, 
   const [endTime, setEndTime] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState('');
-  const [thumbnails, setThumbnails] = useState<string[]>([]);
   
   const ffmpegRef = useRef(new FFmpeg());
   const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
     const url = URL.createObjectURL(file);
@@ -120,7 +118,7 @@ export default function VideoTrimmerModal({ file, maxDuration, minDuration = 1, 
             <h2 className="text-xl font-bold text-white">Trim Video to Match Model Limits</h2>
             <p className="text-sm text-zinc-400">Duration constraints: Min {minDuration}s | Max {maxDuration}s. Choose the exact timeframe to animate.</p>
           </div>
-          <button onClick={onClose} className="w-10 h-10 flex items-center justify-center hover:bg-zinc-700/50 rounded-full text-zinc-400 hover:text-white transition-colors">
+          <button type="button" title="Close" aria-label="Close" onClick={onClose} className="w-10 h-10 flex items-center justify-center hover:bg-zinc-700/50 rounded-full text-zinc-400 hover:text-white transition-colors">
             <X size={20} />
           </button>
         </div>
@@ -153,6 +151,8 @@ export default function VideoTrimmerModal({ file, maxDuration, minDuration = 1, 
                         step="0.01"
                         value={startTime}
                         onChange={handleTimeChange}
+                        aria-label="Video start time"
+                        title="Video start time"
                         className="w-full h-full absolute inset-0 appearance-none cursor-pointer bg-transparent z-10 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-blue-500 [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-white"
                     />
                     <div 
@@ -169,12 +169,14 @@ export default function VideoTrimmerModal({ file, maxDuration, minDuration = 1, 
 
         <div className="flex justify-end gap-3 pt-6 border-t border-zinc-800/50">
           <button
+            type="button"
             onClick={onClose}
             className="px-6 py-2.5 rounded-xl font-bold text-sm text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
           >
             Cancel
           </button>
           <button
+            type="button"
             onClick={handleTrim}
             disabled={!loaded || isProcessing}
             className="px-8 py-2.5 rounded-xl font-black text-sm bg-white text-black hover:bg-zinc-200 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-[0_0_20px_rgba(255,255,255,0.1)] hover:shadow-[0_0_30px_rgba(255,255,255,0.2)]"

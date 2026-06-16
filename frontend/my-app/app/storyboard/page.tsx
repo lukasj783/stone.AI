@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { 
   Home, Undo, Redo, Cloud, LayoutTemplate, Film, 
   Play, Download, Share, Monitor, Paintbrush, 
-  Star, Focus, Link2, Image as ImageIcon, Wand2, Eraser, 
+  Star, Focus, Link2, Image as ImageIcon, Eraser, 
   Trash2, Plus, Video, ChevronRight, Zap, Info, GripVertical, Check,
   ChevronDown
 } from 'lucide-react';
@@ -120,7 +120,7 @@ const ShotCard = ({ index }: { index: number }) => (
              </div>
           </div>
 
-          <div className="flex-1 flex flex-col items-center justify-center min-h-[260px]">
+          <div className="flex-1 flex flex-col items-center justify-center min-h-65">
              {/* Center visualizer mock */}
              <div className="w-40 h-56 bg-zinc-800 rounded-lg overflow-hidden relative shadow-lg">
                 {/* Simulated Image Content based on index */}
@@ -146,7 +146,7 @@ const ShotCard = ({ index }: { index: number }) => (
            </div>
 
            {/* Arrow separating panels */}
-           <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 w-6 h-6 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center z-10 shadow-md hidden xl:flex">
+           <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 w-6 h-6 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center z-10 shadow-md xl:flex">
              <ChevronRight size={14} className="text-zinc-400" />
            </div>
         </div>
@@ -180,7 +180,7 @@ const ShotCard = ({ index }: { index: number }) => (
                   
                   {/* Start Kframe */}
                   <div className="flex flex-col items-center gap-2 group cursor-pointer">
-                     <div className="w-[84px] h-[48px] bg-zinc-800 rounded-md overflow-hidden relative shadow-inner border border-transparent group-hover:border-zinc-600 transition-colors">
+                     <div className="w-21 h-12 bg-zinc-800 rounded-md overflow-hidden relative shadow-inner border border-transparent group-hover:border-zinc-600 transition-colors">
                         <div className={`absolute inset-0 bg-linear-to-b ${index === 1 ? 'from-emerald-700/60 to-emerald-900/80' : 'from-orange-800/60 to-orange-950/80'} mix-blend-overlay`}></div>
                      </div>
                      <span className="text-[10px] font-bold text-zinc-300">Start</span>
@@ -190,7 +190,7 @@ const ShotCard = ({ index }: { index: number }) => (
 
                   {/* End Kframe */}
                   <div className="flex flex-col items-center gap-2">
-                     <div className="w-[84px] h-[48px] border border-dashed border-zinc-700 bg-zinc-900/30 rounded-md flex items-center justify-center text-zinc-500 hover:bg-zinc-800 hover:border-zinc-500 transition-colors cursor-pointer relative group">
+                     <div className="w-21 h-12 border border-dashed border-zinc-700 bg-zinc-900/30 rounded-md flex items-center justify-center text-zinc-500 hover:bg-zinc-800 hover:border-zinc-500 transition-colors cursor-pointer relative group">
                         <Plus size={16} />
                         <div className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-zinc-800 border border-zinc-600 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                             <Link2 size={10} className="text-emerald-500" />
@@ -234,7 +234,7 @@ export default function StoryboardPage() {
          {/* subtle background styling */}
          <div className="absolute inset-0 border-x border-dashed border-zinc-800/30 mx-8 pointer-events-none"></div>
 
-         <div className="max-w-[1200px] w-full mx-auto px-4 md:px-8 py-8 h-full flex flex-col relative z-10">
+         <div className="max-w-300 w-full mx-auto px-4 md:px-8 py-8 h-full flex flex-col relative z-10">
             
             {shots.map((shot) => (
                <ShotCard key={shot} index={shot} />
@@ -255,7 +255,7 @@ export default function StoryboardPage() {
 
       {/* Fixed Bottom Action Footer */}
       <footer className="fixed bottom-0 left-0 right-0 py-4 bg-[#09090b]/90 backdrop-blur-xl border-t border-zinc-800 flex flex-col justify-center z-50">
-         <div className="flex gap-4 w-full max-w-[1200px] mx-auto px-8">
+         <div className="flex gap-4 w-full   mx-auto px-8">
             
             {/* Image Gen Block */}
             <div className="flex-1 flex flex-col md:flex-row items-center justify-between gap-4 bg-[#18181b] px-4 py-2.5 rounded-lg border border-zinc-800">

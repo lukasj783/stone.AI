@@ -17,13 +17,13 @@ export default function TextPropertiesPanel({
   onDelete 
 }: TextPropertiesPanelProps) {
   return (
-    <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-4 space-y-4">
+    <div className="bg-zinc-950 border border-zinc-800 rounded-lg p-3 space-y-3">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-bold text-white">Text Properties</h3>
         {onDelete && (
           <button
             onClick={onDelete}
-            className="p-1.5 rounded-lg text-zinc-500 hover:text-red-500 hover:bg-zinc-900 transition-colors"
+            className="p-1 rounded-md text-zinc-500 hover:text-red-500 hover:bg-zinc-900 transition-colors"
             title="Delete text layer"
           >
             <Trash2 size={16} />
@@ -32,7 +32,7 @@ export default function TextPropertiesPanel({
       </div>
 
       {/* Font Family */}
-      <div className="space-y-2">
+      <div className="space-y-1.5">
         <label className="block text-xs font-semibold text-zinc-300">
           Font Family
         </label>
@@ -40,7 +40,7 @@ export default function TextPropertiesPanel({
           value={properties.fontFamily}
           onChange={(e) => onChange({ fontFamily: e.target.value })}
           title="Select font family"
-          className="w-full bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-zinc-700 transition-colors cursor-pointer"
+          className="w-full bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-md px-2.5 py-1.5 focus:outline-none focus:border-zinc-700 transition-colors cursor-pointer"
         >
           {AVAILABLE_FONTS.map((font) => (
             <option key={font.value} value={font.value}>
@@ -51,7 +51,7 @@ export default function TextPropertiesPanel({
       </div>
 
       {/* Font Size */}
-      <div className="space-y-2">
+      <div className="space-y-1.5">
         <div className="flex items-center justify-between">
           <label className="text-xs font-semibold text-zinc-300">Font Size</label>
           <div className="flex items-center gap-2">
@@ -62,7 +62,7 @@ export default function TextPropertiesPanel({
               min="12"
               max="200"
               title="Font size in pixels"
-              className="w-16 bg-zinc-900 border border-zinc-800 text-zinc-300 text-xs rounded-lg px-2 py-1 text-center focus:outline-none focus:border-zinc-700"
+              className="w-14 bg-zinc-900 border border-zinc-800 text-zinc-300 text-xs rounded-md px-1.5 py-1 text-center focus:outline-none focus:border-zinc-700"
             />
             <span className="text-xs text-zinc-500">px</span>
           </div>
@@ -87,18 +87,18 @@ export default function TextPropertiesPanel({
       </div>
 
       {/* Text Style Buttons */}
-      <div className="space-y-2">
+      <div className="space-y-1.5">
         <label className="block text-xs font-semibold text-zinc-300">Text Style</label>
-        <div className="flex items-center gap-2">
+        <div className="grid grid-cols-3 overflow-hidden rounded-md border border-zinc-800 bg-zinc-900">
           <button
             onClick={() => onChange({ 
               fontWeight: properties.fontWeight === 'bold' ? 'normal' : 'bold' 
             })}
             className={cn(
-              "flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg font-semibold text-sm transition-all",
+              "flex items-center justify-center px-2 py-1.5 text-sm transition-all",
               properties.fontWeight === 'bold'
                 ? "bg-white text-black"
-                : "bg-zinc-900 text-zinc-400 hover:text-zinc-300 hover:bg-zinc-800"
+                : "text-zinc-400 hover:text-zinc-300 hover:bg-zinc-800"
             )}
             title="Bold"
           >
@@ -110,10 +110,10 @@ export default function TextPropertiesPanel({
               fontStyle: properties.fontStyle === 'italic' ? 'normal' : 'italic' 
             })}
             className={cn(
-              "flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg font-semibold text-sm transition-all",
+              "flex items-center justify-center border-x border-zinc-800 px-2 py-1.5 text-sm transition-all",
               properties.fontStyle === 'italic'
                 ? "bg-white text-black"
-                : "bg-zinc-900 text-zinc-400 hover:text-zinc-300 hover:bg-zinc-800"
+                : "text-zinc-400 hover:text-zinc-300 hover:bg-zinc-800"
             )}
             title="Italic"
           >
@@ -125,10 +125,10 @@ export default function TextPropertiesPanel({
               textDecoration: properties.textDecoration === 'underline' ? 'none' : 'underline' 
             })}
             className={cn(
-              "flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg font-semibold text-sm transition-all",
+              "flex items-center justify-center px-2 py-1.5 text-sm transition-all",
               properties.textDecoration === 'underline'
                 ? "bg-white text-black"
-                : "bg-zinc-900 text-zinc-400 hover:text-zinc-300 hover:bg-zinc-800"
+                : "text-zinc-400 hover:text-zinc-300 hover:bg-zinc-800"
             )}
             title="Underline"
           >
@@ -138,13 +138,13 @@ export default function TextPropertiesPanel({
       </div>
 
       {/* Text Alignment */}
-      <div className="space-y-2">
+      <div className="space-y-1.5">
         <label className="block text-xs font-semibold text-zinc-300">Text Alignment</label>
-        <div className="flex items-center gap-2 bg-zinc-900 rounded-lg p-1">
+        <div className="grid grid-cols-3 overflow-hidden rounded-md border border-zinc-800 bg-zinc-900">
           <button
             onClick={() => onChange({ textAlign: 'left' })}
             className={cn(
-              "flex-1 flex items-center justify-center py-2 rounded-md transition-all",
+              "flex items-center justify-center py-1.5 transition-all",
               properties.textAlign === 'left'
                 ? "bg-white text-black"
                 : "text-zinc-400 hover:text-zinc-300"
@@ -157,7 +157,7 @@ export default function TextPropertiesPanel({
           <button
             onClick={() => onChange({ textAlign: 'center' })}
             className={cn(
-              "flex-1 flex items-center justify-center py-2 rounded-md transition-all",
+              "flex items-center justify-center border-x border-zinc-800 py-1.5 transition-all",
               properties.textAlign === 'center'
                 ? "bg-white text-black"
                 : "text-zinc-400 hover:text-zinc-300"
@@ -170,7 +170,7 @@ export default function TextPropertiesPanel({
           <button
             onClick={() => onChange({ textAlign: 'right' })}
             className={cn(
-              "flex-1 flex items-center justify-center py-2 rounded-md transition-all",
+              "flex items-center justify-center py-1.5 transition-all",
               properties.textAlign === 'right'
                 ? "bg-white text-black"
                 : "text-zinc-400 hover:text-zinc-300"
@@ -190,14 +190,14 @@ export default function TextPropertiesPanel({
       />
 
       {/* Stroke Settings */}
-      <div className="space-y-3 pt-3 border-t border-zinc-900">
+      <div className="space-y-2.5 pt-2.5 border-t border-zinc-900">
         <ColorPicker
           label="Stroke Color"
           color={properties.strokeColor}
           onChange={(strokeColor) => onChange({ strokeColor })}
         />
 
-        <div className="space-y-2">
+        <div className="space-y-1.5">
           <div className="flex items-center justify-between">
             <label className="text-xs font-semibold text-zinc-300">Stroke Width</label>
             <span className="text-xs font-bold text-white tabular-nums">{properties.strokeWidth}px</span>
@@ -223,7 +223,7 @@ export default function TextPropertiesPanel({
       </div>
 
       {/* Letter Spacing */}
-      <div className="space-y-2">
+      <div className="space-y-1.5">
         <div className="flex items-center justify-between">
           <label className="text-xs font-semibold text-zinc-300">Letter Spacing</label>
           <span className="text-xs font-bold text-white tabular-nums">{properties.letterSpacing}</span>
@@ -248,7 +248,7 @@ export default function TextPropertiesPanel({
       </div>
 
       {/* Line Height */}
-      <div className="space-y-2">
+      <div className="space-y-1.5">
         <div className="flex items-center justify-between">
           <label className="text-xs font-semibold text-zinc-300">Line Height</label>
           <span className="text-xs font-bold text-white tabular-nums">{properties.lineHeight.toFixed(1)}</span>

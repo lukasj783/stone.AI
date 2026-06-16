@@ -1,0 +1,89 @@
+IMG.LY background-removal — quick reference
+
+Install commands
+- npm (browser): npm install @imgly/background-removal onnxruntime-web@1.21.0-dev.20250206-d981b153d3
+- npm (node):   npm install @imgly/background-removal-node
+- pnpm (browser): pnpm add @imgly/background-removal onnxruntime-web@1.21.0-dev.20250206-d981b153d3
+- pnpm (node): pnpm add @imgly/background-removal-node
+- yarn (browser): yarn add @imgly/background-removal onnxruntime-web@1.21.0-dev.20250206-d981b153d3
+- yarn (node): yarn add @imgly/background-removal-node
+
+Notes: GitHub repo: https://github.com/imgly/background-removal-js
+Demo: https://img.ly/showcases/cesdk/web/background-removal/web
+License: AGPL-3.0 (contact support@img.ly for alternate licensing)
+
+Browser usage (example)
+import removeBackground, { preload, Config } from '@imgly/background-removal'
+
+let image_src = /* ImageData | ArrayBuffer | Uint8Array | Blob | URL | string */
+
+removeBackground(image_src /* , config */)
+  .then((blob) => {
+    // blob is an encoded image (default image/png). Use URL.createObjectURL(blob)
+  })
+
+// Preloading assets
+const cfg = { /* see Config below */ }
+preload(cfg).then(() => console.log('assets preloaded'))
+
+Node usage (example)
+import { removeBackground } from '@imgly/background-removal-node'
+
+let image_src = /* Buffer | ArrayBuffer | Uint8Array | Blob | URL | string */
+removeBackground(image_src /* , config */).then((blob) => {
+  // blob: PNG/JPEG/WEBP or raw RGBA depending on config
+})
+
+Primary functions / exports
+- Browser package (@imgly/background-removal):
+  - default export: imglyRemoveBackground(imageSrc[, config]) -> Promise<Blob>
+  - named: preload(config) -> Promise<void>
+  - named: (Type) Config — configuration type
+- Node package (@imgly/background-removal-node):
+  - removeBackground(imageSrc[, config]) -> Promise<Blob>
+  - Config type
+
+Supported input types
+- ImageData, ArrayBuffer, Uint8Array, Blob, URL, string
+- Node: Buffer also supported
+
+Output
+- Returns a Blob encoded in the chosen format (default PNG). Convert via URL.createObjectURL(blob).
+- Node variant can also output raw RGBA (`image/x-rgba8`).
+
+Config properties (documented)
+- publicPath: string
+  - Base URL or local file:// path to model and wasm assets. Defaults to IMG.LY CDN path.
+- debug: boolean
+  - Enable console logging and debug outputs.
+- device: 'cpu' | 'gpu'
+  - Choose execution device; 'gpu' uses WebGPU if available.
+- model: (browser) 'isnet' | 'isnet_fp16' | 'isnet_quint8' (default 'isnet_fp16')
+  - (node) 'small' | 'medium' (small ≈40MB quantized, medium ≈80MB default)
+- output: object
+  - format: 'image/png' | 'image/jpeg' | 'image/webp' | (node) 'image/x-rgba8'
+  - quality: number (0..1) for jpeg/webp
+  - type: 'foreground' | 'background' | 'mask' (which image to export)
+- progress: function(key, current, total)
+  - Download progress callback for asset fetching
+- fetchArgs: object
+  - Extra options forwarded to fetch (useful for CORS, headers)
+
+Advanced/operational notes
+- First run downloads WASM + ONNX model assets (size varies by model); use `preload()` to force downloads ahead of time.
+- For production, hosting assets yourself is recommended: download the package data `.tgz` from IMG.LY CDN and serve `dist/` from `publicPath`.
+- Performance: enabling `SharedArrayBuffer` and correct COOP/COEP headers improves performance. See docs for headers:
+  - 'Cross-Origin-Opener-Policy': 'same-origin'
+  - 'Cross-Origin-Embedder-Policy': 'require-corp'
+- CORS: use `fetchArgs` to pass `mode` or headers if needed.
+- Model size vs quality: small (faster, smaller, sometimes artifacts) vs medium (default, higher quality).
+
+Troubleshooting
+- If npm registry pages are blocked or return 403 to automated fetch, open the package page in a browser: https://www.npmjs.com/package/@imgly/background-removal and https://www.npmjs.com/package/@imgly/background-removal-node
+- If missing assets or offline hosting required, copy `dist/*` from `node_modules/@imgly/background-removal(-node)/dist/` to your public assets and set `publicPath` to that folder.
+
+References
+- README & package docs in GitHub repo: https://github.com/imgly/background-removal-js
+- Demo: https://img.ly/showcases/cesdk/web/background-removal/web
+
+End of background-removal reference

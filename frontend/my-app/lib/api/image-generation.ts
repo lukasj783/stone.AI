@@ -56,6 +56,28 @@ export async function generateImage(payload: CreateImageRequest): Promise<Create
   return response.json() as Promise<CreateImageResponse>;
 }
 
+export async function generateInpaintImage(payload: FormData): Promise<CreateImageResponse> {
+  const response = await fetch(`${getApiBaseUrl()}/api/image/inpaint`, {
+    method: 'POST',
+    body: payload,
+  });
+
+  if (!response.ok) {
+    let message = 'Inpaint generation failed';
+    try {
+      const errorPayload = await response.json();
+      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
+        message = errorPayload.detail;
+      }
+    } catch {
+      message = `Inpaint generation failed with status ${response.status}`;
+    }
+    throw new Error(message);
+  }
+
+  return response.json() as Promise<CreateImageResponse>;
+}
+
 export async function generateMultipleAngle(imageFile: File, prompt: string): Promise<{ images: string[] }> {
   const formData = new FormData();
   formData.append('image', imageFile);
