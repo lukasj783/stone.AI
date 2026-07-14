@@ -1,7 +1,8 @@
 export type ImageModel = 'nanobanana' | 'nanobanana2' | 'seedream45' | 'qwen' | 'z-image' | 'flux-klein';
 
 export interface CreateImageRequest {
-  model: ImageModel;
+  model: ImageModel | string;
+  provider?: string;
   prompt: string;
   aspect_ratio: string;
   num_images: number;
@@ -9,6 +10,8 @@ export interface CreateImageRequest {
   image_search?: boolean;
   google_search?: boolean;
   output_format?: string;
+  image_input?: string[];
+  image_mapping?: Record<string, string>;
 }
 
 export interface CreateImageResponse {

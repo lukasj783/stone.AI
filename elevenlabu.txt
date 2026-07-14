@@ -1,0 +1,272 @@
+# ElevenLabs Python SDK Methods & Parameters
+
+Summary of Python SDK methods and request parameters mapped out from the ElevenLabs OpenAPI Specification.
+
+---
+
+## 1. Text to Speech
+
+### Create Speech
+**Endpoint:** `POST https://api.elevenlabs.io/v1/text-to-speech/{voice_id}`
+
+Converts text input into generated speech audio.
+
+```python
+from elevenlabs import ElevenLabs
+
+def create_speech(text: str, voice_id: str, model_id: str = "eleven_multilingual_v2") -> bytes:
+    client = ElevenLabs()
+    audio_generator = client.text_to_speech.convert(
+        voice_id=voice_id,
+        text=text,
+        model_id=model_id,
+        output_format="mp3_44100_128"
+    )
+    return b"".join(audio_generator)
+```
+
+**Parameters:**
+- `voice_id` (path, string, required): Voice ID to be used.
+- `text` (body, string, required): The text that will get converted into speech.
+- `model_id` (body, string, optional): Model ID to use (e.g., `eleven_multilingual_v2`).
+- `output_format` (query, string, optional): Output audio format/quality. Defaults to `mp3_44100_128`.
+- `optimize_streaming_latency` (query, int, optional): Latency optimizations (0 to 4).
+- `enable_logging` (query, bool, optional): Zero retention mode if False (Enterprise only). Defaults to True.
+- `voice_settings` (body, object, optional): Stability, similarity_boost, style, speed, etc.
+
+---
+
+### Create Speech with Timing
+**Endpoint:** `POST https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/with-timestamps`
+
+Generates speech with precise character-level start and end timestamp alignments.
+
+```python
+from elevenlabs import ElevenLabs
+
+def create_speech_with_timing(text: str, voice_id: str) -> dict:
+    client = ElevenLabs()
+    response = client.text_to_speech.convert_with_timestamps(
+        voice_id=voice_id,
+        text=text,
+    )
+    return {
+        "audio_base64": response.audio_base64,
+        "alignment": response.alignment,
+        "normalized_alignment": response.normalized_alignment
+    }
+```
+
+**Parameters:**
+- `voice_id` (path, string, required): Voice ID to use.
+- `text` (body, string, required): Text input.
+- `output_format` (query, string, optional): Defaults to `mp3_44100_128`.
+
+---
+
+## 2. Text to Dialogue
+
+### Create Dialogue
+**Endpoint:** `POST https://api.elevenlabs.io/v1/text-to-dialogue`
+
+Converts list of text/voice pairings into single cohesive multi-voice speech.
+
+```python
+from elevenlabs import ElevenLabs, DialogueInput
+
+def create_dialogue(inputs: list[dict], model_id: str = "eleven_v3") -> bytes:
+    client = ElevenLabs()
+    dialogue_inputs = [
+        DialogueInput(text=item["text"], voice_id=item["voice_id"]) 
+        for item in inputs
+    ]
+    audio_generator = client.text_to_dialogue.convert(
+        inputs=dialogue_inputs,
+        model_id=model_id
+    )
+    return b"".join(audio_generator)
+```
+
+**Parameters:**
+- `inputs` (body, array, required): A list of objects containing `text` and `voice_id`.
+- `model_id` (body, string, optional): Defaults to `eleven_v3`.
+- `output_format` (query, string, optional): Defaults to `mp3_44100_128`.
+
+---
+
+### Create Dialogue with Timestamps
+**Endpoint:** `POST https://api.elevenlabs.io/v1/text-to-dialogue/with-timestamps`
+
+Generates dialogue with aligned transition segments.
+
+```python
+from elevenlabs import ElevenLabs, DialogueInput
+
+def create_dialogue_with_timing(inputs: list[dict]) -> dict:
+    client = ElevenLabs()
+    dialogue_inputs = [
+        DialogueInput(text=item["text"], voice_id=item["voice_id"]) 
+        for item in inputs
+    ]
+    response = client.text_to_dialogue.convert_with_timestamps(
+        inputs=dialogue_inputs
+    )
+    return {
+        "audio_base64": response.audio_base64,
+        "voice_segments": response.voice_segments,
+        "alignment": response.alignment
+    }
+```
+
+---
+
+## 3. Voice Design
+
+### Design Voice
+**Endpoint:** `POST https://api.elevenlabs.io/v1/text-to-voice/design`
+
+Generates mock voice previews based on description prompts.
+
+```python
+from elevenlabs import ElevenLabs
+
+def design_voice(description: str, text: str = None) -> list[dict]:
+    client = ElevenLabs()
+    response = client.text_to_voice.design(
+        voice_description=description,
+        text=text,
+        auto_generate_text=True if text is None else False
+    )
+    return response.previews
+```
+
+---
+
+### Create Voice
+**Endpoint:** `POST https://api.elevenlabs.io/v1/text-to-voice`
+
+Saves a designed voice preview into your account.
+
+```python
+from elevenlabs import ElevenLabs
+
+def create_voice_from_preview(voice_name: str, voice_description: str, generated_voice_id: str) -> str:
+    client = ElevenLabs()
+    response = client.text_to_voice.create(
+        voice_name=voice_name,
+        voice_description=voice_description,
+        generated_voice_id=generated_voice_id
+    )
+    return response.voice_id
+```
+
+---
+
+### Stream Voice Preview
+**Endpoint:** `POST /v1/text-to-voice/{generated_voice_id}/stream`
+
+Streams preview audio for a designed but unsaved voice draft.
+
+```python
+import requests
+
+def stream_voice_preview(generated_voice_id: str, text: str, api_key: str) -> bytes:
+    url = f"https://api.elevenlabs.io/v1/text-to-voice/{generated_voice_id}/stream"
+    headers = {"xi-api-key": api_key, "Content-Type": "application/json"}
+    response = requests.post(url, json={"text": text}, stream=True)
+    return response.content
+```
+
+---
+
+## 4. Voice Cloning
+
+### Create Voice Clone (Instant)
+**Endpoint:** `POST https://api.elevenlabs.io/v1/voices/add`
+
+Creates an Instant Voice Clone (IVC) from sample files.
+
+```python
+from elevenlabs import ElevenLabs
+
+def clone_voice_instant(name: str, file_paths: list[str], description: str = None) -> str:
+    client = ElevenLabs()
+    response = client.voices.ivc.create(
+        name=name,
+        files=file_paths,
+        description=description
+    )
+    return response.voice_id
+```
+
+---
+
+## 5. Voice Fine-tuning
+
+### Start Fine-tuning (Professional Voice Cloning)
+**Endpoint:** `POST https://api.elevenlabs.io/v1/voices/{voice_id}/fine-tuning`
+
+Triggers PVC fine-tuning and state queries.
+
+```python
+from elevenlabs import ElevenLabs
+
+def trigger_voice_finetuning(voice_id: str) -> dict:
+    client = ElevenLabs()
+    client.voices.pvc.train(voice_id=voice_id)
+    voice_info = client.voices.get(voice_id=voice_id)
+    return {
+        "status": voice_info.fine_tuning.state if voice_info.fine_tuning else None,
+        "is_verified": voice_info.voice_verification.is_verified if voice_info.voice_verification else False,
+    }
+```
+
+---
+
+## 6. Prompting, Delivery Control, Emotions & Punctuation (Eleven v3)
+
+For maximum expressive control, ElevenLabs **Eleven v3** supports prompting delivery direct within the generation text corpus, instead of classical XML/SSML markers. 
+
+### Audio Tags (Vocal Delivery & Expressions)
+To inject vocal delivery patterns, pauses, tone directions, or environmental audio, append brackets directly preceding/following specific text segments. Ensure the target voice matches the styled prompt (e.g., highly robust, monotonic models may ignore expressive tag variations). 
+
+**Available Native Audio Tags:**
+* **Vocal Emotions:** `[happy]`, `[sad]`, `[excited]`, `[angry]`, `[annoyed]`, `[appalled]`, `[thoughtful]`, `[surprised]`, `[sarcastic]`, `[curious]`, `[crying]`, `[professional]`, `[reassuring]`, `[sympathetic]`
+* **Non-verbal sounds:** `[laughs]`, `[laughs harder]`, `[laughing hysterically]`, `[giggles]`, `[sighs]`, `[exhales]`, `[clears throat]`, `[short pause]`, `[long pause]`, `[exhales sharply]`, `[inhales deeply]`, `[swallows]`, `[gulps]`, `[wheezing]`, `[snorts]`
+* **Stylizations / Singing:** `[strong French accent]`, `[strong Russian accent]` (or other accents replaced like `[strong X accent]`), `[sings]`, `[singing]`, `[whispers]`
+* **Ambient Actions (experimental):** `[gunshot]`, `[applause]`, `[clapping]`, `[explosion]`
+
+```python
+from elevenlabs import ElevenLabs
+
+def generate_expressive_speech(voice_id: str):
+    client = ElevenLabs()
+    text = "[appalled] Are you serious? [sighs] I can't believe you did that! [laughs] Classic!"
+    audio = client.text_to_speech.convert(
+        voice_id=voice_id,
+        text=text,
+        model_id="eleven_v3",
+        get_all=False # Make sure to toggle Stability slider down toward 'Creative' to hear extreme expressiveness!
+    )
+    return b"".join(audio)
+```
+
+### Punctuation Hooks
+Punctuation plays a heavy structural role when prompting Eleven v3:
+* **Ellipses (...)**: Translates into organic conversational hesitations, pauses, and speech weights.
+* **ALL-CAPS spelling**: Dictates increased emphasis (e.g., "NOT going to believe this", "VERY long day", "CLICKED").
+* **Standard punctuation (-, --, commas)**: Naturally breaks cadence, altering the text's rhythm.
+
+```text Example
+"It... well, it might work. Wait—what's that noise? It was a VERY long day [sigh] ... nobody listens anymore."
+```
+
+### Break Tags & SSML Compatibility
+* **Eleven v3** does **NOT** support SSML break tags. Pace is controlled purely through structural punctuation (ellipses/dashes) and audio tags.
+* **Older models (v2 / Flash v2.5)**: Support standard XML/SSML tags, such as `<break time="1.5s" />` (recommended to limit to max 3.0s to avoid artifact generation), or phoneme markers for precise pronunciation:
+  * CMU Arpabet syntax: `<phoneme alphabet="cmu-arpabet" ph="M AE1 D IH0 S AH0 N">Madison</phoneme>`
+  * IPA syntax: `<phoneme alphabet="ipa" ph="ˈæktʃuəli">actually</phoneme>`
+* **Eleven v3 Precise Pronunciation (IPA)**: Enclose standard IPA symbols directly within forward slashes (`/`) without XML tags:
+  ```text
+  The concept of "/fəˈnɛtɪks/" is central to linguistics.
+  ```

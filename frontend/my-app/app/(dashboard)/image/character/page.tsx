@@ -1,244 +1,887 @@
-"use client";
-import React, { useState } from 'react';
-import { usePathname } from 'next/navigation';
-import {
-  CreditCard,
-  User,
-  Sparkles,
-  Image as ImageIcon,
-  ChevronDown,
-  Plus,
-  Search,
-} from 'lucide-react';
-import { motion } from 'framer-motion';
-import Link from 'next/link';
+'use client';
 
-// Sample character styles
-const characterStyles = [
-  { id: 1, name: 'Realistic', thumbnail: 'from-amber-900 to-orange-900' },
-  { id: 2, name: 'Anime', thumbnail: 'from-pink-900 to-rose-900' },
-  { id: 3, name: 'Cartoon', thumbnail: 'from-blue-900 to-indigo-900' },
-  { id: 4, name: '3D Model', thumbnail: 'from-purple-900 to-violet-900' },
-  { id: 5, name: 'Fantasy', thumbnail: 'from-green-900 to-emerald-900' },
-  { id: 6, name: 'Cyberpunk', thumbnail: 'from-cyan-900 to-teal-900' },
-  { id: 7, name: 'Watercolor', thumbnail: 'from-yellow-900 to-amber-900' },
-  { id: 8, name: 'Oil Painting', thumbnail: 'from-red-900 to-rose-900' },
+import { useState, useEffect, Suspense, useRef } from 'react';
+import { useSearchParams } from 'next/navigation';
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+  FileText,
+  ArrowRight,
+  Save,
+  Image as ImageIcon,
+  Wand2,
+  UploadCloud,
+  ChevronLeft,
+  ChevronRight,
+  ChevronDown,
+  Sparkles,
+  X,
+  RefreshCw,
+} from 'lucide-react';
+import Image from 'next/image';
+import { cn } from '@/lib/utils';
+import { ImageModel as ApiImageModel, CreateImageRequest } from '@/lib/types/image-generation';
+import { generateCharacterImages, generateImageFromUpload } from '@/lib/api/image-generation';
+
+// Workflow Steps
+type AppStep = 'mode-select' | 'text-input' | 'image-input' | 'grid-preview' | 'save-character';
+
+interface CharacterMetadata {
+  name: string;
+  description: string;
+  role: string;
+}
+
+type GenerationModel = {
+  id: number;
+  apiModel: ApiImageModel | string;
+  name: string;
+  creator: string;
+  tags: string[];
+  thumbnail: string;
+  provider: 'replicate' | 'wavespeed';
+};
+
+const characterModels: GenerationModel[] = [
+  {
+    id: 1,
+    apiModel: 'nanobanana',
+    name: 'Nanobanana Pro',
+    creator: 'Google',
+    tags: ['Standard'],
+    thumbnail: 'from-fuchsia-900 via-purple-900 to-indigo-900',
+    provider: 'replicate',
+  },
+  {
+    id: 101,
+    apiModel: 'google/nano-banana-pro/text-to-image-multi',
+    name: 'Nanobanana Pro',
+    creator: 'Google',
+    tags: ['Standard', 'Multi'],
+    thumbnail: 'from-fuchsia-900 via-purple-900 to-indigo-900',
+    provider: 'wavespeed',
+  },
+  {
+    id: 6,
+    apiModel: 'nanobanana2',
+    name: 'Nanobanana 2',
+    creator: 'Google',
+    tags: ['Standard', 'Search'],
+    thumbnail: 'from-yellow-900 via-orange-900 to-amber-900',
+    provider: 'replicate',
+  },
+  {
+    id: 106,
+    apiModel: 'google/nano-banana-2/text-to-image',
+    name: 'Nanobanana 2',
+    creator: 'Google',
+    tags: ['Standard', 'Search'],
+    thumbnail: 'from-yellow-900 via-orange-900 to-amber-900',
+    provider: 'wavespeed',
+  },
 ];
 
-export default function CharacterPage() {
-  const pathname = usePathname();
-  
-  const secondaryNav = [
-    { label: 'Image Home', href: '/image' },
-    { label: 'Create Image', href: '/image/create' },
-    { label: 'Edit Image', href: '/image/edit' },
-    { label: 'Chat to Edit', href: '/image/chat' },
-    { label: 'Face Swap', href: '/image/face-swap' },
-    { label: 'Character', href: '/image/character' },
-    { label: 'Multiple Angle', href: '/image/multiple-angle' },
-    { label: 'Image Upscale', href: '/image/upscale' },
-    { label: 'Train a Model', href: '/image/train' },
-  ];
-  
-  const [prompt, setPrompt] = useState('');
-  const [numImages, setNumImages] = useState(2);
-  const [selectedCharacter, setSelectedCharacter] = useState('mbosa');
-  const [selectedStyle, setSelectedStyle] = useState<number | null>(null);
+function CharacterCreatorContent() {
+  const searchParams = useSearchParams();
+  const intent = searchParams.get('intent');
+  const initialName = searchParams.get('name') || '';
+  const initialRole = searchParams.get('role') || '';
 
-  return (
-    <div className="flex flex-col lg:flex-row gap-5">
-        {/* Secondary Sidebar (Left) */}
-        <aside className="lg:w-52 space-y-8 shrink-0">
-          <div className="space-y-4">
-            <h3 className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest px-4">Image Controls</h3>
-            <div className="space-y-1">
-              {secondaryNav.map((item) => (
-                <Link
-                  key={item.label}
-                  href={item.href}
-                  className={`block w-full text-left px-4 py-2.5 rounded-lg text-sm font-bold transition-all ${
-                    pathname === item.href 
-                      ? "bg-zinc-900 text-white border border-zinc-800" 
-                      : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900/40"
+  // File upload ref (following editor component pattern)
+  const fileInputRef = useRef<HTMLInputElement>(null);  const [step, setStep] = useState<AppStep>(intent === 'scene-extraction' ? 'text-input' : 'mode-select');
+  const [prompt, setPrompt] = useState(
+    intent === 'scene-extraction'
+      ? `A high quality concept art character portrait of ${initialName}, who acts as the ${initialRole} in the story.`
+      : 'A heroic knight with glowing blue armor standing in a moonlit forest.'
+  );
+  const [selectedModel, setSelectedModel] = useState<GenerationModel>(characterModels[0]);
+  const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
+  const [selectedImageIndex, setSelectedImageIndex] = useState<number>(0);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generationError, setGenerationError] = useState('');
+  const [generatedImages, setGeneratedImages] = useState<string[]>([]);
+  const [isHoveringCarousel, setIsHoveringCarousel] = useState(false);
+  const [generationProgress, setGenerationProgress] = useState(0);
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [uploadedFilePreview, setUploadedFilePreview] = useState<string>('');
+  const [guidancePrompt, setGuidancePrompt] = useState('');
+
+  const [charData, setCharData] = useState<CharacterMetadata>({
+    name: initialName,
+    description: '',
+    role: initialRole,
+  });
+
+  useEffect(() => {
+    if (step !== 'save-character' || isHoveringCarousel) return;
+    const interval = setInterval(() => {
+      setSelectedImageIndex((prev) => (prev < generatedImages.length - 1 ? prev + 1 : 0));
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [step, isHoveringCarousel, generatedImages.length]);
+
+  // Cleanup object URL on unmount or preview change
+  useEffect(() => {
+    return () => {
+      if (uploadedFilePreview) {
+        URL.revokeObjectURL(uploadedFilePreview);
+      }
+    };
+  }, [uploadedFilePreview]);
+
+  // Progress tracking effect
+  useEffect(() => {
+    if (!isGenerating) {
+      setGenerationProgress(0);
+      return;
+    }
+
+    let currentProgress = 0;
+
+    const incrementProgress = () => {
+      // Exponential backoff: faster at start, slower towards 100%
+      const remaining = 100 - currentProgress;
+      const increment = remaining > 70 ? Math.random() * 8 + 3 : remaining > 30 ? Math.random() * 4 + 1 : 0.5;
+      currentProgress = Math.min(currentProgress + increment, 95); // Cap at 95% until complete
+      setGenerationProgress(Math.round(currentProgress));
+    };
+
+    const progressInterval = setInterval(incrementProgress, 400);
+    return () => clearInterval(progressInterval);
+  }, [isGenerating]);
+
+  const handleGenerate = async () => {
+    // For image-input mode, check if file is uploaded
+    if (step === 'image-input' && !uploadedFile) {
+      setGenerationError('Please upload an image first');
+      return;
+    }
+
+    // For text-input mode, check if prompt is present
+    if (step === 'text-input' && !prompt.trim()) {
+      setGenerationError('Please enter a character description');
+      return;
+    }
+
+    setGenerationError('');
+    setIsGenerating(true);
+    setGenerationProgress(0);
+    try {
+      if (step === 'image-input' && uploadedFile) {
+        // Image-to-image mode
+        const response = await generateImageFromUpload(
+          uploadedFile,
+          guidancePrompt,
+          selectedModel.apiModel as string,
+          selectedModel.provider
+        );
+        setGenerationProgress(100);
+        setGeneratedImages(response.images);
+        setSelectedImageIndex(0);
+        setStep('grid-preview');
+      } else {
+        // Text-to-image mode (character description)
+        const payload: CreateImageRequest = {
+          model: selectedModel.apiModel,
+          provider: selectedModel.provider,
+          prompt,
+          aspect_ratio: '1:1',
+          num_images: 1,
+        };
+
+        const response = await generateCharacterImages(payload);
+        setGenerationProgress(100);
+        setGeneratedImages(response.images);
+        setSelectedImageIndex(0);
+        setStep('grid-preview');
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Character generation failed';
+      setGenerationError(message);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const resetImageInputState = () => {
+    setUploadedFile(null);
+    setUploadedFilePreview('');
+    setGuidancePrompt('');
+    setGenerationError('');
+  };
+
+  const triggerFileInput = () => {
+    fileInputRef.current?.click();
+  };
+
+  // Generation Progress Overlay
+  const renderGenerationProgress = () => (
+    <AnimatePresence>
+      {isGenerating && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+        >
+          <motion.div
+            initial={{ y: 20, scale: 0.95 }}
+            animate={{ y: 0, scale: 1 }}
+            exit={{ y: 20, scale: 0.95 }}
+            transition={{ duration: 0.2 }}
+            className="bg-zinc-950 border border-zinc-800 rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl"
+          >
+            <div className="flex items-center justify-center mb-6">
+              <div className="relative w-16 h-16">
+                <div className="absolute inset-0 rounded-full border-4 border-zinc-700" />
+                <div 
+                  className="absolute inset-0 rounded-full border-4 border-transparent border-t-indigo-500 border-r-indigo-500 animate-spin"
+                  style={{ animation: 'spin 2s linear infinite' }}
+                />
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <span className="text-xs font-bold text-indigo-400">{generationProgress}%</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <div className="flex items-center justify-between text-sm font-semibold mb-2">
+                  <span className="text-zinc-300 flex items-center gap-2">
+                    <RefreshCw size={14} className="animate-spin text-indigo-400" />
+                    Generating Character...
+                  </span>
+                  <span className="text-indigo-400 font-mono text-xs">{generationProgress}%</span>
+                </div>
+                <div className="w-full bg-zinc-800 h-2.5 rounded-full overflow-hidden">
+                  <motion.div
+                    className="bg-linear-to-r from-indigo-600 via-indigo-500 to-purple-600 h-full rounded-full"
+                    initial={{ width: '0%' }}
+                    animate={{ width: `${generationProgress}%` }}
+                    transition={{ duration: 0.3 }}
+                  />
+                </div>
+              </div>
+
+              <div className="text-center">
+                <p className="text-xs text-zinc-500">
+                  {generationProgress < 30
+                    ? 'Processing your prompt...'
+                    : generationProgress < 60
+                    ? 'Initializing model...'
+                    : generationProgress < 90
+                    ? 'Generating image...'
+                    : 'Finalizing results...'}
+                </p>
+              </div>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+
+  // Shared Model Selector Section
+  const renderModelSelector = () => (
+    <div className="space-y-2">
+      <div className="flex items-center gap-1.5 text-sm font-semibold text-zinc-300">
+        <span>Model Selection</span>
+        <ChevronDown size={14} className="text-zinc-600" />
+      </div>
+      <div className="relative overflow-hidden rounded-xl border border-zinc-800 bg-linear-to-r from-purple-900/40 via-indigo-900/30 to-zinc-900 p-3 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <div
+            className={cn(
+              'w-14 h-14 rounded-lg overflow-hidden shrink-0 bg-linear-to-br flex items-center justify-center',
+              selectedModel.thumbnail
+            )}
+          >
+            <ImageIcon size={20} className="text-white/50" />
+          </div>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-bold text-white truncate">{selectedModel.name}</p>
+              <span
+                className={cn(
+                  'text-[8px] font-bold px-1.5 py-0.5 flex items-center justify-center rounded-sm uppercase tracking-wider',
+                  selectedModel.provider === 'wavespeed'
+                    ? 'bg-cyan-900/50 text-cyan-400'
+                    : 'bg-purple-900/50 text-purple-400'
+                )}
+              >
+                {selectedModel.provider}
+              </span>
+            </div>
+            <p className="text-[10px] text-zinc-500">{selectedModel.creator}</p>
+          </div>
+        </div>
+        <button
+          onClick={() => setModelSelectorOpen(true)}
+          className="shrink-0 flex items-center gap-1.5 bg-white/10 hover:bg-white/20 text-white text-xs font-bold px-3 py-1.5 rounded-lg border border-white/10 transition-colors"
+        >
+          Switch
+          <ChevronRight size={12} />
+        </button>
+      </div>
+    </div>
+  );
+
+  // Model Selection Modal
+  const renderModelSelectorModal = () => (
+    <AnimatePresence>
+      {modelSelectorOpen && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          onClick={() => setModelSelectorOpen(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+        >
+          <motion.div
+            initial={{ y: 20, scale: 0.97 }}
+            animate={{ y: 0, scale: 1 }}
+            exit={{ y: 20, scale: 0.97 }}
+            transition={{ duration: 0.2 }}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-3xl h-[80vh] rounded-2xl border border-zinc-800 bg-zinc-950 shadow-2xl flex flex-col overflow-hidden"
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-900 shrink-0">
+              <div className="flex items-center gap-2">
+                <ImageIcon size={18} className="text-zinc-400" />
+                <span className="text-sm font-bold text-white">Select Model</span>
+              </div>
+              <button
+                title="Close"
+                aria-label="Close"
+                onClick={() => setModelSelectorOpen(false)}
+                className="text-zinc-500 hover:text-zinc-200 text-xl"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Models Grid */}
+            <div className="flex-1 overflow-y-auto px-6 py-4">
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                {characterModels.map((model) => (
+                  <motion.div
+                    key={model.id}
+                    whileHover={{ y: -4 }}
+                    onClick={() => {
+                      setSelectedModel(model);
+                      setModelSelectorOpen(false);
+                    }}
+                    className={cn(
+                      'group cursor-pointer rounded-xl border bg-zinc-900 overflow-hidden transition-all hover:border-zinc-700',
+                      selectedModel.id === model.id
+                        ? 'border-blue-500 ring-2 ring-blue-500/30'
+                        : 'border-zinc-800'
+                    )}
+                  >
+                    <div
+                      className={cn(
+                        'aspect-4/3 bg-linear-to-br flex items-center justify-center relative',
+                        model.thumbnail
+                      )}
+                    >
+                      <ImageIcon size={32} className="text-white/20" />
+                      <div className="absolute top-2 left-2 flex gap-1">
+                        {model.tags.map((tag) => (
+                          <span
+                            key={tag}
+                            className="bg-black/60 backdrop-blur-sm text-white text-[9px] font-bold px-2 py-0.5 rounded"
+                          >
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="p-3 space-y-1">
+                      <h3 className="text-sm font-bold text-white truncate">{model.name}</h3>
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <p className="text-xs text-zinc-500 truncate">{model.creator}</p>
+                        <span
+                          className={cn(
+                            'text-[9px] font-bold px-1.5 py-0.5 flex items-center justify-center rounded-sm uppercase tracking-wider shrink-0',
+                            model.provider === 'wavespeed'
+                              ? 'bg-cyan-900/50 text-cyan-400'
+                              : 'bg-purple-900/50 text-purple-400'
+                          )}
+                        >
+                          {model.provider}
+                        </span>
+                      </div>
+                    </div>
+                  </motion.div>
+                ))}
+              </div>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+
+  // 1: The Initial Branching Workflow
+  const renderModeSelect = () => (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -20 }}
+      className="max-w-4xl mx-auto mt-6"
+    >
+      <div className="text-center mb-16">
+        <div className="uppercase tracking-widest text-indigo-400 text-xs font-semibold mb-3">
+          Creation
+        </div>
+        <h1 className="text-4xl md:text-5xl font-display font-medium mb-4">Welcome to Character Area</h1>
+        <p className="text-zinc-400 text-lg">Choose a method and create your character now.</p>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-6">
+        <button
+          onClick={() => setStep('text-input')}
+          className="group flex flex-col items-center justify-center p-12 border border-zinc-800 rounded-3xl bg-zinc-900/50 hover:bg-zinc-800/80 hover:border-zinc-700 transition duration-300"
+        >
+          <div className="w-20 h-20 rounded-2xl bg-zinc-800 flex items-center justify-center mb-6 group-hover:scale-110 group-hover:bg-indigo-500/20 transition-all duration-300">
+            <FileText className="w-10 h-10 text-indigo-400" />
+          </div>
+          <h3 className="text-2xl font-display font-medium text-zinc-100">Describe your character</h3>
+          <p className="text-zinc-500 mt-2 text-center">
+            Start from scratch using a detailed text prompt outlining the traits.
+          </p>
+          <div className="mt-8 flex items-center gap-2 text-indigo-400 font-medium bg-indigo-500/10 px-6 py-2 rounded-full">
+            Create <ArrowRight className="w-4 h-4 ml-1" />
+          </div>
+        </button>
+
+        <button
+          onClick={() => setStep('image-input')}
+          className="group flex flex-col items-center justify-center p-12 border border-zinc-800 rounded-3xl bg-zinc-900/50 hover:bg-zinc-800/80 hover:border-zinc-700 transition duration-300"
+        >
+          <div className="w-20 h-20 rounded-2xl bg-zinc-800 flex items-center justify-center mb-6 group-hover:scale-110 group-hover:bg-purple-500/20 transition-all duration-300">
+            <ImageIcon className="w-10 h-10 text-purple-400" />
+          </div>
+          <h3 className="text-2xl font-display font-medium text-zinc-100">Upload reference images</h3>
+          <p className="text-zinc-500 mt-2 text-center">
+            Base your creation on existing sketches or images for better accuracy.
+          </p>
+          <div className="mt-8 flex items-center gap-2 text-purple-400 font-medium bg-purple-500/10 px-6 py-2 rounded-full">
+            Create <ArrowRight className="w-4 h-4 ml-1" />
+          </div>
+        </button>
+      </div>
+    </motion.div>
+  );
+
+  // 2A: Text Input Form
+  const renderTextInput = () => (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.95 }}
+      className="max-w-2xl mx-auto mt-6"
+    >
+      <button
+        onClick={() => setStep('mode-select')}
+        title="Back to mode selection"
+        aria-label="Back to mode selection"
+        className="flex items-center justify-center w-10 h-10 rounded-full bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 hover:border-zinc-700 transition-colors mb-8"
+      >
+        <ChevronLeft className="w-5 h-5" />
+      </button>
+
+      <h2 className="text-3xl font-display font-medium mb-8">Describe your character</h2>
+
+      <div className="space-y-8 bg-zinc-900/50 border border-zinc-800 p-8 rounded-3xl">
+        <div>
+          <label className="block text-sm font-medium text-zinc-300 mb-3 ml-1">Prompt Area</label>
+          <textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            className="w-full bg-zinc-950 border border-zinc-800 rounded-2xl p-4 min-h-40 focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 focus:outline-none transition-all resize-none text-zinc-200"
+            placeholder="Enter detailed character description..."
+          />
+        </div>
+
+        {renderModelSelector()}
+
+        {generationError && (
+          <div className="text-xs text-red-400 font-semibold bg-red-950/30 border border-red-900/50 rounded-xl px-4 py-3">
+            {generationError}
+          </div>
+        )}
+
+        <button
+          onClick={handleGenerate}
+          disabled={isGenerating}
+          className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 disabled:bg-zinc-800 disabled:text-zinc-500 rounded-2xl font-medium flex items-center justify-center gap-2 transition-colors"
+        >
+          {isGenerating ? (
+            <span className="animate-pulse">Generating character variations...</span>
+          ) : (
+            <>
+              <Wand2 className="w-5 h-5" /> Create Character
+            </>
+          )}
+        </button>
+      </div>
+    </motion.div>
+  );
+
+  // 2B: Image Input Form
+  const renderImageInput = () => (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.95 }}
+      className="max-w-2xl mx-auto mt-6"
+    >
+      <button
+        onClick={() => {
+          resetImageInputState();
+          setStep('mode-select');
+        }}
+        title="Back to mode selection"
+        aria-label="Back to mode selection"
+        className="flex items-center justify-center w-10 h-10 rounded-full bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 hover:border-zinc-700 transition-colors mb-8"
+      >
+        <ChevronLeft className="w-5 h-5" />
+      </button>
+
+      <h2 className="text-3xl font-display font-medium mb-8">Upload Reference Images</h2>
+
+      <div className="space-y-8 bg-zinc-900/50 border border-zinc-800 p-8 rounded-3xl">
+        {/* Hidden File Input (follows editor component pattern) */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          aria-label="Upload reference image"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) {
+              setUploadedFile(file);
+              setUploadedFilePreview(URL.createObjectURL(file));
+              setGenerationError('');
+            }
+          }}
+        />
+
+        <div>
+          <label className="block text-sm font-medium text-zinc-300 mb-3 ml-1">Reference Image</label>
+          <button
+            onClick={triggerFileInput}
+            disabled={isGenerating}
+            className="w-full border-2 border-dashed border-zinc-700 bg-zinc-950/50 hover:bg-zinc-900 hover:border-zinc-500 rounded-2xl p-4 flex flex-col items-center justify-center text-zinc-500 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed overflow-hidden"
+          >
+            {uploadedFilePreview ? (
+              <div className="w-full h-72 relative rounded-lg overflow-hidden border border-zinc-700 flex items-center justify-center bg-black/50">
+                {/* Using img for local file preview (URL.createObjectURL) - optimization not needed */}
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img 
+                  src={uploadedFilePreview} 
+                  alt="Uploaded preview" 
+                  className="w-full h-full object-contain"
+                />
+              </div>
+            ) : (
+              <>
+                <UploadCloud className="w-10 h-10 mb-4" />
+                <p>Click to browse or drag and drop an image</p>
+              </>
+            )}
+          </button>
+        </div>
+
+        {renderModelSelector()}
+
+        <div>
+          <label className="block text-sm font-medium text-zinc-300 mb-3 ml-1">Guidance Prompt (Optional)</label>
+          <textarea
+            value={guidancePrompt}
+            onChange={(e) => setGuidancePrompt(e.target.value)}
+            className="w-full bg-zinc-950 border border-zinc-800 rounded-2xl p-4 min-h-24 focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 focus:outline-none transition-all resize-none text-zinc-200 placeholder-zinc-600"
+            placeholder="Optional: Describe the style variations you'd like. Leave blank for default variations (original, fantasy, modern, alternate outfit)."
+          />
+        </div>
+
+        {generationError && (
+          <div className="text-xs text-red-400 font-semibold bg-red-950/30 border border-red-900/50 rounded-xl px-4 py-3">
+            {generationError}
+          </div>
+        )}
+
+        <button
+          onClick={handleGenerate}
+          disabled={isGenerating || !uploadedFile}
+          className="w-full py-4 bg-purple-600 hover:bg-purple-500 disabled:bg-zinc-800 disabled:text-zinc-500 rounded-2xl font-medium flex items-center justify-center gap-2 transition-colors"
+        >
+          {isGenerating ? (
+            <span className="animate-pulse">Analyzing and generating...</span>
+          ) : uploadedFile ? (
+            <>
+              <ImageIcon className="w-5 h-5" /> Generate Variations
+            </>
+          ) : (
+            <>
+              <ImageIcon className="w-5 h-5" /> Upload Image First
+            </>
+          )}
+        </button>
+      </div>
+    </motion.div>
+  );
+
+  // 3: Grid Preview
+  const renderGridPreview = () => (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.95 }}
+      className="max-w-5xl mx-auto mt-6"
+    >
+      <button
+        onClick={() => setStep('mode-select')}
+        title="Back to start"
+        aria-label="Back to start"
+        className="flex items-center justify-center w-10 h-10 rounded-full bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 hover:border-zinc-700 transition-colors mb-6"
+      >
+        <ChevronLeft className="w-5 h-5" />
+      </button>
+
+      <div className="bg-zinc-900/40 border border-zinc-800/80 rounded-3xl p-8 flex flex-col shadow-2xl">
+        <div className="flex items-center justify-between mb-8">
+          <h3 className="text-2xl font-display font-medium text-zinc-100 flex items-center gap-3">
+            <Sparkles className="w-6 h-6 text-indigo-400" />
+            Image Variations
+          </h3>
+          <div className="text-sm font-medium px-3 py-1 rounded-full bg-zinc-800/50 border border-zinc-700/50 text-zinc-400">
+            {generatedImages.length} results
+          </div>
+        </div>
+
+        <div className="flex flex-col lg:flex-row gap-8 lg:gap-12">
+          {/* Left: Image Grid */}
+          <div className="flex-1 overflow-y-auto max-h-125 pr-2 scrollbar-hover-only">
+            <div className="grid grid-cols-3 gap-2 md:gap-3 shrink-0">
+              {generatedImages.map((img, i) => (
+                <button
+                  key={i}
+                  onClick={() => setSelectedImageIndex(i)}
+                  className={`aspect-square relative rounded-xl overflow-hidden border-4 transition-all bg-zinc-900 ${
+                    selectedImageIndex === i
+                      ? 'border-indigo-500 scale-100 shadow-[0_0_20px_rgba(99,102,241,0.25)]'
+                      : 'border-transparent hover:border-zinc-700 scale-[0.98]'
                   }`}
                 >
-                  {item.label}
-                </Link>
+                  <Image
+                    src={img}
+                    alt={`Variant ${i + 1}`}
+                    fill
+                    sizes="(max-width: 768px) 33vw, 200px"
+                    className="object-cover"
+                    referrerPolicy="no-referrer"
+                  />
+                  {/* Active indicator badge */}
+                  {selectedImageIndex === i && (
+                    <div className="absolute top-2 right-2 bg-indigo-500 rounded-full p-1.5 shadow-lg">
+                      <div className="w-2.5 h-2.5 rounded-full bg-white animate-pulse" />
+                    </div>
+                  )}
+                </button>
               ))}
             </div>
           </div>
 
-          {/* Remaining Credits Box */}
-          <div className="p-5 rounded-2xl bg-linear-to-br from-zinc-900 to-black border border-zinc-800 space-y-4">
-            <div className="flex items-center gap-2 text-zinc-400">
-              <CreditCard size={14}/>
-              <span className="text-[10px] font-bold uppercase tracking-wider">Remaining Credits</span>
-            </div>
-            <div className="space-y-1">
-              <div className="text-2xl font-black text-white">480</div>
-              <div className="w-full h-1 bg-zinc-800 rounded-full overflow-hidden">
-                <div className="w-[40%] h-full bg-yellow-500" /> 
-              </div>
-            </div>
-            <button className="w-full py-2 rounded-lg bg-yellow-500 text-black text-xs font-bold hover:bg-yellow-400 transition-colors">
-              Upgrade Now
-            </button>
-          </div>
-        </aside>
-
-        {/* Main Content Area */}
-        <div className="flex-1 space-y-8 min-w-0">
-          <header className="space-y-2">
-            <motion.h1 
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              className="text-4xl font-extrabold tracking-tight text-white"
-            >
-              Create <span className="text-purple-500">Character</span> Visual
-            </motion.h1>
-            <p className="text-zinc-400 text-sm">
-              Generate consistent character images with AI
-            </p>
-          </header>
-
-          <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-            {/* Left Panel - Character Setup */}
-            <div className="xl:col-span-2 space-y-6">
-              {/* Character Selector */}
-              <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6 space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="w-12 h-12 rounded-full bg-linear-to-br from-green-500 to-emerald-600 flex items-center justify-center">
-                      <User className="text-white" size={24} />
-                    </div>
-                    <div>
-                      <h3 className="text-white font-bold">{selectedCharacter}</h3>
-                      <p className="text-xs text-zinc-400">Active Character</p>
-                    </div>
-                  </div>
-                  <button className="px-4 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-white text-sm font-medium transition-colors flex items-center gap-2">
-                    Switch <ChevronDown size={16} />
-                  </button>
-                </div>
-                
-                <button className="w-full py-3 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold transition-colors flex items-center justify-center gap-2">
-                  <Plus size={18} />
-                  Add Character
-                </button>
-              </div>
-
-              {/* Prompt Section */}
-              <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6 space-y-4">
-                <div className="flex items-center justify-between">
-                  <label className="text-white font-bold flex items-center gap-2">
-                    <Sparkles size={18} className="text-yellow-500" />
-                    Prompt
-                  </label>
-                </div>
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={prompt}
-                    onChange={(e) => setPrompt(e.target.value)}
-                    placeholder="@mbosa is playing guitar"
-                    className="w-full px-4 py-3 bg-zinc-800/50 border border-zinc-700 rounded-lg text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all"
-                  />
-                </div>
-              </div>
-
-              {/* Character Styles Gallery */}
-              <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6 space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-white font-bold">Character Styles</h3>
-                  <div className="relative">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={16} />
-                    <input
-                      type="text"
-                      placeholder="Search styles..."
-                      className="pl-10 pr-4 py-2 bg-zinc-800/50 border border-zinc-700 rounded-lg text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-4 gap-4">
-                  {characterStyles.map((style) => (
-                    <motion.button
-                      key={style.id}
-                      whileHover={{ scale: 1.05 }}
-                      whileTap={{ scale: 0.95 }}
-                      onClick={() => setSelectedStyle(style.id)}
-                      className={`relative rounded-xl overflow-hidden aspect-square ${
-                        selectedStyle === style.id ? 'ring-2 ring-purple-500' : ''
-                      }`}
-                    >
-                      <div className={`w-full h-full bg-linear-to-br ${style.thumbnail}`} />
-                      <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-                        <span className="text-white text-xs font-bold text-center px-2">{style.name}</span>
-                      </div>
-                    </motion.button>
-                  ))}
-                </div>
-
-                <button className="w-full py-2 rounded-lg border border-zinc-700 text-zinc-400 hover:text-white hover:bg-zinc-800/50 text-sm font-medium transition-colors flex items-center justify-center gap-2">
-                  <Plus size={16} />
-                  41+ Styles
-                </button>
-              </div>
-
-              {/* Generation Settings */}
-              <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6 space-y-4">
-                <label htmlFor="num-images" className="text-white font-bold">Number of Images</label>
-                <div className="flex items-center gap-4">
-                  <input
-                    id="num-images"
-                    type="range"
-                    min="1"
-                    max="4"
-                    value={numImages}
-                    onChange={(e) => setNumImages(parseInt(e.target.value))}
-                    className="flex-1 h-2 bg-zinc-700 rounded-lg appearance-none cursor-pointer range-input"
-                    aria-label="Number of images to generate"
-                  />
-                  <span className="text-white font-bold w-8 text-center">{numImages}</span>
-                </div>
-
-                <button className="w-full py-3 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold transition-colors">
-                  Create
-                </button>
-                
-                <p className="text-center text-sm text-green-500 flex items-center justify-center gap-1">
-                  <Sparkles size={14} />
-                  40 credits will be charged
-                </p>
+          {/* Right: Prompt Form & Next */}
+          <div className="w-full lg:w-80 flex flex-col justify-between">
+            <div>
+              <label className="text-xs text-zinc-500 uppercase tracking-widest font-semibold block mb-3">
+                Prompt Used
+              </label>
+              <div className="bg-zinc-950 border border-zinc-800 rounded-2xl p-5 text-sm text-zinc-300 leading-relaxed min-h-32 flex items-start">
+                {prompt}
               </div>
             </div>
 
-            {/* Right Panel - Preview */}
-            <div className="space-y-6">
-              <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6 space-y-4">
-                <h3 className="text-white font-bold">Generation Preview</h3>
-                <div className="space-y-3">
-                  <div className="aspect-square bg-linear-to-br from-zinc-800 to-zinc-900 rounded-xl flex items-center justify-center">
-                    <ImageIcon className="text-zinc-600" size={48} />
-                  </div>
-                  <p className="text-xs text-zinc-500 text-center">
-                    Your generated character images will appear here
-                  </p>
-                </div>
-              </div>
-
-              {/* Recent Generations */}
-              <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6 space-y-4">
-                <h3 className="text-white font-bold text-sm">Recent Generations</h3>
-                <div className="grid grid-cols-2 gap-2">
-                  {[1, 2, 3, 4].map((i) => (
-                    <div key={i} className="aspect-square bg-linear-to-br from-zinc-800 to-zinc-900 rounded-lg" />
-                  ))}
-                </div>
-              </div>
+            <div className="mt-8">
+              <button
+                onClick={() => setStep('save-character')}
+                className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 text-white rounded-2xl font-medium shadow-lg shadow-indigo-900/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
+              >
+                Next Step <ArrowRight className="w-5 h-5" />
+              </button>
             </div>
           </div>
         </div>
       </div>
+    </motion.div>
+  );
+
+  // 4: Save Character Panel
+  const renderSaveCharacter = () => (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.95 }}
+      className="max-w-5xl mx-auto mt-6"
+    >
+      <button
+        onClick={() => setStep('grid-preview')}
+        title="Back to variations"
+        aria-label="Back to variations"
+        className="flex items-center justify-center w-10 h-10 rounded-full bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 hover:border-zinc-700 transition-colors mb-6"
+      >
+        <ChevronLeft className="w-5 h-5" />
+      </button>
+
+      <div className="bg-zinc-900/40 border border-zinc-800/80 rounded-3xl overflow-hidden shadow-2xl flex flex-col md:flex-row">
+        {/* Left: Image Side (Carousel) */}
+        <div
+          className="relative w-full md:w-1/2 bg-zinc-900 shrink-0 group"
+          onMouseEnter={() => setIsHoveringCarousel(true)}
+          onMouseLeave={() => setIsHoveringCarousel(false)}
+        >
+          <div className="aspect-4/5 md:aspect-auto relative w-full h-full min-h-100 overflow-hidden">
+            <AnimatePresence mode="popLayout" initial={false}>
+              <motion.div
+                key={selectedImageIndex}
+                initial={{ opacity: 0, scale: 0.98 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 1.02 }}
+                transition={{ duration: 0.3 }}
+                className="absolute inset-0"
+              >
+                <Image
+                  src={generatedImages[selectedImageIndex]}
+                  alt={`Selected Character Variant ${selectedImageIndex + 1}`}
+                  fill
+                  sizes="(max-width: 768px) 100vw, 50vw"
+                  className="object-cover"
+                  unoptimized={false}
+                  referrerPolicy="no-referrer"
+                />
+              </motion.div>
+            </AnimatePresence>
+            <div className="absolute top-6 left-6 bg-black/60 backdrop-blur-md px-4 py-2 rounded-full text-xs font-semibold uppercase tracking-wider border border-white/10 z-10 text-white shadow-xl transition-all">
+              Final Selection ({selectedImageIndex + 1}/{generatedImages.length})
+            </div>
+
+            {/* Carousel Controls */}
+            <button
+              title="Previous image"
+              aria-label="Previous image"
+              onClick={(e) => {
+                e.stopPropagation();
+                setSelectedImageIndex((prev) => (prev > 0 ? prev - 1 : generatedImages.length - 1));
+              }}
+              className="absolute left-4 top-1/2 -translate-y-1/2 w-12 h-12 rounded-full bg-black/40 backdrop-blur-md border border-white/10 flex items-center justify-center text-white opacity-0 group-hover:opacity-100 transition-all hover:bg-black/70 hover:scale-110 z-10"
+            >
+              <ChevronLeft className="w-6 h-6" />
+            </button>
+            <button
+              title="Next image"
+              aria-label="Next image"
+              onClick={(e) => {
+                e.stopPropagation();
+                setSelectedImageIndex((prev) => (prev < generatedImages.length - 1 ? prev + 1 : 0));
+              }}
+              className="absolute right-4 top-1/2 -translate-y-1/2 w-12 h-12 rounded-full bg-black/40 backdrop-blur-md border border-white/10 flex items-center justify-center text-white opacity-0 group-hover:opacity-100 transition-all hover:bg-black/70 hover:scale-110 z-10"
+            >
+              <ChevronRight className="w-6 h-6" />
+            </button>
+          </div>
+        </div>
+
+        {/* Right: Form Side */}
+        <div className="w-full md:w-1/2 p-8 lg:p-12 flex flex-col">
+          <div className="mb-8">
+            <div className="uppercase tracking-widest text-indigo-400 text-xs font-semibold mb-2">
+              Last Step
+            </div>
+            <h2 className="text-3xl font-display font-medium text-zinc-100">Save your character</h2>
+          </div>
+
+          <div className="space-y-6 flex-1 flex flex-col">
+            <div>
+              <label className="text-xs text-zinc-500 uppercase tracking-widest font-semibold ml-1 mb-2 block">
+                Character Name
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. Sir Alarick"
+                value={charData.name}
+                onChange={(e) => setCharData({ ...charData, name: e.target.value })}
+                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-5 py-4 text-zinc-200 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all font-medium"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs text-zinc-500 uppercase tracking-widest font-semibold ml-1 mb-2 block">
+                Short Description
+              </label>
+              <textarea
+                placeholder="A fierce warrior with a hidden past..."
+                value={charData.description}
+                onChange={(e) => setCharData({ ...charData, description: e.target.value })}
+                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-5 py-4 text-zinc-200 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all resize-none min-h-35"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs text-zinc-500 uppercase tracking-widest font-semibold ml-1 mb-2 block">
+                Role
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. Protagonist / NPC"
+                value={charData.role}
+                onChange={(e) => setCharData({ ...charData, role: e.target.value })}
+                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-5 py-4 text-zinc-200 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all"
+              />
+            </div>
+
+            <div className="mt-auto pt-6">
+              <button className="w-full py-4 shadow-lg shadow-indigo-900/20 bg-indigo-600 hover:bg-indigo-500 rounded-xl font-medium flex items-center justify-center gap-2 text-white transition-transform hover:scale-[1.02] active:scale-100">
+                <Save className="w-5 h-5" /> Save Character
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
+
+  return (
+    <div className="min-h-screen bg-black text-zinc-50 font-sans selection:bg-purple-500/30">
+      <AnimatePresence mode="wait">
+        {step === 'mode-select' && <div key="mode">{renderModeSelect()}</div>}
+        {step === 'text-input' && <div key="text">{renderTextInput()}</div>}
+        {step === 'image-input' && <div key="image">{renderImageInput()}</div>}
+        {step === 'grid-preview' && (
+          <div key="grid-preview" className="h-full">
+            {renderGridPreview()}
+          </div>
+        )}
+        {step === 'save-character' && (
+          <div key="save-character" className="h-full">
+            {renderSaveCharacter()}
+          </div>
+        )}
+      </AnimatePresence>
+
+      {renderGenerationProgress()}
+      {renderModelSelectorModal()}
+    </div>
+  );
+}
+
+export default function CharacterCreator() {
+  return (
+    <Suspense fallback={<div className="p-8 text-white">Loading Character Creator...</div>}>
+      <CharacterCreatorContent />
+    </Suspense>
   );
 }

@@ -16,6 +16,13 @@ from services.wavespeed_service import (
     upload_inpaint_image,
     WaveSpeedServiceError,
 )
+from services.character_service import (
+    build_character_system_prompt,
+    build_character_img2img_prompt,
+    split_character_sheet,
+    upload_keyframe,
+    log_character_to_studio,
+)
 
 
 router = APIRouter(prefix="/api/image", tags=["images"])
@@ -297,5 +304,215 @@ async def multiple_angle_route(
         raise HTTPException(status_code=500, detail=str(error))
     except Exception as error:
         raise HTTPException(status_code=500, detail=f"Multiple angle generation failed: {str(error)}")
+
+
+@router.post("/character-generate", response_model=CreateImageResponse)
+def generate_character_images(payload: CreateImageRequest) -> CreateImageResponse:
+    """
+    Generate a character turnaround sheet using Nanobanana, then split the
+    composite image into individual keyframes using Pillow.
+
+    Returns a CreateImageResponse whose ``images`` list contains one URL per
+    keyframe (view) extracted from the generated sheet.
+    """
+    settings = get_settings()
+
+    # Build the system prompt that instructs the model to produce a 2x3 grid
+    enhanced_prompt = build_character_system_prompt(payload.prompt)
+
+    character_payload = payload.model_copy(update={"prompt": enhanced_prompt, "num_images": 1})
+
+    try:
+        if payload.provider == "wavespeed":
+            response = generate_wavespeed_images(payload=character_payload)
+        else:
+            response = generate_images(payload=character_payload, api_token=settings.replicate_api_token)
+    except ReplicateConfigurationError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+    except WaveSpeedServiceError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=f"Character generation failed: {error}") from error
+
+    if not response.images:
+        raise HTTPException(status_code=500, detail="No images were returned by the model")
+
+    keyframe_urls: list[str] = []
+
+    for sheet_url in response.images:
+        try:
+            download = httpx.get(sheet_url, timeout=60.0)
+            download.raise_for_status()
+            raw_bytes = download.content
+        except Exception as download_error:
+            print(f"Failed to download sheet {sheet_url}: {download_error}")
+            keyframe_urls.append(sheet_url)
+            continue
+
+        keyframes = split_character_sheet(raw_bytes, cols=2, rows=2)
+
+        if not keyframes:
+            keyframe_urls.append(sheet_url)
+            continue
+
+        for kf_bytes in keyframes:
+            try:
+                keyframe_urls.append(upload_keyframe(kf_bytes))
+            except Exception as upload_error:
+                print(f"Failed to upload keyframe: {upload_error}")
+
+    if not keyframe_urls:
+        raise HTTPException(status_code=500, detail="Failed to process character sheet into keyframes")
+
+    # Log to studio schema (best-effort, non-blocking)
+    try:
+        log_character_to_studio(
+            keyframe_urls=keyframe_urls,
+            prompt=payload.prompt,
+            model=payload.model,
+        )
+    except Exception as log_error:
+        print(f"Character studio logging failed (non-fatal): {log_error}")
+
+    return CreateImageResponse(model=payload.model, images=keyframe_urls)
+
+
+@router.post("/generate-from-upload", response_model=CreateImageResponse)
+async def generate_from_upload(
+    image: UploadFile = File(...),
+    guidance_prompt: str = Form(""),
+    model: str = Form("nanobanana"),
+    provider: str = Form("replicate"),
+    aspect_ratio: str = Form("1:1"),
+    resolution: str = Form("1K"),
+    num_images: int = Form(4),
+    background_tasks: BackgroundTasks = None,
+) -> CreateImageResponse:
+    """
+    Generate character style variations from an uploaded reference image.
+    
+    - Uploads the reference image to Supabase storage
+    - Generates 4 style variations in a 2x2 grid using nanobanana
+    - Returns grid with original image first, then 4 variations split into cells
+    """
+    settings = get_settings()
+    supabase = get_supabase_client()
+    
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase client not configured")
+    
+    if not (image.content_type or "").startswith("image/"):
+        raise HTTPException(status_code=400, detail="Uploaded file must be an image")
+    
+    try:
+        # Read and store the uploaded image
+        image_bytes = await image.read()
+        
+        if not image_bytes:
+            raise HTTPException(status_code=400, detail="Uploaded image is empty")
+        
+        # Upload reference image to Supabase
+        reference_filename = f"uploaded-references/{uuid.uuid4().hex}.png"
+        supabase.storage.from_("output-images").upload(
+            file=image_bytes,
+            path=reference_filename,
+            file_options={"content-type": "image/png"},
+        )
+        reference_url = supabase.storage.from_("output-images").get_public_url(reference_filename)
+        
+        # Auto-correct the model to an image-to-image (edit) model if necessary
+        if provider == "wavespeed":
+            if "nano-banana-pro" in model:
+                model = "google/nano-banana-pro/edit"
+            elif "nano-banana-2" in model:
+                model = "google/nano-banana/edit" # Note: WaveSpeed uses nano-banana/edit, not 2/edit
+
+        # Build the exact turnaround prompt for image-to-image
+        system_prompt = build_character_img2img_prompt(guidance_prompt)
+        
+        # Create payload for generation (img2img style with reference)
+        generation_payload = CreateImageRequest(
+            model=model,
+            provider=provider,
+            prompt=system_prompt,
+            aspect_ratio=aspect_ratio,
+            resolution=resolution,
+            num_images=1,  # Generate one 2x2 grid composite
+            image_mapping={"reference": reference_url},
+            image_search=False,
+            google_search=False
+        )
+        
+        # Generate variations
+        try:
+            if provider == "wavespeed":
+                response = generate_wavespeed_images(payload=generation_payload)
+            else:
+                response = generate_images(
+                    payload=generation_payload,
+                    api_token=settings.replicate_api_token
+                )
+        except (ReplicateConfigurationError, WaveSpeedServiceError) as error:
+            raise HTTPException(status_code=500, detail=str(error)) from error
+        
+        if not response.images:
+            raise HTTPException(status_code=500, detail="Generation returned no images")
+        
+        # Process the 2x2 grid into 4 separate variation images
+        variation_urls: list[str] = []
+        
+        for grid_url in response.images:
+            try:
+                download = httpx.get(grid_url, timeout=60.0)
+                download.raise_for_status()
+                grid_bytes = download.content
+                
+                # Split 2x2 grid into 4 cells (2 columns, 2 rows)
+                variations = split_character_sheet(grid_bytes, cols=2, rows=2)
+                
+                # Upload each variation
+                for var_bytes in variations:
+                    try:
+                        var_filename = f"character_variation_{uuid.uuid4().hex}.png"
+                        supabase.storage.from_("output-images").upload(
+                            file=var_bytes,
+                            path=var_filename,
+                            file_options={"content-type": "image/png"},
+                        )
+                        var_url = supabase.storage.from_("output-images").get_public_url(var_filename)
+                        variation_urls.append(var_url)
+                    except Exception as upload_error:
+                        print(f"Failed to upload variation: {upload_error}")
+                        
+            except Exception as download_error:
+                print(f"Failed to process grid {grid_url}: {download_error}")
+        
+        # Return with original image first, then variations
+        result_images = [reference_url] + variation_urls
+        
+        if not result_images:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to process generation results"
+            )
+        
+        # Log to Supabase (background task)
+        if background_tasks:
+            background_tasks.add_task(
+                log_generation_to_supabase,
+                generation_payload,
+                CreateImageResponse(model=model, images=result_images)
+            )
+        
+        return CreateImageResponse(model=model, images=result_images)
+        
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Image generation from upload failed: {str(error)}"
+        ) from error
+
 
 

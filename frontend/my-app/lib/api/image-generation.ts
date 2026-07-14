@@ -78,6 +78,31 @@ export async function generateInpaintImage(payload: FormData): Promise<CreateIma
   return response.json() as Promise<CreateImageResponse>;
 }
 
+export async function generateCharacterImages(payload: CreateImageRequest): Promise<CreateImageResponse> {
+  const response = await fetch(`${getApiBaseUrl()}/api/image/character-generate`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    let message = 'Character generation failed';
+    try {
+      const errorPayload = await response.json();
+      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
+        message = errorPayload.detail;
+      }
+    } catch {
+      message = `Character generation failed with status ${response.status}`;
+    }
+    throw new Error(message);
+  }
+
+  return response.json() as Promise<CreateImageResponse>;
+}
+
 export async function generateMultipleAngle(imageFile: File, prompt: string): Promise<{ images: string[] }> {
   const formData = new FormData();
   formData.append('image', imageFile);
@@ -102,4 +127,40 @@ export async function generateMultipleAngle(imageFile: File, prompt: string): Pr
   }
 
   return response.json();
+}
+
+export async function generateImageFromUpload(
+  imageFile: File,
+  guidancePrompt: string,
+  model: string,
+  provider: 'replicate' | 'wavespeed'
+): Promise<CreateImageResponse> {
+  const formData = new FormData();
+  formData.append('image', imageFile);
+  formData.append('guidance_prompt', guidancePrompt);
+  formData.append('model', model);
+  formData.append('provider', provider);
+  formData.append('aspect_ratio', '1:1');
+  formData.append('resolution', '1K'); // Capital K required by model
+  formData.append('num_images', '4');
+
+  const response = await fetch(`${getApiBaseUrl()}/api/image/generate-from-upload`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    let message = 'Image generation from upload failed';
+    try {
+      const errorPayload = await response.json();
+      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
+        message = errorPayload.detail;
+      }
+    } catch {
+      message = `Image generation from upload failed with status ${response.status}`;
+    }
+    throw new Error(message);
+  }
+
+  return response.json() as Promise<CreateImageResponse>;
 }

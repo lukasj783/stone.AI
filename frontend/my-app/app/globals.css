@@ -68,3 +68,37 @@ body {
 .scrollbar-hidden::-webkit-scrollbar {
   display: none; /* Chrome/Safari */
 }
+
+/* Scrollbar visible only on hover */
+.scrollbar-hover-only {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE/Edge */
+}
+
+.scrollbar-hover-only::-webkit-scrollbar {
+  display: none; /* Chrome/Safari */
+}
+
+.scrollbar-hover-only:hover {
+  scrollbar-width: thin; /* Firefox */
+  -ms-overflow-style: auto; /* IE/Edge */
+}
+
+.scrollbar-hover-only:hover::-webkit-scrollbar {
+  display: block; /* Chrome/Safari */
+  width: 6px;
+  height: 6px;
+}
+
+.scrollbar-hover-only:hover::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-hover-only:hover::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+}
+
+.scrollbar-hover-only:hover::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}

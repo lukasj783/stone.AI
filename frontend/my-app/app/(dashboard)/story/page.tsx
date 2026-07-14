@@ -228,7 +228,7 @@ export default function StoryPage() {
             </header>
 
             <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <ActionRowCard title="Build Storyboard" icon={Layout} href="/storyboard" />
+  <ActionRowCard title="AI Movie Studio" icon={Film} href="/studio" />
               <ActionRowCard title="Open Editor" icon={Edit3} href="/editor" />
             </section>
 

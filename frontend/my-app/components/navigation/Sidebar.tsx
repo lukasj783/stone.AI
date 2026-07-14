@@ -1,6 +1,6 @@
 "use client";
 import React from 'react';
-import { Home, FolderOpen, BookOpen, Video, Image, UserCircle, Music, ChevronLeft, ChevronRight, Settings, Users } from 'lucide-react';
+import { Home, FolderOpen, BookOpen, Video, Image, UserCircle, Music, ChevronLeft, ChevronRight, Settings, Users, Clapperboard } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -18,9 +18,10 @@ export default function Sidebar({ collapsed, setCollapsed }: SidebarProps) {
     { label: 'Home', icon: Home, href: '/' },
     { label: 'Assets', icon: FolderOpen, href: '/assets' },
     { label: 'Story', icon: BookOpen, href: '/story', badge: 'Beta' },
+    { label: 'Studio', icon: Clapperboard, href: '/studio', badge: 'New' },
     { label: 'Video', icon: Video, href: '/video' },
     { label: 'Image', icon: Image, href: '/image' },
-    { label: 'Character', icon: UserCircle, href: '/character', badge: 'New' },
+    { label: 'Character', icon: UserCircle, href: '/image/character', badge: 'New' },
     { label: 'Audio', icon: Music, href: '/audio' },
   ];
 

@@ -5,6 +5,7 @@ import uvicorn
 from core.config import get_settings
 from routers.image_generation import router as image_generation_router
 from routers.video_generation import router as video_generation_router
+from routers.story import router as story_router
 
 
 app = FastAPI(title="Qwen Image API")
@@ -20,6 +21,7 @@ app.add_middleware(
 
 app.include_router(image_generation_router)
 app.include_router(video_generation_router)
+app.include_router(story_router)
 
 
 @app.get("/")

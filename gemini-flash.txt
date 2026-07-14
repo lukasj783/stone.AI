@@ -1,0 +1,59 @@
+Install Replicate’s Python client library
+
+pip install replicate
+
+Copy
+Learn more about setup
+Run google/gemini-2.5-flash using Replicate’s API. Check out the model's schema for an overview of inputs and outputs.
+
+import replicate
+
+input = {
+    "images": ["https://replicate.delivery/pbxt/O1TXLIqsDC7pdOzMl259hqrdwkDLjxrf8Fsg2ZwYVIIkoHkm/replicate-prediction-vygd5qqab1rmc0ctb9cbr14cxw.jpg"],
+    "prompt": "describe this image in detail"
+}
+
+for event in replicate.stream(
+    "google/gemini-2.5-flash",
+    input=input
+):
+    print(event, end="")
+#=> "This stunning image depicts a solitary samurai warrior i...
+
+
+or use http if so
+
+Set the REPLICATE_API_TOKEN environment variable
+
+export REPLICATE_API_TOKEN=<paste-your-token-here>
+
+Visibility
+
+Copy
+Learn more about authentication
+
+Run google/gemini-2.5-flash using Replicate’s API. Check out the model's schema for an overview of inputs and outputs.
+
+prediction=$(
+    curl --silent --show-error https://api.replicate.com/v1/models/google/gemini-2.5-flash/predictions \
+			--request POST \
+    	--header "Authorization: Bearer $REPLICATE_API_TOKEN" \
+    	--header "Content-Type: application/json" \
+    	--data @- <<'EOM'
+{
+	"stream": true,
+	"input": {
+      "images": [
+        "https://replicate.delivery/pbxt/O1TXLIqsDC7pdOzMl259hqrdwkDLjxrf8Fsg2ZwYVIIkoHkm/replicate-prediction-vygd5qqab1rmc0ctb9cbr14cxw.jpg"
+      ],
+      "prompt": "describe this image in detail"
+	}
+}
+EOM
+)
+
+stream_url=$(printf "%s" "$prediction" | jq -r .urls.stream)
+
+curl --silent --show-error --no-buffer "$stream_url" \
+    --header "Accept: text/event-stream" \
+    --header "Cache-Control: no-store"
