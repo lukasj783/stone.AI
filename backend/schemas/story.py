@@ -11,6 +11,122 @@ class CharacterSchema(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+class ExtractedCharacterSchema(BaseModel):
+    name: str
+    character_type: Literal["main", "supporting"] = "supporting"
+    role: str | None = None
+    age: int | None = Field(default=None, ge=0)
+    gender: str | None = None
+    race: str | None = None
+    appearance: str | None = None
+    personality: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    image_prompt: str = ""
+
+
+class ExtractScriptCharactersPayload(BaseModel):
+    project_id: str = Field(min_length=1)
+
+
+class ExtractScriptCharactersResponse(BaseModel):
+    count: int
+
+
+class UpdateCharacterProfilePayload(BaseModel):
+    project_id: str = Field(min_length=1)
+    character_id: str = Field(min_length=1)
+    role: str | None = Field(default=None, max_length=500)
+    age: int | None = Field(default=None, ge=0)
+    gender: str | None = Field(default=None, max_length=120)
+    race: str | None = Field(default=None, max_length=120)
+    appearance: str | None = Field(default=None, max_length=2_000)
+    personality: str | None = Field(default=None, max_length=2_000)
+    clear_fields: list[Literal["role", "age", "gender", "race", "appearance", "personality"]] = Field(default_factory=list)
+
+
+class CharacterProfileResponse(BaseModel):
+    id: str
+    name: str
+    role: str | None = None
+    age: int | None = None
+    gender: str | None = None
+    race: str | None = None
+    appearance: str | None = None
+    personality: str | None = None
+    manual_override_fields: list[str] = Field(default_factory=list)
+
+
+class PreviewCharacterScriptSyncPayload(BaseModel):
+    project_id: str = Field(min_length=1)
+    character_id: str = Field(min_length=1)
+
+
+class CharacterScriptSyncPreviewResponse(BaseModel):
+    character_id: str
+    scene_id: str
+    scene_slugline: str | None = None
+    content: str
+    action: Literal["insert", "replace"]
+
+
+class ConfirmCharacterScriptSyncPayload(PreviewCharacterScriptSyncPayload):
+    content: str = Field(min_length=1, max_length=4_000)
+
+
+class ConfirmCharacterScriptSyncResponse(CharacterScriptSyncPreviewResponse):
+    script_block_id: str
+
+
+class ExtractScriptEnvironmentsPayload(BaseModel):
+    project_id: str = Field(min_length=1)
+
+
+class ExtractScriptEnvironmentsResponse(BaseModel):
+    count: int
+
+
+class ExtractedObjectSchema(BaseModel):
+    name: str = Field(min_length=1, max_length=240)
+    description: str | None = Field(default=None, max_length=2_000)
+    tags: list[str] = Field(default_factory=list)
+    image_prompt: str = ""
+    source_scene_indexes: list[int] = Field(default_factory=list)
+
+
+class ExtractScriptObjectsPayload(BaseModel):
+    project_id: str = Field(min_length=1)
+
+
+class ExtractScriptObjectsResponse(BaseModel):
+    count: int
+
+
+class CreateObjectPayload(BaseModel):
+    project_id: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=240)
+    description: str | None = Field(default=None, max_length=2_000)
+    tags: list[str] = Field(default_factory=list)
+
+
+class UpdateObjectPayload(BaseModel):
+    project_id: str = Field(min_length=1)
+    name: str | None = Field(default=None, min_length=1, max_length=240)
+    description: str | None = Field(default=None, max_length=2_000)
+    tags: list[str] | None = None
+
+
+class ObjectProfileResponse(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)
+    manual_override_fields: list[str] = Field(default_factory=list)
+    source_scene_ids: list[str] = Field(default_factory=list)
+    source_sluglines: list[str] = Field(default_factory=list)
+    primary_image_url: str | None = None
+
+
 class MovieBasics(BaseModel):
     projectType: Literal["Feature Film", "Short", "Series"] | str = "Feature Film"
     duration: str = "120 min"

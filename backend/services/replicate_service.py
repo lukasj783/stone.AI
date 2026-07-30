@@ -80,6 +80,7 @@ def _build_nanobanana_input(payload: CreateImageRequest) -> dict[str, object]:
     return {
         "prompt": payload.prompt,
         "aspect_ratio": payload.aspect_ratio,
+        "image_input": payload.image_input or [],
         "output_format": "png",
     }
 

@@ -9,3 +9,4 @@ requests
 wavespeed
 python-multipart
 Pillow
+celery[redis]

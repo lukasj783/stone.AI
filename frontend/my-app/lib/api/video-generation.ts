@@ -5,6 +5,156 @@ function getApiBaseUrl(): string {
   return baseUrl.replace(/\/$/, '');
 }
 
+export type SeedanceResolution = '480p' | '720p' | '1080p' | '4k';
+export type SeedanceAspectRatio = '16:9' | '9:16' | '4:3' | '3:4' | '1:1' | '21:9';
+
+export interface StartShotVideoBatchPayload {
+  project_id: string;
+  duration: number;
+  resolution: SeedanceResolution;
+  aspect_ratio: SeedanceAspectRatio;
+  generate_audio: boolean;
+}
+
+export interface ShotVideoBatchJob {
+  generation_job_id: string;
+  shot_id: string;
+  shot_number: number | null;
+  status: string;
+  error_message: string | null;
+  video_url: string | null;
+}
+
+export interface ShotVideoBatchResponse {
+  batch_id: string;
+  project_id: string;
+  status: string;
+  total_jobs: number;
+  completed_jobs: number;
+  failed_jobs: number;
+  settings: Record<string, unknown>;
+  jobs: ShotVideoBatchJob[];
+}
+
+export interface ShotListItem {
+  shot_id: string;
+  scene_id: string;
+  scene_slugline: string | null;
+  scene_sort_order: number;
+  shot_number: number | null;
+  sort_order: number;
+  description: string | null;
+  camera_angle: string | null;
+  camera_motion: string | null;
+  storyboard_url: string | null;
+  video_asset_id: string | null;
+  video_url: string | null;
+  duration_seconds: number | null;
+  generation_job_id: string | null;
+  batch_id: string | null;
+  status: string;
+  error_message: string | null;
+}
+
+export interface ShotListResponse {
+  project_id: string;
+  shots: ShotListItem[];
+}
+
+export interface AddShotVideoToTimelineResponse {
+  timeline_item_id: string;
+  track_id: string;
+  start_time: number;
+  created: boolean;
+}
+
+async function readShotVideoBatchResponse(response: Response): Promise<ShotVideoBatchResponse> {
+  if (response.ok) {
+    return response.json() as Promise<ShotVideoBatchResponse>;
+  }
+  let message = 'Shot video batch request failed';
+  try {
+    const errorPayload = await response.json();
+    if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
+      message = errorPayload.detail;
+    }
+  } catch {
+    message = `Shot video batch request failed with status ${response.status}`;
+  }
+  throw new Error(message);
+}
+
+export async function startShotVideoBatch(
+  payload: StartShotVideoBatchPayload,
+): Promise<ShotVideoBatchResponse> {
+  const response = await fetch(`${getApiBaseUrl()}/api/video/shot-batches`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return readShotVideoBatchResponse(response);
+}
+
+export async function getShotVideoBatch(
+  projectId: string,
+  batchId: string,
+): Promise<ShotVideoBatchResponse> {
+  const response = await fetch(
+    `${getApiBaseUrl()}/api/video/shot-batches/${batchId}?project_id=${encodeURIComponent(projectId)}`,
+  );
+  return readShotVideoBatchResponse(response);
+}
+
+export async function retryFailedShotVideos(
+  projectId: string,
+  batchId: string,
+): Promise<ShotVideoBatchResponse> {
+  const response = await fetch(`${getApiBaseUrl()}/api/video/shot-batches/${batchId}/retry-failed`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project_id: projectId }),
+  });
+  return readShotVideoBatchResponse(response);
+}
+
+export async function getShotList(projectId: string): Promise<ShotListResponse> {
+  const response = await fetch(`${getApiBaseUrl()}/api/video/shot-list?project_id=${encodeURIComponent(projectId)}`);
+  if (!response.ok) {
+    let message = 'Failed to load Shot List';
+    try {
+      const errorPayload = await response.json();
+      if (errorPayload?.detail && typeof errorPayload.detail === 'string') message = errorPayload.detail;
+    } catch {
+      message = `Failed to load Shot List with status ${response.status}`;
+    }
+    throw new Error(message);
+  }
+  return response.json() as Promise<ShotListResponse>;
+}
+
+export async function addShotVideoToTimeline(
+  projectId: string,
+  shotId: string,
+  assetId: string,
+): Promise<AddShotVideoToTimelineResponse> {
+  const response = await fetch(`${getApiBaseUrl()}/api/video/shot-list/add-to-timeline`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project_id: projectId, shot_id: shotId, asset_id: assetId }),
+  });
+  if (!response.ok) {
+    let message = 'Failed to add video to timeline';
+    try {
+      const errorPayload = await response.json();
+      if (errorPayload?.detail && typeof errorPayload.detail === 'string') message = errorPayload.detail;
+    } catch {
+      message = `Failed to add video to timeline with status ${response.status}`;
+    }
+    throw new Error(message);
+  }
+  return response.json() as Promise<AddShotVideoToTimelineResponse>;
+}
+
 export async function batchDeleteVideos(items: { id: number; url: string }[]): Promise<void> {
   const response = await fetch(`${getApiBaseUrl()}/api/video/batch-delete`, {
     method: 'POST',

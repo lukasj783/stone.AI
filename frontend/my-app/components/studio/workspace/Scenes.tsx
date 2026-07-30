@@ -7,6 +7,7 @@ import { supabase } from "@/lib/supabaseClient";
 interface ScenesProps {
   projectId: string | null;
   onNavigateToScript?: (sceneId?: string) => void;
+  onConvertToStoryboard?: (sceneId: string) => void | Promise<void>;
 }
 
 interface SceneRow {
@@ -21,10 +22,11 @@ interface SceneRow {
   block_count: number;
 }
 
-export function Scenes({ projectId, onNavigateToScript }: ScenesProps) {
+export function Scenes({ projectId, onNavigateToScript, onConvertToStoryboard }: ScenesProps) {
   const [scenes, setScenes] = useState<SceneRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [generatingSceneId, setGeneratingSceneId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!projectId) return;
@@ -112,6 +114,20 @@ export function Scenes({ projectId, onNavigateToScript }: ScenesProps) {
       chipClass: 'bg-rose-500/10 text-rose-400 border-rose-500/20',
       icon: <AlertCircle className="w-3 h-3" />,
     },
+  };
+
+  const handleConvertToStoryboard = async (sceneId: string) => {
+    if (!onConvertToStoryboard || generatingSceneId) return;
+
+    setGeneratingSceneId(sceneId);
+    setError(null);
+    try {
+      await onConvertToStoryboard(sceneId);
+    } catch (conversionError) {
+      setError(conversionError instanceof Error ? conversionError.message : 'Failed to generate storyboard.');
+    } finally {
+      setGeneratingSceneId(null);
+    }
   };
 
   return (
@@ -256,16 +272,33 @@ export function Scenes({ projectId, onNavigateToScript }: ScenesProps) {
                     <span className="text-[10px] text-zinc-500 font-mono">
                       {scene.block_count} {scene.block_count === 1 ? 'block' : 'blocks'}
                     </span>
-                    {onNavigateToScript && (
-                      <button
-                        type="button"
-                        onClick={() => onNavigateToScript(scene.id)}
-                        className="flex items-center gap-1 text-[10px] font-semibold text-zinc-400 hover:text-violet-400 transition-colors group-hover:text-zinc-300"
-                      >
-                        Open in Script
-                        <ChevronRight className="w-3 h-3" />
-                      </button>
-                    )}
+                    <div className="flex items-center gap-3">
+                      {onConvertToStoryboard && (
+                        <button
+                          type="button"
+                          onClick={() => void handleConvertToStoryboard(scene.id)}
+                          disabled={generatingSceneId === scene.id}
+                          className="flex items-center gap-1 text-[10px] font-semibold text-violet-400 hover:text-violet-300 disabled:text-zinc-600 disabled:cursor-wait transition-colors"
+                        >
+                          {generatingSceneId === scene.id ? (
+                            <RefreshCw className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <Clapperboard className="w-3 h-3" />
+                          )}
+                          {generatingSceneId === scene.id ? 'Generating...' : 'Generate Storyboard'}
+                        </button>
+                      )}
+                      {onNavigateToScript && (
+                        <button
+                          type="button"
+                          onClick={() => onNavigateToScript(scene.id)}
+                          className="flex items-center gap-1 text-[10px] font-semibold text-zinc-400 hover:text-violet-400 transition-colors group-hover:text-zinc-300"
+                        >
+                          Open in Script
+                          <ChevronRight className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               );

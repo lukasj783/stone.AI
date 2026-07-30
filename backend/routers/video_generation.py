@@ -1,4 +1,6 @@
 import uuid
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, HTTPException, UploadFile, File, BackgroundTasks, Form
 
 from core.supabase_client import get_supabase_client
@@ -14,8 +16,17 @@ from schemas.video_generation import (
     LipsyncModel,
     CreateLipsyncRequest,
     CreateLipsyncResponse,
-    BatchDeleteRequest
+    BatchDeleteRequest,
+    RetryFailedShotVideosRequest,
+    ShotVideoBatchResponse,
+    ShotVideoItem,
+    ShotListItem,
+    ShotListResponse,
+    StartShotVideoBatchRequest,
+    AddShotVideoToTimelineRequest,
+    AddShotVideoToTimelineResponse,
 )
+from tasks.shot_video_tasks import submit_shot_video
 from services.wavespeed_service import (
     WaveSpeedServiceError,
     synthesize_image_to_video,
@@ -29,6 +40,308 @@ from services.wavespeed_service import (
 
 
 router = APIRouter(prefix="/api/video", tags=["Video Generation"])
+
+
+def _shot_list_response(project_id: str) -> ShotListResponse:
+    supabase = get_supabase_client()
+    if not supabase:
+        raise RuntimeError("Supabase client not configured")
+    shots = supabase.table("shots").select(
+        "id, scene_id, shot_number, description, camera_angle, camera_motion, sort_order"
+    ).eq("project_id", project_id).order("scene_id").order("sort_order").execute().data or []
+    if not shots:
+        return ShotListResponse(project_id=project_id, shots=[])
+
+    scene_ids = list({shot["scene_id"] for shot in shots if shot.get("scene_id")})
+    scenes = supabase.table("scenes").select("id, slugline_raw, sort_order").in_("id", scene_ids).execute().data or []
+    scene_by_id = {scene["id"]: scene for scene in scenes}
+    shot_ids = [shot["id"] for shot in shots]
+    links = supabase.table("asset_links").select("target_id, asset_id, role, created_at").eq(
+        "project_id", project_id
+    ).eq("target_type", "shot").in_("target_id", shot_ids).in_("role", ["storyboard", "video"]).execute().data or []
+    asset_ids = list({link["asset_id"] for link in links if link.get("asset_id")})
+    assets = supabase.table("assets").select("id, url, duration_seconds").in_("id", asset_ids).execute().data or [] if asset_ids else []
+    asset_by_id = {asset["id"]: asset for asset in assets}
+    assets_by_shot: dict[str, dict[str, dict[str, object]]] = {}
+    for link in links:
+        target_id = link.get("target_id")
+        role = link.get("role")
+        asset = asset_by_id.get(link.get("asset_id"))
+        if not isinstance(target_id, str) or role not in {"storyboard", "video"} or not asset:
+            continue
+        role_assets = assets_by_shot.setdefault(target_id, {})
+        existing = role_assets.get(role)
+        if not existing or str(link.get("created_at") or "") > str(existing.get("created_at") or ""):
+            role_assets[role] = {**asset, "created_at": link.get("created_at")}
+
+    jobs = supabase.table("generation_jobs").select(
+        "id, shot_id, batch_id, status, error_message, created_at"
+    ).eq("project_id", project_id).eq("kind", "video").in_("shot_id", shot_ids).order("created_at", desc=True).execute().data or []
+    latest_job_by_shot: dict[str, dict[str, object]] = {}
+    for job in jobs:
+        shot_id = job.get("shot_id")
+        if isinstance(shot_id, str) and shot_id not in latest_job_by_shot:
+            latest_job_by_shot[shot_id] = job
+
+    result: list[ShotListItem] = []
+    for shot in shots:
+        shot_id = shot["id"]
+        scene = scene_by_id.get(shot.get("scene_id"), {})
+        linked_assets = assets_by_shot.get(shot_id, {})
+        storyboard = linked_assets.get("storyboard")
+        video = linked_assets.get("video")
+        job = latest_job_by_shot.get(shot_id)
+        status = "complete" if video else str(job.get("status")) if job else "missing"
+        result.append(ShotListItem(
+            shot_id=shot_id,
+            scene_id=shot["scene_id"],
+            scene_slugline=scene.get("slugline_raw"),
+            scene_sort_order=int(scene.get("sort_order") or 0),
+            shot_number=shot.get("shot_number"),
+            sort_order=int(shot.get("sort_order") or 0),
+            description=shot.get("description"),
+            camera_angle=shot.get("camera_angle"),
+            camera_motion=shot.get("camera_motion"),
+            storyboard_url=storyboard.get("url") if storyboard else None,
+            video_asset_id=video.get("id") if video else None,
+            video_url=video.get("url") if video else None,
+            duration_seconds=float(video["duration_seconds"]) if video and video.get("duration_seconds") is not None else None,
+            generation_job_id=job.get("id") if job else None,
+            batch_id=job.get("batch_id") if job else None,
+            status=status,
+            error_message=job.get("error_message") if job else None,
+        ))
+    return ShotListResponse(project_id=project_id, shots=sorted(result, key=lambda item: (item.scene_sort_order, item.sort_order)))
+
+
+@router.get("/shot-list", response_model=ShotListResponse)
+def get_shot_list(project_id: str) -> ShotListResponse:
+    try:
+        return _shot_list_response(project_id)
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Failed to load shot list: {error}") from error
+
+
+@router.post("/shot-list/add-to-timeline", response_model=AddShotVideoToTimelineResponse)
+def add_shot_video_to_timeline(payload: AddShotVideoToTimelineRequest) -> AddShotVideoToTimelineResponse:
+    supabase = get_supabase_client()
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase client not configured")
+    try:
+        asset = supabase.table("assets").select("id, duration_seconds, type").eq("id", payload.asset_id).eq(
+            "project_id", payload.project_id
+        ).single().execute().data
+        if not asset or asset.get("type") != "video":
+            raise ValueError("The selected asset is not a video in this project")
+        link = supabase.table("asset_links").select("id").eq("project_id", payload.project_id).eq(
+            "asset_id", payload.asset_id
+        ).eq("target_type", "shot").eq("target_id", payload.shot_id).eq("role", "video").execute().data or []
+        if not link:
+            raise ValueError("The selected video is not linked to this shot")
+        existing = supabase.table("timeline_items").select("id, track_id, start_time").eq(
+            "project_id", payload.project_id
+        ).eq("asset_id", payload.asset_id).execute().data or []
+        if existing:
+            item = existing[0]
+            return AddShotVideoToTimelineResponse(
+                timeline_item_id=item["id"], track_id=item["track_id"], start_time=float(item["start_time"]), created=False,
+            )
+        track = supabase.table("timeline_tracks").select("id").eq("project_id", payload.project_id).eq(
+            "type", "video"
+        ).order("sort_order").limit(1).execute().data or []
+        if track:
+            track_id = track[0]["id"]
+        else:
+            track_result = supabase.table("timeline_tracks").insert({
+                "project_id": payload.project_id, "type": "video", "label": "Shot Videos", "sort_order": 0,
+            }).execute().data
+            if not track_result:
+                raise RuntimeError("Failed to create the video timeline track")
+            track_id = track_result[0]["id"]
+        items = supabase.table("timeline_items").select("start_time, duration").eq("track_id", track_id).execute().data or []
+        start_time = max((float(item.get("start_time") or 0) + float(item.get("duration") or 0) for item in items), default=0.0)
+        duration = float(asset.get("duration_seconds") or 5)
+        insert_result = supabase.table("timeline_items").insert({
+            "project_id": payload.project_id, "track_id": track_id, "asset_id": payload.asset_id,
+            "start_time": start_time, "duration": duration,
+            "metadata": {"shot_id": payload.shot_id, "source": "shot_list"},
+        }).execute().data
+        if not insert_result:
+            raise RuntimeError("Failed to add shot video to the timeline")
+        return AddShotVideoToTimelineResponse(
+            timeline_item_id=insert_result[0]["id"], track_id=track_id, start_time=start_time, created=True,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Failed to add shot video to timeline: {error}") from error
+
+
+def _batch_response(project_id: str, batch_id: str) -> ShotVideoBatchResponse:
+    supabase = get_supabase_client()
+    if not supabase:
+        raise RuntimeError("Supabase client not configured")
+    batch = supabase.table("video_generation_batches").select("*").eq("id", batch_id).eq(
+        "project_id", project_id
+    ).single().execute().data
+    if not batch:
+        raise ValueError("Shot video batch was not found in this project")
+
+    jobs = supabase.table("generation_jobs").select(
+        "id, shot_id, status, error_message"
+    ).eq("batch_id", batch_id).order("created_at").execute().data or []
+    shot_ids = [job["shot_id"] for job in jobs if job.get("shot_id")]
+    shot_numbers: dict[str, int | None] = {}
+    if shot_ids:
+        shots = supabase.table("shots").select("id, shot_number").in_("id", shot_ids).execute().data or []
+        shot_numbers = {shot["id"]: shot.get("shot_number") for shot in shots}
+
+    job_ids = [job["id"] for job in jobs]
+    output_asset_ids: dict[str, str] = {}
+    if job_ids:
+        outputs = supabase.table("generation_outputs").select("generation_job_id, asset_id").in_(
+            "generation_job_id", job_ids
+        ).execute().data or []
+        output_asset_ids = {output["generation_job_id"]: output["asset_id"] for output in outputs}
+    asset_urls: dict[str, str] = {}
+    if output_asset_ids:
+        assets = supabase.table("assets").select("id, url").in_("id", list(output_asset_ids.values())).execute().data or []
+        asset_urls = {asset["id"]: asset["url"] for asset in assets}
+
+    return ShotVideoBatchResponse(
+        batch_id=batch_id,
+        project_id=project_id,
+        status=batch["status"],
+        total_jobs=batch.get("total_jobs", len(jobs)),
+        completed_jobs=batch.get("completed_jobs", 0),
+        failed_jobs=batch.get("failed_jobs", 0),
+        settings=batch.get("settings") or {},
+        jobs=[
+            ShotVideoItem(
+                generation_job_id=job["id"],
+                shot_id=job["shot_id"],
+                shot_number=shot_numbers.get(job["shot_id"]),
+                status=job["status"],
+                error_message=job.get("error_message"),
+                video_url=asset_urls.get(output_asset_ids.get(job["id"], "")),
+            )
+            for job in jobs
+            if job.get("shot_id")
+        ],
+    )
+
+
+@router.post("/shot-batches", response_model=ShotVideoBatchResponse, status_code=202)
+def start_shot_video_batch(payload: StartShotVideoBatchRequest) -> ShotVideoBatchResponse:
+    """Queue one Seedance render for every completed storyboard image in a project."""
+    supabase = get_supabase_client()
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase client not configured")
+    try:
+        active = supabase.table("video_generation_batches").select("id").eq(
+            "project_id", payload.project_id
+        ).in_("status", ["queued", "running"]).execute().data or []
+        if active:
+            raise HTTPException(status_code=409, detail="A shot video batch is already active for this project")
+
+        shots = supabase.table("shots").select(
+            "id, shot_number, prompt, camera_motion"
+        ).eq("project_id", payload.project_id).eq("status", "complete").order("scene_id").order("sort_order").execute().data or []
+        if not shots:
+            raise ValueError("No completed storyboard shots are available for this project")
+        shot_ids = [shot["id"] for shot in shots]
+        links = supabase.table("asset_links").select("target_id, asset_id").eq(
+            "project_id", payload.project_id
+        ).eq("target_type", "shot").eq("role", "storyboard").in_("target_id", shot_ids).execute().data or []
+        asset_ids = [link["asset_id"] for link in links]
+        assets = supabase.table("assets").select("id, url").in_("id", asset_ids).execute().data or [] if asset_ids else []
+        image_by_asset = {asset["id"]: asset["url"] for asset in assets}
+        image_by_shot = {
+            link["target_id"]: image_by_asset.get(link["asset_id"])
+            for link in links
+            if image_by_asset.get(link["asset_id"])
+        }
+        eligible_shots = [shot for shot in shots if image_by_shot.get(shot["id"])]
+        if not eligible_shots:
+            raise ValueError("No completed storyboard image assets are available for this project")
+
+        settings = payload.model_dump()
+        settings.pop("project_id")
+        batch_result = supabase.table("video_generation_batches").insert({
+            "project_id": payload.project_id,
+            "model": "bytedance/seedance-2.0/image-to-video",
+            "settings": settings,
+            "status": "queued",
+            "total_jobs": len(eligible_shots),
+        }).execute()
+        if not batch_result.data:
+            raise RuntimeError("Failed to create shot video batch")
+        batch_id = batch_result.data[0]["id"]
+        jobs_result = supabase.table("generation_jobs").insert([
+            {
+                "project_id": payload.project_id,
+                "shot_id": shot["id"],
+                "batch_id": batch_id,
+                "kind": "video",
+                "model": "bytedance/seedance-2.0/image-to-video",
+                "prompt": f"{shot.get('prompt') or ''}\nCamera movement: {shot.get('camera_motion') or 'natural subtle cinematic motion'}".strip(),
+                "settings": {**settings, "storyboard_image_url": image_by_shot[shot["id"]]},
+                "status": "queued",
+            }
+            for shot in eligible_shots
+        ]).execute()
+        jobs = jobs_result.data or []
+        if len(jobs) != len(eligible_shots):
+            raise RuntimeError("Failed to create all shot video jobs")
+        for job in jobs:
+            submit_shot_video.delay(job["id"])
+        return _batch_response(payload.project_id, batch_id)
+    except HTTPException:
+        raise
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Failed to queue shot video batch: {error}") from error
+
+
+@router.get("/shot-batches/{batch_id}", response_model=ShotVideoBatchResponse)
+def get_shot_video_batch(batch_id: str, project_id: str) -> ShotVideoBatchResponse:
+    try:
+        return _batch_response(project_id, batch_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Failed to load shot video batch: {error}") from error
+
+
+@router.post("/shot-batches/{batch_id}/retry-failed", response_model=ShotVideoBatchResponse, status_code=202)
+def retry_failed_shot_videos(batch_id: str, payload: RetryFailedShotVideosRequest) -> ShotVideoBatchResponse:
+    supabase = get_supabase_client()
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase client not configured")
+    try:
+        _batch_response(payload.project_id, batch_id)
+        failed_jobs = supabase.table("generation_jobs").select("id").eq("batch_id", batch_id).eq(
+            "status", "failed"
+        ).execute().data or []
+        if not failed_jobs:
+            raise ValueError("This batch has no failed shot videos to retry")
+        failed_ids = [job["id"] for job in failed_jobs]
+        supabase.table("generation_jobs").update({
+            "status": "queued", "error_message": None, "provider_prediction_id": None,
+            "provider_result_url": None, "next_poll_at": None,
+        }).in_("id", failed_ids).execute()
+        supabase.table("video_generation_batches").update({
+            "status": "queued", "failed_jobs": 0, "completed_at": None,
+            "error_message": None, "updated_at": datetime.now(UTC).isoformat(),
+        }).eq("id", batch_id).execute()
+        for job_id in failed_ids:
+            submit_shot_video.delay(job_id)
+        return _batch_response(payload.project_id, batch_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Failed to retry shot videos: {error}") from error
 
 
 def extract_storage_filename(url: str | None) -> str:

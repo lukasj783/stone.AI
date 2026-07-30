@@ -26,7 +26,7 @@ const NAVIGATION = [
     items: [
       { id: 'characters', label: 'Characters', icon: Users },
       { id: 'environments', label: 'Environments', icon: MountainSnow },
-      { id: 'props', label: 'Props', icon: Box },
+      { id: 'props', label: 'Objects', icon: Box },
     ]
   },
   {

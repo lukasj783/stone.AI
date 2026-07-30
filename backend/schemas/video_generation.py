@@ -1,4 +1,5 @@
 from enum import Enum
+from typing import Literal
 from pydantic import BaseModel, Field
 
 
@@ -66,6 +67,79 @@ class CreateImageToVideoResponse(BaseModel):
     model: ImageToVideoModel
     video_url: str
     image_url: str
+
+
+SEEDANCE_SHOT_MODEL = "bytedance/seedance-2.0/image-to-video"
+
+
+class StartShotVideoBatchRequest(BaseModel):
+    project_id: str = Field(min_length=1)
+    duration: int = Field(default=5, ge=4, le=15)
+    resolution: Literal["480p", "720p", "1080p", "4k"] = "720p"
+    aspect_ratio: Literal["16:9", "9:16", "4:3", "3:4", "1:1", "21:9"] = "16:9"
+    generate_audio: bool = True
+
+
+class RetryFailedShotVideosRequest(BaseModel):
+    project_id: str = Field(min_length=1)
+
+
+class ShotVideoItem(BaseModel):
+    generation_job_id: str
+    shot_id: str
+    shot_number: int | None = None
+    status: str
+    error_message: str | None = None
+    video_url: str | None = None
+
+
+class ShotVideoBatchResponse(BaseModel):
+    batch_id: str
+    project_id: str
+    status: str
+    total_jobs: int
+    completed_jobs: int
+    failed_jobs: int
+    settings: dict[str, object]
+    jobs: list[ShotVideoItem]
+
+
+class ShotListItem(BaseModel):
+    shot_id: str
+    scene_id: str
+    scene_slugline: str | None = None
+    scene_sort_order: int = 0
+    shot_number: int | None = None
+    sort_order: int = 0
+    description: str | None = None
+    camera_angle: str | None = None
+    camera_motion: str | None = None
+    storyboard_url: str | None = None
+    video_asset_id: str | None = None
+    video_url: str | None = None
+    duration_seconds: float | None = None
+    generation_job_id: str | None = None
+    batch_id: str | None = None
+    status: str
+    error_message: str | None = None
+
+
+class ShotListResponse(BaseModel):
+    project_id: str
+    shots: list[ShotListItem]
+
+
+class AddShotVideoToTimelineRequest(BaseModel):
+    project_id: str = Field(min_length=1)
+    shot_id: str = Field(min_length=1)
+    asset_id: str = Field(min_length=1)
+
+
+class AddShotVideoToTimelineResponse(BaseModel):
+    timeline_item_id: str
+    track_id: str
+    start_time: float
+    created: bool
 
 
 class CreateMotionTransferRequest(BaseModel):

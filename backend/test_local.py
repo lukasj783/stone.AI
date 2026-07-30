@@ -1,7 +1,7 @@
 import asyncio
 from core.supabase_client import get_supabase_client
 from schemas.image_generation import CreateImageRequest, CreateImageResponse, ImageModel
-from routers.image_generation import log_generation_to_supabase
+from services.image_generation_storage import log_generation_to_supabase
 import logging
 
 req = CreateImageRequest(model=ImageModel.seedream45, prompt="test")

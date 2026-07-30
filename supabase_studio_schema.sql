@@ -250,8 +250,11 @@ CREATE TABLE IF NOT EXISTS characters (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
+    character_type TEXT NOT NULL DEFAULT 'supporting' CHECK (character_type IN ('main', 'supporting')),
     role TEXT,
     age INTEGER,
+    gender TEXT,
+    race TEXT,
     voice_id UUID,
     appearance TEXT,
     personality TEXT,
@@ -261,6 +264,13 @@ CREATE TABLE IF NOT EXISTS characters (
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
+
+ALTER TABLE characters ADD COLUMN IF NOT EXISTS gender TEXT;
+ALTER TABLE characters ADD COLUMN IF NOT EXISTS race TEXT;
+ALTER TABLE characters ADD COLUMN IF NOT EXISTS character_type TEXT NOT NULL DEFAULT 'supporting';
+ALTER TABLE characters DROP CONSTRAINT IF EXISTS characters_character_type_check;
+ALTER TABLE characters ADD CONSTRAINT characters_character_type_check
+    CHECK (character_type IN ('main', 'supporting'));
 
 CREATE INDEX IF NOT EXISTS characters_project_idx
     ON characters(project_id);
@@ -300,6 +310,9 @@ CREATE TABLE IF NOT EXISTS props (
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS props_project_name_idx
+    ON props(project_id, name);
 
 DROP TRIGGER IF EXISTS props_updated_at ON props;
 CREATE TRIGGER props_updated_at

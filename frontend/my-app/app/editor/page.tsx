@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import Image from 'next/image';
 import { useProject } from '@/lib/useProject';
 import { AssetTab, UploadedAsset } from '@/components/editor/types';
@@ -9,7 +9,6 @@ import { TimelineFooter } from '@/components/editor/TimelineFooter';
 import { DynamicVideoPlayer } from '@/components/editor/DynamicVideoPlayer';
 import { DynamicAudioPlayer } from '@/components/editor/DynamicAudioPlayer';
 import { TimelineTopNav } from '@/components/editor/TimelineTopNav';
-import { InspectorPanel } from '@/components/editor/InspectorPanel';
 import { isTimelineElementActive, readLocalMediaDuration, MAX_FILE_SIZE, MAX_FILE_SIZE_MB, STORAGE_BUCKET } from '@/components/editor/mediaUtils';
 import { useTimeline } from '@/components/editor/useTimeline';
 import { INITIAL_TIMELINE_STATE } from '@/lib/types/layers.types';
@@ -147,15 +146,6 @@ export default function TimelineEditorPage() {
     setAssets((prev) => ({ ...prev, [tab]: prev[tab].filter((a) => a.id !== assetId) }));
   };
 
-  const selectedElement = useMemo(() => {
-    if (!tl.selectedElementId) return null;
-    for (const track of tl.tracks) {
-      const found = track.elements.find((el) => el.id === tl.selectedElementId);
-      if (found) return found;
-    }
-    return null;
-  }, [tl.tracks, tl.selectedElementId]);
-
   return (
     <div className="flex flex-col h-screen bg-[#09090b] text-zinc-300 font-sans selection:bg-blue-500/30 overflow-hidden">
       <TimelineTopNav
@@ -206,8 +196,6 @@ export default function TimelineEditorPage() {
             </div>
           </div>
         </section>
-
-        <InspectorPanel selectedElement={selectedElement} onUpdateElement={updateElement} />
       </main>
 
       <TimelineFooter

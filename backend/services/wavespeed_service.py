@@ -17,6 +17,7 @@ NANO_BANANA_ASPECT_RATIOS = {
 NANO_BANANA_2_ASPECT_RATIOS = NANO_BANANA_ASPECT_RATIOS | {"1:4", "4:1", "1:8", "8:1"}
 NANO_BANANA_RESOLUTIONS = {"1k", "2k", "4k"}
 NANO_BANANA_2_RESOLUTIONS = {"0.5k", "1k", "2k", "4k"}
+GPT_IMAGE_2_RESOLUTIONS = {"1k", "2k", "4k"}
 OUTPUT_FORMATS = {"png", "jpeg"}
 INPAINT_MODELS = {"wavespeed-ai/flux-fill-dev", "google/nano-banana-pro/edit"}
 
@@ -151,6 +152,11 @@ def generate_wavespeed_images(payload: CreateImageRequest) -> CreateImageRespons
             params["size"] = _size_from_aspect_ratio(payload.aspect_ratio)
             
         # Image-to-image params
+        elif model_name == "openai/gpt-image-2/edit":
+            params["aspect_ratio"] = _normalize_aspect_ratio(payload.aspect_ratio, NANO_BANANA_ASPECT_RATIOS, "1:1")
+            params["resolution"] = _normalize_resolution(payload.resolution, GPT_IMAGE_2_RESOLUTIONS)
+            params["quality"] = "medium"
+            params["output_format"] = output_fmt
         elif "edit-multi" in model_name:
             params["aspect_ratio"] = _normalize_aspect_ratio(payload.aspect_ratio, MULTI_IMAGE_ASPECT_RATIOS)
             params["num_images"] = 2
@@ -291,6 +297,76 @@ def _store_generated_video(video_url: str) -> str:
     video_bytes = _download_file_bytes(video_url)
     filename = f"wavespeed_{uuid.uuid4().hex}.mp4"
     return _upload_bytes_to_bucket("output-videos", video_bytes, filename, "video/mp4")
+
+
+SEEDANCE_SHOT_MODEL = "bytedance/seedance-2.0/image-to-video"
+SEEDANCE_SUBMIT_URL = f"https://api.wavespeed.ai/api/v3/{SEEDANCE_SHOT_MODEL}"
+
+
+def _wavespeed_headers() -> dict[str, str]:
+    api_key = os.getenv("WAVESPEED_API_KEY")
+    if not api_key:
+        raise WaveSpeedServiceError("WAVESPEED_API_KEY not configured")
+    return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+
+def _prediction_data(response_data: object) -> dict[str, object]:
+    if not isinstance(response_data, dict):
+        raise WaveSpeedServiceError("WaveSpeed returned an invalid prediction response")
+    data = response_data.get("data", response_data)
+    if not isinstance(data, dict):
+        raise WaveSpeedServiceError("WaveSpeed prediction response is missing data")
+    return data
+
+
+def submit_seedance_shot_video(
+    image_url: str,
+    prompt: str,
+    duration: int,
+    resolution: str,
+    aspect_ratio: str,
+    generate_audio: bool,
+) -> tuple[str, str]:
+    payload = {
+        "image": image_url,
+        "prompt": prompt,
+        "duration": duration,
+        "resolution": resolution,
+        "aspect_ratio": aspect_ratio,
+        "generate_audio": generate_audio,
+        "enable_web_search": False,
+    }
+    try:
+        response = requests.post(SEEDANCE_SUBMIT_URL, headers=_wavespeed_headers(), json=payload, timeout=30)
+        response.raise_for_status()
+        data = _prediction_data(response.json())
+    except requests.RequestException as error:
+        raise WaveSpeedServiceError(f"Failed to submit Seedance shot video: {error}") from error
+
+    prediction_id = data.get("id")
+    urls = data.get("urls")
+    result_url = urls.get("get") if isinstance(urls, dict) else None
+    if not isinstance(prediction_id, str) or not prediction_id:
+        raise WaveSpeedServiceError("WaveSpeed submission did not return a prediction ID")
+    if not isinstance(result_url, str) or not result_url:
+        result_url = f"https://api.wavespeed.ai/api/v3/predictions/{prediction_id}/result"
+    return prediction_id, result_url
+
+
+def get_seedance_shot_video_result(result_url: str) -> dict[str, object]:
+    try:
+        response = requests.get(result_url, headers=_wavespeed_headers(), timeout=30)
+        response.raise_for_status()
+        return _prediction_data(response.json())
+    except requests.RequestException as error:
+        raise WaveSpeedServiceError(f"Failed to poll Seedance shot video: {error}") from error
+
+
+def store_seedance_shot_video(video_url: str, project_id: str, shot_id: str, batch_id: str) -> tuple[str, str]:
+    video_bytes = _download_file_bytes(video_url)
+    storage_path = f"shot-videos/{project_id}/{shot_id}/{batch_id}_{uuid.uuid4().hex}.mp4"
+    public_url = _upload_bytes_to_bucket("output-videos", video_bytes, storage_path, "video/mp4")
+    return public_url, storage_path
 
 
 def _build_text_to_video_params(request: CreateVideoRequest) -> dict[str, object]:

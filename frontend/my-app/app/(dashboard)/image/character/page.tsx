@@ -19,8 +19,19 @@ import {
 } from 'lucide-react';
 import Image from 'next/image';
 import { cn } from '@/lib/utils';
-import { ImageModel as ApiImageModel, CreateImageRequest } from '@/lib/types/image-generation';
-import { generateCharacterImages, generateImageFromUpload } from '@/lib/api/image-generation';
+import { useProject } from '@/lib/useProject';
+import {
+  CharacterKeyframe,
+  CharacterView,
+  ImageModel as ApiImageModel,
+  CreateImageRequest,
+} from '@/lib/types/image-generation';
+import {
+  finalizeCharacter,
+  generateCharacterImages,
+  generateImageFromUpload,
+  regenerateCharacterKeyframe,
+} from '@/lib/api/image-generation';
 
 // Workflow Steps
 type AppStep = 'mode-select' | 'text-input' | 'image-input' | 'grid-preview' | 'save-character';
@@ -31,6 +42,15 @@ interface CharacterMetadata {
   role: string;
 }
 
+const characterViewLabels: Record<CharacterView, string> = {
+  front: 'Front View',
+  left_three_quarter: 'Left 3/4 View',
+  left_profile: 'Left Profile',
+  back: 'Back View',
+  right_profile: 'Right Profile',
+  right_three_quarter: 'Right 3/4 View',
+};
+
 type GenerationModel = {
   id: number;
   apiModel: ApiImageModel | string;
@@ -39,7 +59,10 @@ type GenerationModel = {
   tags: string[];
   thumbnail: string;
   provider: 'replicate' | 'wavespeed';
+  modes: Array<'text' | 'upload'>;
 };
+
+const CHARACTER_DESCRIPTION_PROMPT = `A full-body heroic knight with glowing blue armor, a weathered navy cape, and a silver longsword. The character has short dark hair, a determined expression, practical leather boots, and high-detail fantasy concept-art styling.`;
 
 const characterModels: GenerationModel[] = [
   {
@@ -50,6 +73,7 @@ const characterModels: GenerationModel[] = [
     tags: ['Standard'],
     thumbnail: 'from-fuchsia-900 via-purple-900 to-indigo-900',
     provider: 'replicate',
+    modes: ['text', 'upload'],
   },
   {
     id: 101,
@@ -59,6 +83,7 @@ const characterModels: GenerationModel[] = [
     tags: ['Standard', 'Multi'],
     thumbnail: 'from-fuchsia-900 via-purple-900 to-indigo-900',
     provider: 'wavespeed',
+    modes: ['text', 'upload'],
   },
   {
     id: 6,
@@ -68,6 +93,7 @@ const characterModels: GenerationModel[] = [
     tags: ['Standard', 'Search'],
     thumbnail: 'from-yellow-900 via-orange-900 to-amber-900',
     provider: 'replicate',
+    modes: ['text', 'upload'],
   },
   {
     id: 106,
@@ -77,6 +103,17 @@ const characterModels: GenerationModel[] = [
     tags: ['Standard', 'Search'],
     thumbnail: 'from-yellow-900 via-orange-900 to-amber-900',
     provider: 'wavespeed',
+    modes: ['text', 'upload'],
+  },
+  {
+    id: 201,
+    apiModel: 'openai/gpt-image-2/edit',
+    name: 'GPT Image 2 Edit',
+    creator: 'OpenAI',
+    tags: ['Edit', 'Reference'],
+    thumbnail: 'from-emerald-900 via-teal-900 to-cyan-900',
+    provider: 'wavespeed',
+    modes: ['upload'],
   },
 ];
 
@@ -85,6 +122,8 @@ function CharacterCreatorContent() {
   const intent = searchParams.get('intent');
   const initialName = searchParams.get('name') || '';
   const initialRole = searchParams.get('role') || '';
+  const queryProjectId = searchParams.get('projectId') || searchParams.get('project_id');
+  const { projects, listProjects } = useProject();
 
   // File upload ref (following editor component pattern)
   const fileInputRef = useRef<HTMLInputElement>(null);  const [step, setStep] = useState<AppStep>(intent === 'scene-extraction' ? 'text-input' : 'mode-select');
@@ -99,11 +138,19 @@ function CharacterCreatorContent() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationError, setGenerationError] = useState('');
   const [generatedImages, setGeneratedImages] = useState<string[]>([]);
+  const [generatedKeyframes, setGeneratedKeyframes] = useState<CharacterKeyframe[]>([]);
+  const [generationJobId, setGenerationJobId] = useState<string | null>(null);
   const [isHoveringCarousel, setIsHoveringCarousel] = useState(false);
   const [generationProgress, setGenerationProgress] = useState(0);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [uploadedFilePreview, setUploadedFilePreview] = useState<string>('');
   const [guidancePrompt, setGuidancePrompt] = useState('');
+  const [lastGenerationPrompt, setLastGenerationPrompt] = useState(prompt);
+  const [repairGuidance, setRepairGuidance] = useState('');
+  const [isRegeneratingKeyframe, setIsRegeneratingKeyframe] = useState(false);
+  const [isSavingCharacter, setIsSavingCharacter] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const [projectId, setProjectId] = useState<string | null>(queryProjectId);
 
   const [charData, setCharData] = useState<CharacterMetadata>({
     name: initialName,
@@ -128,6 +175,10 @@ function CharacterCreatorContent() {
     };
   }, [uploadedFilePreview]);
 
+  useEffect(() => {
+    void listProjects();
+  }, [listProjects]);
+
   // Progress tracking effect
   useEffect(() => {
     if (!isGenerating) {
@@ -149,6 +200,14 @@ function CharacterCreatorContent() {
     return () => clearInterval(progressInterval);
   }, [isGenerating]);
 
+  const selectCreationMode = (nextStep: 'text-input' | 'image-input') => {
+    const requiredMode = nextStep === 'text-input' ? 'text' : 'upload';
+    if (!selectedModel.modes.includes(requiredMode)) {
+      setSelectedModel(characterModels.find((model) => model.modes.includes(requiredMode))!);
+    }
+    setStep(nextStep);
+  };
+
   const handleGenerate = async () => {
     // For image-input mode, check if file is uploaded
     if (step === 'image-input' && !uploadedFile) {
@@ -162,6 +221,11 @@ function CharacterCreatorContent() {
       return;
     }
 
+    if (!projectId) {
+      setGenerationError('Select a project before generating a character.');
+      return;
+    }
+
     setGenerationError('');
     setIsGenerating(true);
     setGenerationProgress(0);
@@ -172,10 +236,17 @@ function CharacterCreatorContent() {
           uploadedFile,
           guidancePrompt,
           selectedModel.apiModel as string,
-          selectedModel.provider
+          selectedModel.provider,
+          projectId
         );
+        if (!response.keyframes?.length || !response.generation_job_id) {
+          throw new Error('Character generation returned incomplete keyframes');
+        }
         setGenerationProgress(100);
+        setLastGenerationPrompt(guidancePrompt);
         setGeneratedImages(response.images);
+        setGeneratedKeyframes(response.keyframes);
+        setGenerationJobId(response.generation_job_id);
         setSelectedImageIndex(0);
         setStep('grid-preview');
       } else {
@@ -186,11 +257,18 @@ function CharacterCreatorContent() {
           prompt,
           aspect_ratio: '1:1',
           num_images: 1,
+          project_id: projectId || undefined,
         };
 
         const response = await generateCharacterImages(payload);
+        if (!response.keyframes?.length || !response.generation_job_id) {
+          throw new Error('Character generation returned incomplete keyframes');
+        }
         setGenerationProgress(100);
+        setLastGenerationPrompt(prompt);
         setGeneratedImages(response.images);
+        setGeneratedKeyframes(response.keyframes);
+        setGenerationJobId(response.generation_job_id);
         setSelectedImageIndex(0);
         setStep('grid-preview');
       }
@@ -207,6 +285,71 @@ function CharacterCreatorContent() {
     setUploadedFilePreview('');
     setGuidancePrompt('');
     setGenerationError('');
+  };
+
+  const handleRegenerateSelectedKeyframe = async () => {
+    const selectedKeyframe = generatedKeyframes[selectedImageIndex];
+    if (!selectedKeyframe || !generationJobId || !projectId) {
+      setGenerationError('Select a generated character view before regenerating it.');
+      return;
+    }
+
+    setGenerationError('');
+    setIsRegeneratingKeyframe(true);
+    try {
+      const replacement = await regenerateCharacterKeyframe(
+        generationJobId,
+        selectedKeyframe.view,
+        projectId,
+        repairGuidance.trim()
+      );
+      setGeneratedKeyframes((keyframes) => keyframes.map((keyframe) => (
+        keyframe.view === replacement.view ? replacement : keyframe
+      )));
+      setGeneratedImages((images) => images.map((image, index) => (
+        index === selectedImageIndex ? replacement.image_url : image
+      )));
+      setRepairGuidance('');
+    } catch (error) {
+      setGenerationError(error instanceof Error ? error.message : 'Character keyframe regeneration failed');
+    } finally {
+      setIsRegeneratingKeyframe(false);
+    }
+  };
+
+  const handleSaveCharacter = async () => {
+    if (!projectId || !generationJobId || !generatedKeyframes.length) {
+      setSaveError('Generate a complete character keyframe set before saving.');
+      return;
+    }
+    if (!charData.name.trim()) {
+      setSaveError('Character name is required.');
+      return;
+    }
+
+    const selectedKeyframe = generatedKeyframes[selectedImageIndex];
+    if (!selectedKeyframe) {
+      setSaveError('Select a character keyframe to use as the primary image.');
+      return;
+    }
+
+    setSaveError('');
+    setIsSavingCharacter(true);
+    try {
+      await finalizeCharacter({
+        project_id: projectId,
+        generation_job_id: generationJobId,
+        name: charData.name.trim(),
+        role: charData.role.trim() || undefined,
+        description: charData.description.trim() || undefined,
+        primary_view: selectedKeyframe.view,
+      });
+      setStep('grid-preview');
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : 'Character save failed');
+    } finally {
+      setIsSavingCharacter(false);
+    }
   };
 
   const triggerFileInput = () => {
@@ -363,7 +506,7 @@ function CharacterCreatorContent() {
             {/* Models Grid */}
             <div className="flex-1 overflow-y-auto px-6 py-4">
               <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                {characterModels.map((model) => (
+                {characterModels.filter((model) => model.modes.includes(step === 'image-input' ? 'upload' : 'text')).map((model) => (
                   <motion.div
                     key={model.id}
                     whileHover={{ y: -4 }}
@@ -440,7 +583,7 @@ function CharacterCreatorContent() {
 
       <div className="grid md:grid-cols-2 gap-6">
         <button
-          onClick={() => setStep('text-input')}
+          onClick={() => selectCreationMode('text-input')}
           className="group flex flex-col items-center justify-center p-12 border border-zinc-800 rounded-3xl bg-zinc-900/50 hover:bg-zinc-800/80 hover:border-zinc-700 transition duration-300"
         >
           <div className="w-20 h-20 rounded-2xl bg-zinc-800 flex items-center justify-center mb-6 group-hover:scale-110 group-hover:bg-indigo-500/20 transition-all duration-300">
@@ -456,7 +599,7 @@ function CharacterCreatorContent() {
         </button>
 
         <button
-          onClick={() => setStep('image-input')}
+          onClick={() => selectCreationMode('image-input')}
           className="group flex flex-col items-center justify-center p-12 border border-zinc-800 rounded-3xl bg-zinc-900/50 hover:bg-zinc-800/80 hover:border-zinc-700 transition duration-300"
         >
           <div className="w-20 h-20 rounded-2xl bg-zinc-800 flex items-center justify-center mb-6 group-hover:scale-110 group-hover:bg-purple-500/20 transition-all duration-300">
@@ -495,13 +638,42 @@ function CharacterCreatorContent() {
 
       <div className="space-y-8 bg-zinc-900/50 border border-zinc-800 p-8 rounded-3xl">
         <div>
-          <label className="block text-sm font-medium text-zinc-300 mb-3 ml-1">Prompt Area</label>
+          <div className="flex items-center justify-between gap-3 mb-3 ml-1">
+            <label className="text-sm font-medium text-zinc-300">Prompt Area</label>
+            <button
+              type="button"
+              title="Fill with character description example"
+              aria-label="Fill with character description example"
+              onClick={() => {
+                setPrompt(CHARACTER_DESCRIPTION_PROMPT);
+                setGenerationError('');
+              }}
+              className="shrink-0 flex items-center gap-1.5 bg-white/10 hover:bg-white/20 border border-white/10 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors"
+            >
+              <Sparkles size={14} className="text-indigo-300" />
+              Use Example
+            </button>
+          </div>
           <textarea
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             className="w-full bg-zinc-950 border border-zinc-800 rounded-2xl p-4 min-h-40 focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 focus:outline-none transition-all resize-none text-zinc-200"
             placeholder="Enter detailed character description..."
           />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-zinc-300 mb-3 ml-1">Project</label>
+          <select
+            value={projectId || ''}
+            onChange={(event) => setProjectId(event.target.value || null)}
+            className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-zinc-200 focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 focus:outline-none"
+          >
+            <option value="">Select a project</option>
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>{project.name}</option>
+            ))}
+          </select>
         </div>
 
         {renderModelSelector()}
@@ -595,15 +767,31 @@ function CharacterCreatorContent() {
           </button>
         </div>
 
+        <div>
+          <label className="block text-sm font-medium text-zinc-300 mb-3 ml-1">Project</label>
+          <select
+            value={projectId || ''}
+            onChange={(event) => setProjectId(event.target.value || null)}
+            className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-zinc-200 focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 focus:outline-none"
+          >
+            <option value="">Select a project</option>
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>{project.name}</option>
+            ))}
+          </select>
+        </div>
+
         {renderModelSelector()}
 
         <div>
-          <label className="block text-sm font-medium text-zinc-300 mb-3 ml-1">Guidance Prompt (Optional)</label>
+          <label className="block text-sm font-medium text-zinc-300 mb-3 ml-1">
+            Guidance Prompt (Optional)
+          </label>
           <textarea
             value={guidancePrompt}
             onChange={(e) => setGuidancePrompt(e.target.value)}
             className="w-full bg-zinc-950 border border-zinc-800 rounded-2xl p-4 min-h-24 focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 focus:outline-none transition-all resize-none text-zinc-200 placeholder-zinc-600"
-            placeholder="Optional: Describe the style variations you'd like. Leave blank for default variations (original, fantasy, modern, alternate outfit)."
+            placeholder="Describe clothing, lighting, expression, style, or details to preserve across all six views."
           />
         </div>
 
@@ -615,18 +803,18 @@ function CharacterCreatorContent() {
 
         <button
           onClick={handleGenerate}
-          disabled={isGenerating || !uploadedFile}
+          disabled={isGenerating || !uploadedFile || !projectId}
           className="w-full py-4 bg-purple-600 hover:bg-purple-500 disabled:bg-zinc-800 disabled:text-zinc-500 rounded-2xl font-medium flex items-center justify-center gap-2 transition-colors"
         >
           {isGenerating ? (
             <span className="animate-pulse">Analyzing and generating...</span>
-          ) : uploadedFile ? (
+          ) : uploadedFile && projectId ? (
             <>
-              <ImageIcon className="w-5 h-5" /> Generate Variations
+              <ImageIcon className="w-5 h-5" /> Generate Character Views
             </>
           ) : (
             <>
-              <ImageIcon className="w-5 h-5" /> Upload Image First
+              <ImageIcon className="w-5 h-5" /> Select Project and Image
             </>
           )}
         </button>
@@ -665,25 +853,33 @@ function CharacterCreatorContent() {
         <div className="flex flex-col lg:flex-row gap-8 lg:gap-12">
           {/* Left: Image Grid */}
           <div className="flex-1 overflow-y-auto max-h-125 pr-2 scrollbar-hover-only">
-            <div className="grid grid-cols-3 gap-2 md:gap-3 shrink-0">
-              {generatedImages.map((img, i) => (
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-3 shrink-0">
+              {(generatedKeyframes.length ? generatedKeyframes : generatedImages.map((image_url) => ({
+                image_url,
+                view: undefined,
+              }))).map((frame, i) => (
                 <button
-                  key={i}
+                  key={frame.image_url}
                   onClick={() => setSelectedImageIndex(i)}
-                  className={`aspect-square relative rounded-xl overflow-hidden border-4 transition-all bg-zinc-900 ${
+                  className={`aspect-4/5 relative rounded-xl overflow-hidden border-2 text-left transition-all bg-zinc-900 ${
                     selectedImageIndex === i
                       ? 'border-indigo-500 scale-100 shadow-[0_0_20px_rgba(99,102,241,0.25)]'
                       : 'border-transparent hover:border-zinc-700 scale-[0.98]'
                   }`}
                 >
                   <Image
-                    src={img}
-                    alt={`Variant ${i + 1}`}
+                    src={frame.image_url}
+                    alt={frame.view ? characterViewLabels[frame.view] : `Variant ${i + 1}`}
                     fill
                     sizes="(max-width: 768px) 33vw, 200px"
                     className="object-cover"
                     referrerPolicy="no-referrer"
                   />
+                  {frame.view && (
+                    <span className="absolute inset-x-0 bottom-0 bg-black/75 px-3 py-2 text-xs font-semibold text-white">
+                      {characterViewLabels[frame.view]}
+                    </span>
+                  )}
                   {/* Active indicator badge */}
                   {selectedImageIndex === i && (
                     <div className="absolute top-2 right-2 bg-indigo-500 rounded-full p-1.5 shadow-lg">
@@ -702,11 +898,32 @@ function CharacterCreatorContent() {
                 Prompt Used
               </label>
               <div className="bg-zinc-950 border border-zinc-800 rounded-2xl p-5 text-sm text-zinc-300 leading-relaxed min-h-32 flex items-start">
-                {prompt}
+                {generatedKeyframes[selectedImageIndex]?.prompt || lastGenerationPrompt}
               </div>
             </div>
 
-            <div className="mt-8">
+            <div className="mt-5">
+              <label className="text-xs text-zinc-500 uppercase tracking-widest font-semibold block mb-3">
+                Repair Guidance
+              </label>
+              <textarea
+                value={repairGuidance}
+                onChange={(event) => setRepairGuidance(event.target.value)}
+                placeholder="e.g. Face right, camera on the character's left side."
+                className="w-full min-h-24 resize-y rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm leading-relaxed text-zinc-200 outline-none transition-colors placeholder:text-zinc-600 focus:border-indigo-500"
+              />
+              <button
+                type="button"
+                onClick={handleRegenerateSelectedKeyframe}
+                disabled={isRegeneratingKeyframe || !generatedKeyframes[selectedImageIndex]}
+                className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-indigo-500/50 bg-indigo-500/10 py-3 text-sm font-medium text-indigo-200 transition-colors hover:bg-indigo-500/20 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500"
+              >
+                <RefreshCw className={`h-4 w-4 ${isRegeneratingKeyframe ? 'animate-spin' : ''}`} />
+                {isRegeneratingKeyframe ? 'Regenerating View...' : 'Regenerate View'}
+              </button>
+            </div>
+
+            <div className="mt-5">
               <button
                 onClick={() => setStep('save-character')}
                 className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 text-white rounded-2xl font-medium shadow-lg shadow-indigo-900/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
@@ -844,8 +1061,13 @@ function CharacterCreatorContent() {
             </div>
 
             <div className="mt-auto pt-6">
-              <button className="w-full py-4 shadow-lg shadow-indigo-900/20 bg-indigo-600 hover:bg-indigo-500 rounded-xl font-medium flex items-center justify-center gap-2 text-white transition-transform hover:scale-[1.02] active:scale-100">
-                <Save className="w-5 h-5" /> Save Character
+              {saveError && <p className="mb-3 text-sm text-red-400">{saveError}</p>}
+              <button
+                onClick={handleSaveCharacter}
+                disabled={isSavingCharacter}
+                className="w-full py-4 shadow-lg shadow-indigo-900/20 bg-indigo-600 hover:bg-indigo-500 disabled:bg-zinc-700 disabled:text-zinc-400 rounded-xl font-medium flex items-center justify-center gap-2 text-white transition-transform hover:scale-[1.02] active:scale-100"
+              >
+                <Save className="w-5 h-5" /> {isSavingCharacter ? 'Saving...' : 'Save Character'}
               </button>
             </div>
           </div>

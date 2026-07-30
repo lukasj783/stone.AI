@@ -1,4 +1,18 @@
-import { CreateImageRequest, CreateImageResponse } from '@/lib/types/image-generation';
+import {
+  CharacterKeyframe,
+  CharacterView,
+  CreateImageRequest,
+  CreateImageResponse,
+  FinalizeCharacterRequest,
+  FinalizeCharacterResponse,
+  GenerateScriptCharacterRequest,
+  GenerateScriptEnvironmentRequest,
+  GenerateObjectReferenceRequest,
+  GenerateStoryboardRequest,
+  GenerateStoryboardResponse,
+  RegenerateShotFrameRequest,
+  StoryboardFrame,
+} from '@/lib/types/image-generation';
 
 
 function getApiBaseUrl(): string {
@@ -56,6 +70,60 @@ export async function generateImage(payload: CreateImageRequest): Promise<Create
   return response.json() as Promise<CreateImageResponse>;
 }
 
+export async function generateSceneStoryboard(
+  payload: GenerateStoryboardRequest,
+): Promise<GenerateStoryboardResponse> {
+  const response = await fetch(`${getApiBaseUrl()}/api/story/storyboard`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    let message = 'Storyboard generation failed';
+    try {
+      const errorPayload = await response.json();
+      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
+        message = errorPayload.detail;
+      }
+    } catch {
+      message = `Storyboard generation failed with status ${response.status}`;
+    }
+    throw new Error(message);
+  }
+
+  return response.json() as Promise<GenerateStoryboardResponse>;
+}
+
+export async function regenerateShotFrame(
+  payload: RegenerateShotFrameRequest,
+): Promise<StoryboardFrame> {
+  const response = await fetch(`${getApiBaseUrl()}/api/story/storyboard/regenerate-shot`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    let message = 'Shot frame regeneration failed';
+    try {
+      const errorPayload = await response.json();
+      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
+        message = errorPayload.detail;
+      }
+    } catch {
+      message = `Shot frame regeneration failed with status ${response.status}`;
+    }
+    throw new Error(message);
+  }
+
+  return response.json() as Promise<StoryboardFrame>;
+}
+
 export async function generateInpaintImage(payload: FormData): Promise<CreateImageResponse> {
   const response = await fetch(`${getApiBaseUrl()}/api/image/inpaint`, {
     method: 'POST',
@@ -103,6 +171,133 @@ export async function generateCharacterImages(payload: CreateImageRequest): Prom
   return response.json() as Promise<CreateImageResponse>;
 }
 
+export async function generateScriptCharacterImages(
+  payload: GenerateScriptCharacterRequest,
+): Promise<CreateImageResponse> {
+  const response = await fetch(`${getApiBaseUrl()}/api/image/character-generate-from-script`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    let message = 'Script character generation failed';
+    try {
+      const errorPayload = await response.json();
+      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
+        message = errorPayload.detail;
+      }
+    } catch {
+      message = `Script character generation failed with status ${response.status}`;
+    }
+    throw new Error(message);
+  }
+
+  return response.json() as Promise<CreateImageResponse>;
+}
+
+export async function generateScriptEnvironmentImage(
+  payload: GenerateScriptEnvironmentRequest,
+): Promise<CreateImageResponse> {
+  const response = await fetch(`${getApiBaseUrl()}/api/image/environment-generate-from-script`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    let message = 'Script environment generation failed';
+    try {
+      const errorPayload = await response.json();
+      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
+        message = errorPayload.detail;
+      }
+    } catch {
+      message = `Script environment generation failed with status ${response.status}`;
+    }
+    throw new Error(message);
+  }
+
+  return response.json() as Promise<CreateImageResponse>;
+}
+
+export async function generateObjectReferenceImage(payload: GenerateObjectReferenceRequest): Promise<CreateImageResponse> {
+  const response = await fetch(`${getApiBaseUrl()}/api/image/object-generate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    let message = 'Object reference generation failed';
+    try {
+      const errorPayload = await response.json();
+      if (typeof errorPayload?.detail === 'string') message = errorPayload.detail;
+    } catch { message = `Object reference generation failed with status ${response.status}`; }
+    throw new Error(message);
+  }
+  return response.json() as Promise<CreateImageResponse>;
+}
+
+export async function regenerateCharacterKeyframe(
+  generationJobId: string,
+  view: CharacterView,
+  projectId: string,
+  correction = ''
+): Promise<CharacterKeyframe> {
+  const response = await fetch(
+    `${getApiBaseUrl()}/api/image/character-keyframes/${generationJobId}/${view}/regenerate`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ project_id: projectId, correction }),
+    }
+  );
+
+  if (!response.ok) {
+    let message = 'Character keyframe regeneration failed';
+    try {
+      const errorPayload = await response.json();
+      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
+        message = errorPayload.detail;
+      }
+    } catch {
+      message = `Character keyframe regeneration failed with status ${response.status}`;
+    }
+    throw new Error(message);
+  }
+
+  return response.json() as Promise<CharacterKeyframe>;
+}
+
+export async function finalizeCharacter(payload: FinalizeCharacterRequest): Promise<FinalizeCharacterResponse> {
+  const response = await fetch(`${getApiBaseUrl()}/api/image/character-finalize`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    let message = 'Character save failed';
+    try {
+      const errorPayload = await response.json();
+      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
+        message = errorPayload.detail;
+      }
+    } catch {
+      message = `Character save failed with status ${response.status}`;
+    }
+    throw new Error(message);
+  }
+
+  return response.json() as Promise<FinalizeCharacterResponse>;
+}
+
 export async function generateMultipleAngle(imageFile: File, prompt: string): Promise<{ images: string[] }> {
   const formData = new FormData();
   formData.append('image', imageFile);
@@ -133,7 +328,9 @@ export async function generateImageFromUpload(
   imageFile: File,
   guidancePrompt: string,
   model: string,
-  provider: 'replicate' | 'wavespeed'
+  provider: 'replicate' | 'wavespeed',
+  projectId: string,
+  characterId?: string,
 ): Promise<CreateImageResponse> {
   const formData = new FormData();
   formData.append('image', imageFile);
@@ -142,7 +339,10 @@ export async function generateImageFromUpload(
   formData.append('provider', provider);
   formData.append('aspect_ratio', '1:1');
   formData.append('resolution', '1K'); // Capital K required by model
-  formData.append('num_images', '4');
+  formData.append('project_id', projectId);
+  if (characterId) {
+    formData.append('character_id', characterId);
+  }
 
   const response = await fetch(`${getApiBaseUrl()}/api/image/generate-from-upload`, {
     method: 'POST',
@@ -158,6 +358,45 @@ export async function generateImageFromUpload(
       }
     } catch {
       message = `Image generation from upload failed with status ${response.status}`;
+    }
+    throw new Error(message);
+  }
+
+  return response.json() as Promise<CreateImageResponse>;
+}
+
+export async function generateEnvironmentImageFromUpload(
+  imageFile: File,
+  guidancePrompt: string,
+  model: string,
+  provider: 'replicate' | 'wavespeed',
+  projectId: string,
+  environmentId: string,
+): Promise<CreateImageResponse> {
+  const formData = new FormData();
+  formData.append('image', imageFile);
+  formData.append('guidance_prompt', guidancePrompt);
+  formData.append('model', model);
+  formData.append('provider', provider);
+  formData.append('aspect_ratio', '16:9');
+  formData.append('resolution', '1K');
+  formData.append('project_id', projectId);
+  formData.append('environment_id', environmentId);
+
+  const response = await fetch(`${getApiBaseUrl()}/api/image/environment-generate-from-upload`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    let message = 'Environment generation from upload failed';
+    try {
+      const errorPayload = await response.json();
+      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
+        message = errorPayload.detail;
+      }
+    } catch {
+      message = `Environment generation from upload failed with status ${response.status}`;
     }
     throw new Error(message);
   }

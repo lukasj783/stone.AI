@@ -5,9 +5,783 @@ import asyncio
 
 from core.supabase_client import get_supabase_client
 from core.config import get_settings
-from schemas.story import GenerateOutlineResponse, GenerateScriptPayload, GenerateScriptResponse, MovieIdeaPayload
+from schemas.story import (
+    CharacterProfileResponse,
+    CharacterScriptSyncPreviewResponse,
+    ConfirmCharacterScriptSyncPayload,
+    ConfirmCharacterScriptSyncResponse,
+    CreateObjectPayload,
+    ExtractedCharacterSchema,
+    ExtractedObjectSchema,
+    ExtractScriptCharactersPayload,
+    ExtractScriptCharactersResponse,
+    ExtractScriptEnvironmentsPayload,
+    ExtractScriptEnvironmentsResponse,
+    ExtractScriptObjectsPayload,
+    ExtractScriptObjectsResponse,
+    GenerateOutlineResponse,
+    GenerateScriptPayload,
+    GenerateScriptResponse,
+    MovieIdeaPayload,
+    ObjectProfileResponse,
+    PreviewCharacterScriptSyncPayload,
+    UpdateObjectPayload,
+    UpdateCharacterProfilePayload,
+)
+from schemas.image_generation import (
+    GenerateStoryboardRequest,
+    GenerateStoryboardResponse,
+    RegenerateShotFrameRequest,
+    StoryboardFrame,
+)
+from services.storyboard_generation import generate_scene_storyboard, regenerate_single_shot_frame
+from services.character_text_to_image import EDITABLE_CHARACTER_FIELDS, effective_character_profile
 
 router = APIRouter(prefix="/api/story", tags=["story"])
+
+
+def _parse_json_object(value: str) -> object:
+    cleaned = value.strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        cleaned = "\n".join(lines[1:-1] if lines and lines[-1].strip() == "```" else lines[1:]).strip()
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        start = min((index for index in (cleaned.find("{"), cleaned.find("[")) if index >= 0), default=-1)
+        end = max(cleaned.rfind("}"), cleaned.rfind("]"))
+        if start < 0 or end <= start:
+            raise
+        return json.loads(cleaned[start : end + 1])
+
+
+def _normalize_character_name(value: str) -> str:
+    return " ".join(value.upper().strip().split())
+
+
+def _manual_override_fields(metadata: object) -> list[str]:
+    overrides = metadata.get("manual_overrides") if isinstance(metadata, dict) else None
+    if not isinstance(overrides, dict):
+        return []
+    return [field for field in EDITABLE_CHARACTER_FIELDS if field in overrides]
+
+
+def _character_profile_response(character: dict) -> CharacterProfileResponse:
+    effective = effective_character_profile(character)
+    return CharacterProfileResponse(
+        id=str(character["id"]),
+        name=str(character["name"]),
+        role=effective.get("role") if isinstance(effective.get("role"), str) else None,
+        age=effective.get("age") if isinstance(effective.get("age"), int) else None,
+        gender=effective.get("gender") if isinstance(effective.get("gender"), str) else None,
+        race=effective.get("race") if isinstance(effective.get("race"), str) else None,
+        appearance=effective.get("appearance") if isinstance(effective.get("appearance"), str) else None,
+        personality=effective.get("personality") if isinstance(effective.get("personality"), str) else None,
+        manual_override_fields=_manual_override_fields(character.get("metadata")),
+    )
+
+
+def _build_character_script_description(character: dict) -> str:
+    effective = effective_character_profile(character)
+    details: list[str] = []
+    age = effective.get("age")
+    if isinstance(age, int) and not isinstance(age, bool):
+        details.append(f"{age} years old")
+    for field in ("gender", "race", "role"):
+        value = effective.get(field)
+        if isinstance(value, str) and value.strip():
+            details.append(value.strip())
+    appearance = effective.get("appearance")
+    personality = effective.get("personality")
+    description = ", ".join(details)
+    if isinstance(appearance, str) and appearance.strip():
+        description = f"{description}, {appearance.strip()}" if description else appearance.strip()
+    if isinstance(personality, str) and personality.strip():
+        description = f"{description}. {personality.strip()}" if description else personality.strip()
+    if not description:
+        raise ValueError("Add at least one character profile value before updating the script")
+    return f"{character['name']} is {description}."
+
+
+def _load_script_character_for_profile(supabase: object, project_id: str, character_id: str) -> dict:
+    result = supabase.table("characters").select(
+        "id, name, role, age, gender, race, appearance, personality, metadata"
+    ).eq("id", character_id).eq("project_id", project_id).maybe_single().execute()
+    character = result.data
+    metadata = (character or {}).get("metadata") or {}
+    if not character or not isinstance(metadata, dict) or metadata.get("source") != "script":
+        raise ValueError("Script-derived character was not found in this project")
+    return character
+
+
+def _find_character_first_appearance(supabase: object, project_id: str, character: dict) -> tuple[dict, dict, dict | None]:
+    scenes_result = supabase.table("scenes").select("id, slugline_raw, sort_order").eq(
+        "project_id", project_id
+    ).order("sort_order").execute()
+    scenes_by_id = {scene["id"]: scene for scene in (scenes_result.data or [])}
+    blocks_result = supabase.table("script_blocks").select(
+        "id, scene_id, character_id, character_name, sort_order, metadata"
+    ).eq("project_id", project_id).execute()
+    character_name = _normalize_character_name(str(character["name"]))
+    appearances = [
+        block for block in (blocks_result.data or [])
+        if block.get("scene_id") in scenes_by_id
+        and (block.get("character_id") == character["id"] or _normalize_character_name(str(block.get("character_name") or "")) == character_name)
+    ]
+    if not appearances:
+        raise ValueError("This character does not have an on-screen appearance in the saved script")
+    first = min(appearances, key=lambda block: (scenes_by_id[block["scene_id"]].get("sort_order", 0), block.get("sort_order", 0)))
+    managed = next((
+        block for block in (blocks_result.data or [])
+        if block.get("scene_id") == first["scene_id"]
+        and isinstance(block.get("metadata"), dict)
+        and block["metadata"].get("source") == "character_profile_sync"
+        and block["metadata"].get("character_id") == character["id"]
+    ), None)
+    return first, scenes_by_id[first["scene_id"]], managed
+
+
+def _normalize_environment_name(value: str) -> str:
+    return " ".join(value.casefold().strip().split())
+
+
+def _normalize_object_name(value: str) -> str:
+    return " ".join(value.casefold().strip().split())
+
+
+def _normalize_object_tags(values: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        tag = " ".join(value.strip().split())
+        key = tag.casefold()
+        if tag and key not in seen:
+            normalized.append(tag)
+            seen.add(key)
+    return normalized
+
+
+def _object_profile_response(prop: dict, primary_image_url: str | None = None) -> ObjectProfileResponse:
+    metadata = prop.get("metadata") if isinstance(prop.get("metadata"), dict) else {}
+    sources = metadata.get("sources") if isinstance(metadata.get("sources"), list) else []
+    overrides = metadata.get("manual_overrides") if isinstance(metadata.get("manual_overrides"), dict) else {}
+    return ObjectProfileResponse(
+        id=str(prop["id"]),
+        name=str(prop["name"]),
+        description=prop.get("description") if isinstance(prop.get("description"), str) else None,
+        tags=[value for value in (prop.get("tags") or []) if isinstance(value, str)],
+        sources=[value for value in sources if isinstance(value, str)],
+        manual_override_fields=[field for field in ("name", "description", "tags") if field in overrides],
+        source_scene_ids=[value for value in metadata.get("source_scene_ids", []) if isinstance(value, str)],
+        source_sluglines=[value for value in metadata.get("source_sluglines", []) if isinstance(value, str)],
+        primary_image_url=primary_image_url,
+    )
+
+
+def _extract_script_environments(scenes: list[dict]) -> list[dict]:
+    """Aggregate only explicit scene-location fields into reusable environments."""
+    environments_by_key: dict[str, dict] = {}
+
+    for scene in scenes:
+        location = scene.get("location")
+        if not isinstance(location, str) or not location.strip():
+            continue
+
+        name = " ".join(location.strip().split())
+        script_key = _normalize_environment_name(name)
+        environment = environments_by_key.setdefault(script_key, {
+            "name": name,
+            "source_scene_ids": [],
+            "source_sluglines": [],
+            "location_types": [],
+            "time_of_day_values": [],
+        })
+
+        scene_id = scene.get("id")
+        if isinstance(scene_id, str) and scene_id not in environment["source_scene_ids"]:
+            environment["source_scene_ids"].append(scene_id)
+
+        slugline = scene.get("slugline_raw")
+        if isinstance(slugline, str) and slugline.strip() and slugline not in environment["source_sluglines"]:
+            environment["source_sluglines"].append(slugline)
+
+        for source_field, target_field in (("location_type", "location_types"), ("time_of_day", "time_of_day_values")):
+            value = scene.get(source_field)
+            if isinstance(value, str) and value.strip():
+                normalized_value = " ".join(value.strip().split())
+                if normalized_value not in environment[target_field]:
+                    environment[target_field].append(normalized_value)
+
+    return list(environments_by_key.values())
+
+
+def _persist_script_environments(supabase: object, project_id: str, environments: list[dict]) -> None:
+    existing_result = supabase.table("environments").select("id, metadata").eq("project_id", project_id).execute()
+    existing_by_key = {
+        str(metadata.get("script_key")): environment
+        for environment in (existing_result.data or [])
+        if isinstance((metadata := environment.get("metadata")), dict)
+        and metadata.get("source") == "script"
+        and isinstance(metadata.get("script_key"), str)
+    }
+
+    for environment in environments:
+        script_key = _normalize_environment_name(environment["name"])
+        metadata = {
+            "source": "script",
+            "script_key": script_key,
+            "source_scene_ids": environment["source_scene_ids"],
+            "source_sluglines": environment["source_sluglines"],
+            "location_types": environment["location_types"],
+            "time_of_day_values": environment["time_of_day_values"],
+            "scene_count": len(environment["source_scene_ids"]),
+            "extraction_version": 1,
+        }
+        values = {"name": environment["name"], "description": None, "tags": [], "metadata": metadata}
+        existing = existing_by_key.get(script_key)
+        if existing:
+            supabase.table("environments").update(values).eq("id", existing["id"]).execute()
+        else:
+            supabase.table("environments").insert({"project_id": project_id, **values}).execute()
+
+
+def _extract_script_objects(client: object, screenplay: dict) -> list[ExtractedObjectSchema]:
+    prompt = f"""You extract explicitly supported, reusable physical objects from a screenplay.
+
+Screenplay JSON:
+{json.dumps(screenplay)}
+
+Return ONLY valid JSON in this shape:
+{{"objects":[{{"name":"", "description":null, "tags":[], "image_prompt":"", "source_scene_indexes":[]}}]}}
+
+Include only story-significant physical objects that are explicitly named or unambiguously described, such as a named weapon, letter, vehicle, device, or recurring personal item. Exclude characters, locations, generic set dressing, clothing, food, and broad groups of objects. Do not infer factual details. Merge repeated mentions into one object. `source_scene_indexes` must use the zero-based scene indexes supplied in the screenplay. `description` and `image_prompt` must contain only explicit screenplay facts; use null or an empty string when unavailable."""
+    output = client.run("google/gemini-2.5-flash", input={"prompt": prompt})
+    parsed = _parse_json_object(output if isinstance(output, str) else "".join(output))
+    raw_objects = parsed.get("objects", []) if isinstance(parsed, dict) else parsed
+    if not isinstance(raw_objects, list):
+        raise ValueError("Object extractor response is missing objects")
+
+    extracted_by_name: dict[str, ExtractedObjectSchema] = {}
+    for raw_object in raw_objects:
+        if not isinstance(raw_object, dict):
+            continue
+        try:
+            extracted = ExtractedObjectSchema.model_validate(raw_object)
+        except Exception:
+            continue
+        name = " ".join(extracted.name.strip().split())
+        key = _normalize_object_name(name)
+        if not key:
+            continue
+        normalized = extracted.model_copy(update={
+            "name": name,
+            "description": " ".join(extracted.description.strip().split()) if extracted.description else None,
+            "tags": _normalize_object_tags(extracted.tags),
+            "image_prompt": extracted.image_prompt.strip(),
+            "source_scene_indexes": sorted({index for index in extracted.source_scene_indexes if index >= 0}),
+        })
+        previous = extracted_by_name.get(key)
+        if previous:
+            normalized = normalized.model_copy(update={
+                "description": previous.description or normalized.description,
+                "tags": _normalize_object_tags([*previous.tags, *normalized.tags]),
+                "image_prompt": previous.image_prompt or normalized.image_prompt,
+                "source_scene_indexes": sorted(set(previous.source_scene_indexes) | set(normalized.source_scene_indexes)),
+            })
+        extracted_by_name[key] = normalized
+    return list(extracted_by_name.values())
+
+
+def _persist_script_objects(supabase: object, project_id: str, objects: list[ExtractedObjectSchema], scenes: list[dict]) -> None:
+    existing_result = supabase.table("props").select("id, name, description, tags, metadata").eq("project_id", project_id).execute()
+    existing_by_key: dict[str, dict] = {}
+    for prop in existing_result.data or []:
+        metadata = prop.get("metadata") if isinstance(prop.get("metadata"), dict) else {}
+        for key in (_normalize_object_name(str(prop.get("name") or "")), metadata.get("script_key")):
+            if isinstance(key, str) and key:
+                existing_by_key[key] = prop
+
+    for extracted in objects:
+        script_key = _normalize_object_name(extracted.name)
+        source_scenes = [scenes[index] for index in extracted.source_scene_indexes if index < len(scenes)]
+        scene_ids = [scene["id"] for scene in source_scenes if isinstance(scene.get("id"), str)]
+        sluglines = [scene["slugline_raw"] for scene in source_scenes if isinstance(scene.get("slugline_raw"), str) and scene["slugline_raw"].strip()]
+        existing = existing_by_key.get(script_key)
+        existing_metadata = existing.get("metadata") if existing and isinstance(existing.get("metadata"), dict) else {}
+        overrides = existing_metadata.get("manual_overrides") if isinstance(existing_metadata.get("manual_overrides"), dict) else {}
+        sources = {value for value in existing_metadata.get("sources", []) if isinstance(value, str)}
+        sources.add("script")
+        metadata = {
+            **existing_metadata,
+            "sources": sorted(sources),
+            "script_key": script_key,
+            "script_facts": {"name": extracted.name, "description": extracted.description, "tags": extracted.tags},
+            "image_prompt": extracted.image_prompt,
+            "source_scene_ids": scene_ids,
+            "source_sluglines": sluglines,
+            "extraction_version": 1,
+            "manual_overrides": overrides,
+        }
+        values: dict[str, object] = {"metadata": metadata}
+        if "name" not in overrides:
+            values["name"] = extracted.name
+        if "description" not in overrides:
+            values["description"] = extracted.description
+        if "tags" not in overrides:
+            values["tags"] = extracted.tags
+        if existing:
+            supabase.table("props").update(values).eq("id", existing["id"]).eq("project_id", project_id).execute()
+        else:
+            supabase.table("props").insert({"project_id": project_id, "name": extracted.name, "description": extracted.description, "tags": extracted.tags, **values}).execute()
+
+
+def _normalize_extracted_character(raw_character: dict) -> dict:
+    normalized = dict(raw_character)
+    age = normalized.get("age")
+    if isinstance(age, str):
+        age = age.strip()
+        normalized["age"] = int(age) if age.isdigit() else None
+    elif isinstance(age, bool) or not isinstance(age, int):
+        normalized["age"] = None
+    if normalized.get("character_type") not in {"main", "supporting"}:
+        normalized["character_type"] = "supporting"
+    return normalized
+
+
+def _extract_script_characters(client: object, screenplay: dict) -> list[ExtractedCharacterSchema]:
+    prompt = f"""You extract only explicitly supported character facts from a screenplay.
+
+Screenplay JSON:
+{json.dumps(screenplay)}
+
+Return ONLY valid JSON in this shape:
+{{"characters":[{{"name":"", "character_type":"main" | "supporting", "role":null, "age":null, "gender":null, "race":null, "appearance":null, "personality":null, "tags":[], "image_prompt":""}}]}}
+
+Include every named speaking or explicitly named character. Set `character_type` to `main` only for characters central to the screenplay's main plot; set it to `supporting` for all other named characters. Do not infer, guess, or stereotype age, gender, race, visual traits, role, or personality. `age` must be an exact whole number or null; do not use ranges or labels such as "40s". Use null when the screenplay does not explicitly establish a fact. `image_prompt` must be a concise visual description composed only from explicit screenplay facts; use an empty string when no visual facts are present."""
+    output = client.run("google/gemini-2.5-flash", input={"prompt": prompt})
+    parsed = _parse_json_object(output if isinstance(output, str) else "".join(output))
+    raw_characters = parsed.get("characters", []) if isinstance(parsed, dict) else parsed
+    if not isinstance(raw_characters, list):
+        raise ValueError("Character extractor response is missing characters")
+
+    extracted: list[ExtractedCharacterSchema] = []
+    seen_names: set[str] = set()
+    for raw_character in raw_characters:
+        if not isinstance(raw_character, dict):
+            continue
+        character = ExtractedCharacterSchema.model_validate(_normalize_extracted_character(raw_character))
+        normalized_name = _normalize_character_name(character.name)
+        if not normalized_name or normalized_name in seen_names:
+            continue
+        seen_names.add(normalized_name)
+        extracted.append(character)
+    return extracted
+
+
+def _persist_script_characters(supabase: object, project_id: str, characters: list[ExtractedCharacterSchema]) -> None:
+    existing_result = supabase.table("characters").select("id, name, metadata").eq("project_id", project_id).execute()
+    existing_by_name = {
+        _normalize_character_name(str(character.get("name") or "")): character
+        for character in (existing_result.data or [])
+    }
+    character_id_by_name: dict[str, str] = {}
+
+    for character in characters:
+        normalized_name = _normalize_character_name(character.name)
+        values = character.model_dump(exclude={"image_prompt"})
+        values["tags"] = values.get("tags") or []
+        existing = existing_by_name.get(normalized_name)
+        existing_metadata = existing.get("metadata") if existing and isinstance(existing.get("metadata"), dict) else {}
+        values["metadata"] = {
+            **existing_metadata,
+            "source": "script",
+            "script_key": normalized_name,
+            "image_prompt": character.image_prompt,
+        }
+        if existing:
+            supabase.table("characters").update(values).eq("id", existing["id"]).execute()
+            character_id_by_name[normalized_name] = existing["id"]
+        else:
+            result = supabase.table("characters").insert({"project_id": project_id, **values}).execute()
+            if result.data:
+                character_id_by_name[normalized_name] = result.data[0]["id"]
+            else:
+                inserted = supabase.table("characters").select("id").eq("project_id", project_id).eq(
+                    "name", character.name
+                ).order("created_at", desc=True).limit(1).execute()
+                if inserted.data:
+                    character_id_by_name[normalized_name] = inserted.data[0]["id"]
+
+    blocks_result = supabase.table("script_blocks").select("id, character_name").eq("project_id", project_id).execute()
+    for block in blocks_result.data or []:
+        character_name = block.get("character_name")
+        if not isinstance(character_name, str):
+            continue
+        character_id = character_id_by_name.get(_normalize_character_name(character_name))
+        if character_id:
+            supabase.table("script_blocks").update({"character_id": character_id}).eq("id", block["id"]).execute()
+
+
+@router.post("/extract-characters", response_model=ExtractScriptCharactersResponse)
+async def extract_characters_from_existing_script(
+    payload: ExtractScriptCharactersPayload,
+) -> ExtractScriptCharactersResponse:
+    """Build the script-derived character catalog from an already saved screenplay."""
+    settings = get_settings()
+    if not settings.replicate_api_token:
+        raise HTTPException(status_code=500, detail="REPLICATE_API_TOKEN not configured")
+
+    supabase = get_supabase_client()
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase client not configured")
+
+    scenes_result = supabase.table("scenes").select("id, slugline_raw, sort_order").eq(
+        "project_id", payload.project_id
+    ).order("sort_order").execute()
+    scenes = scenes_result.data or []
+    blocks_result = supabase.table("script_blocks").select(
+        "scene_id, block_type, content, character_name, parenthetical, sort_order"
+    ).eq("project_id", payload.project_id).order("sort_order").execute()
+    blocks_by_scene: dict[str, list[dict]] = {}
+    for block in blocks_result.data or []:
+        blocks_by_scene.setdefault(block["scene_id"], []).append(block)
+
+    screenplay = {
+        "scenes": [
+            {
+                "slugline_raw": scene.get("slugline_raw", ""),
+                "blocks": blocks_by_scene.get(scene["id"], []),
+            }
+            for scene in scenes
+        ],
+    }
+    if not any(scene["blocks"] for scene in screenplay["scenes"]):
+        raise HTTPException(status_code=400, detail="No screenplay blocks were found for this project")
+
+    try:
+        client = replicate.Client(api_token=settings.replicate_api_token)
+        characters = await asyncio.to_thread(_extract_script_characters, client, screenplay)
+        await asyncio.to_thread(_persist_script_characters, supabase, payload.project_id, characters)
+        return ExtractScriptCharactersResponse(count=len(characters))
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Character extraction failed: {error}") from error
+
+
+@router.patch("/characters/profile", response_model=CharacterProfileResponse)
+async def update_character_profile(payload: UpdateCharacterProfilePayload) -> CharacterProfileResponse:
+    """Store explicit user choices separately from extracted screenplay facts."""
+    supabase = get_supabase_client()
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase client not configured")
+    try:
+        character = _load_script_character_for_profile(supabase, payload.project_id, payload.character_id)
+        metadata = dict(character.get("metadata") or {})
+        overrides = dict(metadata.get("manual_overrides") or {})
+        for field in EDITABLE_CHARACTER_FIELDS:
+            if field in payload.model_fields_set:
+                value = getattr(payload, field)
+                if field == "age":
+                    if value is not None:
+                        overrides[field] = value
+                elif isinstance(value, str) and value.strip():
+                    overrides[field] = value.strip()
+            if field in payload.clear_fields:
+                overrides.pop(field, None)
+        metadata["manual_overrides"] = overrides
+        metadata["manual_override_fields"] = [field for field in EDITABLE_CHARACTER_FIELDS if field in overrides]
+        supabase.table("characters").update({"metadata": metadata}).eq(
+            "id", payload.character_id
+        ).eq("project_id", payload.project_id).execute()
+        updated_character = _load_script_character_for_profile(supabase, payload.project_id, payload.character_id)
+        return _character_profile_response(updated_character)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=f"Character profile update failed: {error}") from error
+
+
+@router.post("/storyboard", response_model=GenerateStoryboardResponse)
+async def generate_storyboard(payload: GenerateStoryboardRequest) -> GenerateStoryboardResponse:
+    """Generate durable storyboard stills for a screenplay scene using character views, environment, objects, and action lines."""
+    try:
+        return await asyncio.to_thread(
+            generate_scene_storyboard,
+            project_id=payload.project_id,
+            scene_id=payload.scene_id,
+            force_regenerate=payload.force_regenerate,
+            provider=payload.provider,
+            model=payload.model,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Storyboard generation failed: {error}") from error
+
+
+@router.post("/storyboard/regenerate-shot", response_model=StoryboardFrame)
+async def regenerate_shot(payload: RegenerateShotFrameRequest) -> StoryboardFrame:
+    """Regenerate a single shot/frame image in a storyboard."""
+    try:
+        return await asyncio.to_thread(
+            regenerate_single_shot_frame,
+            project_id=payload.project_id,
+            shot_id=payload.shot_id,
+            prompt_override=payload.prompt_override,
+            provider=payload.provider,
+            model=payload.model,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Shot regeneration failed: {error}") from error
+
+
+@router.post("/characters/script-sync/preview", response_model=CharacterScriptSyncPreviewResponse)
+async def preview_character_script_sync(
+    payload: PreviewCharacterScriptSyncPayload,
+) -> CharacterScriptSyncPreviewResponse:
+    """Preview one managed action line before the character's first appearance."""
+    supabase = get_supabase_client()
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase client not configured")
+    try:
+        character = _load_script_character_for_profile(supabase, payload.project_id, payload.character_id)
+        if not _manual_override_fields(character.get("metadata")):
+            raise ValueError("Save at least one manual character value before updating the script")
+        _, scene, managed_block = _find_character_first_appearance(supabase, payload.project_id, character)
+        return CharacterScriptSyncPreviewResponse(
+            character_id=payload.character_id,
+            scene_id=str(scene["id"]),
+            scene_slugline=scene.get("slugline_raw"),
+            content=_build_character_script_description(character),
+            action="replace" if managed_block else "insert",
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Character script preview failed: {error}") from error
+
+
+@router.post("/characters/script-sync/confirm", response_model=ConfirmCharacterScriptSyncResponse)
+async def confirm_character_script_sync(
+    payload: ConfirmCharacterScriptSyncPayload,
+) -> ConfirmCharacterScriptSyncResponse:
+    """Insert or replace the single script block owned by character-profile synchronization."""
+    supabase = get_supabase_client()
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase client not configured")
+    try:
+        character = _load_script_character_for_profile(supabase, payload.project_id, payload.character_id)
+        expected_content = _build_character_script_description(character)
+        if payload.content != expected_content:
+            raise ValueError("The script update preview is outdated. Preview it again before confirming.")
+        first_appearance, scene, managed_block = _find_character_first_appearance(supabase, payload.project_id, character)
+        metadata = {
+            "source": "character_profile_sync",
+            "character_id": payload.character_id,
+            "manual_override_fields": _manual_override_fields(character.get("metadata")),
+        }
+        if managed_block:
+            result = supabase.table("script_blocks").update({"content": expected_content, "metadata": metadata}).eq(
+                "id", managed_block["id"]
+            ).select("id").single().execute()
+            action = "replace"
+        else:
+            scene_blocks = supabase.table("script_blocks").select("id, sort_order").eq(
+                "scene_id", first_appearance["scene_id"]
+            ).order("sort_order", desc=True).execute()
+            for block in scene_blocks.data or []:
+                if block.get("sort_order", 0) >= first_appearance.get("sort_order", 0):
+                    supabase.table("script_blocks").update({"sort_order": block["sort_order"] + 1}).eq("id", block["id"]).execute()
+            result = supabase.table("script_blocks").insert({
+                "project_id": payload.project_id,
+                "scene_id": first_appearance["scene_id"],
+                "block_type": "action",
+                "content": expected_content,
+                "sort_order": first_appearance.get("sort_order", 0),
+                "metadata": metadata,
+            }).select("id").single().execute()
+            action = "insert"
+        return ConfirmCharacterScriptSyncResponse(
+            character_id=payload.character_id,
+            scene_id=str(scene["id"]),
+            scene_slugline=scene.get("slugline_raw"),
+            content=expected_content,
+            action=action,
+            script_block_id=str(result.data["id"]),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Character script update failed: {error}") from error
+
+
+@router.post("/extract-environments", response_model=ExtractScriptEnvironmentsResponse)
+async def extract_environments_from_existing_script(
+    payload: ExtractScriptEnvironmentsPayload,
+) -> ExtractScriptEnvironmentsResponse:
+    """Build a source-backed environment catalog from saved scene headings."""
+    supabase = get_supabase_client()
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase client not configured")
+
+    try:
+        result = supabase.table("scenes").select(
+            "id, slugline_raw, location_type, location, time_of_day, sort_order"
+        ).eq("project_id", payload.project_id).order("sort_order").execute()
+        environments = _extract_script_environments(result.data or [])
+        _persist_script_environments(supabase, payload.project_id, environments)
+        return ExtractScriptEnvironmentsResponse(count=len(environments))
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Environment extraction failed: {error}") from error
+
+
+@router.post("/extract-objects", response_model=ExtractScriptObjectsResponse)
+async def extract_objects_from_existing_script(
+    payload: ExtractScriptObjectsPayload,
+) -> ExtractScriptObjectsResponse:
+    """Extract explicit physical objects and merge them into the project catalog."""
+    settings = get_settings()
+    if not settings.replicate_api_token:
+        raise HTTPException(status_code=500, detail="REPLICATE_API_TOKEN not configured")
+    supabase = get_supabase_client()
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase client not configured")
+    try:
+        scenes_result = supabase.table("scenes").select("id, slugline_raw, sort_order").eq(
+            "project_id", payload.project_id
+        ).order("sort_order").execute()
+        scenes = scenes_result.data or []
+        blocks_result = supabase.table("script_blocks").select(
+            "scene_id, block_type, content, character_name, parenthetical, sort_order"
+        ).eq("project_id", payload.project_id).order("sort_order").execute()
+        blocks_by_scene: dict[str, list[dict]] = {}
+        for block in blocks_result.data or []:
+            if isinstance(block.get("scene_id"), str):
+                blocks_by_scene.setdefault(block["scene_id"], []).append(block)
+        screenplay = {
+            "scenes": [
+                {
+                    "scene_index": index,
+                    "slugline_raw": scene.get("slugline_raw", ""),
+                    "blocks": blocks_by_scene.get(scene["id"], []),
+                }
+                for index, scene in enumerate(scenes)
+            ],
+        }
+        if not any(scene["blocks"] for scene in screenplay["scenes"]):
+            raise HTTPException(status_code=400, detail="No screenplay blocks were found for this project")
+        client = replicate.Client(api_token=settings.replicate_api_token)
+        objects = await asyncio.to_thread(_extract_script_objects, client, screenplay)
+        await asyncio.to_thread(_persist_script_objects, supabase, payload.project_id, objects, scenes)
+        return ExtractScriptObjectsResponse(count=len(objects))
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Object extraction failed: {error}") from error
+
+
+@router.get("/objects", response_model=list[ObjectProfileResponse])
+async def list_objects(project_id: str) -> list[ObjectProfileResponse]:
+    supabase = get_supabase_client()
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase client not configured")
+    try:
+        result = supabase.table("props").select("id, name, description, tags, primary_asset_id, metadata").eq(
+            "project_id", project_id
+        ).order("name").execute()
+        props = result.data or []
+        asset_ids = [prop["primary_asset_id"] for prop in props if isinstance(prop.get("primary_asset_id"), str)]
+        assets = supabase.table("assets").select("id, url").in_("id", asset_ids).execute().data if asset_ids else []
+        urls = {asset["id"]: asset["url"] for asset in assets or [] if isinstance(asset.get("url"), str)}
+        return [_object_profile_response(prop, urls.get(prop.get("primary_asset_id"))) for prop in props]
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Failed to load objects: {error}") from error
+
+
+@router.post("/objects", response_model=ObjectProfileResponse, status_code=201)
+async def create_object(payload: CreateObjectPayload) -> ObjectProfileResponse:
+    supabase = get_supabase_client()
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase client not configured")
+    name = " ".join(payload.name.strip().split())
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
+    description = " ".join(payload.description.strip().split()) if payload.description else None
+    tags = _normalize_object_tags(payload.tags)
+    metadata = {"sources": ["manual"], "manual_overrides": {"name": True, "description": True, "tags": True}}
+    try:
+        result = supabase.table("props").insert({
+            "project_id": payload.project_id, "name": name, "description": description, "tags": tags, "metadata": metadata,
+        }).execute()
+        if not result.data:
+            raise RuntimeError("Object could not be created")
+        return _object_profile_response(result.data[0])
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=f"Object creation failed: {error}") from error
+
+
+@router.patch("/objects/{object_id}", response_model=ObjectProfileResponse)
+async def update_object(object_id: str, payload: UpdateObjectPayload) -> ObjectProfileResponse:
+    supabase = get_supabase_client()
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase client not configured")
+    try:
+        loaded = supabase.table("props").select("id, name, description, tags, metadata").eq("id", object_id).eq(
+            "project_id", payload.project_id
+        ).maybe_single().execute().data
+        if not loaded:
+            raise ValueError("Object was not found in this project")
+        metadata = dict(loaded.get("metadata") or {})
+        overrides = dict(metadata.get("manual_overrides") or {})
+        sources = {value for value in metadata.get("sources", []) if isinstance(value, str)}
+        sources.add("manual")
+        metadata["sources"] = sorted(sources)
+        values: dict[str, object] = {"metadata": metadata}
+        if "name" in payload.model_fields_set:
+            name = " ".join((payload.name or "").strip().split())
+            if not name:
+                raise ValueError("Name is required")
+            values["name"] = name
+            overrides["name"] = True
+        if "description" in payload.model_fields_set:
+            values["description"] = " ".join(payload.description.strip().split()) if payload.description else None
+            overrides["description"] = True
+        if "tags" in payload.model_fields_set:
+            values["tags"] = _normalize_object_tags(payload.tags or [])
+            overrides["tags"] = True
+        metadata["manual_overrides"] = overrides
+        supabase.table("props").update(values).eq("id", object_id).eq("project_id", payload.project_id).execute()
+        updated = supabase.table("props").select("id, name, description, tags, metadata").eq("id", object_id).eq(
+            "project_id", payload.project_id
+        ).maybe_single().execute().data
+        if not updated:
+            raise ValueError("Object was not found after updating")
+        return _object_profile_response(updated)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=f"Object update failed: {error}") from error
+
+
+@router.delete("/objects/{object_id}", status_code=204)
+async def delete_object(object_id: str, project_id: str) -> None:
+    supabase = get_supabase_client()
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase client not configured")
+    try:
+        existing = supabase.table("props").select("id").eq("id", object_id).eq("project_id", project_id).maybe_single().execute().data
+        if not existing:
+            raise ValueError("Object was not found in this project")
+        supabase.table("props").delete().eq("id", object_id).eq("project_id", project_id).execute()
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=f"Object deletion failed: {error}") from error
 
 @router.post("/generate-outline", response_model=GenerateOutlineResponse)
 async def generate_outline(payload: MovieIdeaPayload) -> GenerateOutlineResponse:
@@ -467,6 +1241,12 @@ Format rules:
             
             # Add small sleep to prevent replicate API rate limit violations.
             await asyncio.sleep(2)
+
+        try:
+            extracted_characters = _extract_script_characters(client, consolidated_screenplay)
+            _persist_script_characters(supabase, project_id, extracted_characters)
+        except Exception as extraction_error:
+            print(f"Character extraction failed: {extraction_error}")
             
         # Optional: Render out the full json string and save to project_documents.
         try:
