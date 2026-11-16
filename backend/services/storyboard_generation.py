@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from core.supabase_client import get_supabase_client
+from core.supabase_client import require_supabase_client
 from schemas.image_generation import (
     CreateImageRequest,
     GenerateStoryboardResponse,
@@ -471,11 +471,29 @@ def _storyboard_matches_script(shots: list[dict[str, Any]], beats: list[dict[str
     return True
 
 
+def _rows(result: Any) -> list[dict[str, Any]]:
+    """Return a query result's rows as dicts, treating a missing/None response as no rows."""
+    data = getattr(result, "data", None) if result is not None else None
+    if not isinstance(data, list):
+        return []
+    return [row for row in data if isinstance(row, dict)]
+
+
+def _maybe_single_data(result: Any) -> dict[str, Any]:
+    """Return the row from a ``maybe_single()`` query, or {} when nothing matched.
+
+    supabase-py returns ``None`` (not a response object) when ``maybe_single`` finds
+    no row, so reading ``.data`` directly raises ``'NoneType' object has no attribute``.
+    """
+    data = getattr(result, "data", None) if result is not None else None
+    return data if isinstance(data, dict) else {}
+
+
 def _clear_storyboard_shots(project_id: str, scene_id: str) -> None:
     """Drop previous shots and their storyboard asset links before writing new frames."""
-    supabase = get_supabase_client()
-    old_shots = ("shots").select("id").eq("scene_id", scene_id).eq("project_id", project_id).execute()
-    old_shot_ids = [shot["id"] for shot in (old_shots.data or [])]
+    supabase = require_supabase_client()
+    old_shots = supabase.table("shots").select("id").eq("scene_id", scene_id).eq("project_id", project_id).execute()
+    old_shot_ids = [shot["id"] for shot in _rows(old_shots)]
     if not old_shot_ids:
         return
     supabase.table("asset_links").delete().eq("project_id", project_id).eq("target_type", "shot").eq(
@@ -505,7 +523,7 @@ def _frame_character_labels(shot: dict[str, Any]) -> list[dict[str, Any]]:
 def _frame_response(shot: dict[str, Any], image_url: str | None = None, error: str | None = None) -> StoryboardFrame:
     return StoryboardFrame(
         shot_id=shot["id"],
-        shot_number=shot.get("shot_number") or shot.get("sort_order", 0) + 1,
+        shot_number=shot.get("shot_number") or (shot.get("sort_order") or 0) + 1,
         description=shot.get("description") or "Untitled shot",
         camera_angle=shot.get("camera_angle"),
         camera_motion=shot.get("camera_motion"),
@@ -522,11 +540,11 @@ def _existing_storyboard(
     scene_id: str,
     beats: list[dict[str, Any]] | None = None,
 ) -> GenerateStoryboardResponse | None:
-    supabase = get_supabase_client()
+    supabase = require_supabase_client()
     shots_result = supabase.table("shots").select(
         "id, shot_number, description, camera_angle, camera_motion, prompt, status, sort_order, metadata, created_at"
     ).eq("project_id", project_id).eq("scene_id", scene_id).order("sort_order").execute()
-    shots = shots_result.data or []
+    shots = _rows(shots_result)
     if not shots:
         return None
     if beats is not None and not _storyboard_matches_script(shots, beats):
@@ -536,13 +554,13 @@ def _existing_storyboard(
     links_result = supabase.table("asset_links").select("target_id, asset_id").eq(
         "project_id", project_id
     ).eq("target_type", "shot").eq("role", "storyboard").in_("target_id", shot_ids).execute()
-    links = links_result.data or []
+    links = _rows(links_result)
     if not links:
         return None
 
     asset_ids = [link["asset_id"] for link in links]
     assets_result = supabase.table("assets").select("id, url").in_("id", asset_ids).execute()
-    urls = {asset["id"]: asset["url"] for asset in assets_result.data or []}
+    urls = {asset["id"]: asset["url"] for asset in _rows(assets_result)}
     image_by_shot = {link["target_id"]: urls.get(link["asset_id"]) for link in links}
     return GenerateStoryboardResponse(
         scene_id=scene_id,
@@ -560,7 +578,7 @@ def _persist_frame_image(
     source_url: str,
     output_index: int,
 ) -> str:
-    supabase = get_supabase_client()
+    supabase = require_supabase_client()
     download = httpx.get(source_url, timeout=60.0)
     download.raise_for_status()
     storage_path = f"storyboards/{scene_id}/{job_id}/{output_index}_{uuid.uuid4().hex}.jpg"
@@ -580,9 +598,9 @@ def _persist_frame_image(
         "mime_type": "image/jpeg",
         "metadata": {"storyboard": True, "scene_id": scene_id, "shot_id": shot["id"]},
     }).execute()
-    if not asset_result.data:
+    if not _rows(asset_result):
         raise RuntimeError("Failed to save storyboard image asset")
-    asset_id = asset_result.data[0]["id"]
+    asset_id = _rows(asset_result)[0]["id"]
     supabase.table("generation_outputs").insert({
         "generation_job_id": job_id,
         "asset_id": asset_id,
@@ -611,7 +629,7 @@ def _gather_scene_linked_entities(
     appears in a frame, so restricting this to names mentioned in dialogue beats would
     drop exactly the characters this pipeline needs.
     """
-    supabase = get_supabase_client()
+    supabase = require_supabase_client()
 
     # 1. Characters
     characters_out: list[dict[str, Any]] = []
@@ -619,20 +637,20 @@ def _gather_scene_linked_entities(
         "id, name, role, character_type, age, gender, race, appearance, personality, "
         "tags, metadata, primary_asset_id"
     ).eq("project_id", project_id).execute()
-    project_characters = chars_res.data or []
+    project_characters = _rows(chars_res)
     if project_characters:
         char_ids = [c["id"] for c in project_characters]
         links_res = supabase.table("asset_links").select("target_id, asset_id, metadata").eq(
             "project_id", project_id
         ).eq("target_type", "character").in_("target_id", char_ids).execute()
-        links = links_res.data or []
+        links = _rows(links_res)
 
         asset_ids = [link["asset_id"] for link in links if link.get("asset_id")]
         asset_ids.extend(c["primary_asset_id"] for c in project_characters if c.get("primary_asset_id"))
         assets_dict: dict[str, str] = {}
         if asset_ids:
             assets_res = supabase.table("assets").select("id, url").in_("id", asset_ids).execute()
-            assets_dict = {a["id"]: a["url"] for a in (assets_res.data or [])}
+            assets_dict = {a["id"]: a["url"] for a in _rows(assets_res)}
 
         links_by_char: dict[str, dict[str, str]] = {}
         for link in links:
@@ -646,7 +664,7 @@ def _gather_scene_linked_entities(
             characters_out.append({
                 **c,
                 "views": links_by_char.get(c["id"], {}),
-                "image_url": assets_dict.get(c.get("primary_asset_id")),
+                "image_url": assets_dict.get(str(c.get("primary_asset_id") or "")),
             })
 
     # 2. Environment
@@ -654,16 +672,22 @@ def _gather_scene_linked_entities(
     env_res = supabase.table("environments").select(
         "id, name, description, primary_asset_id"
     ).eq("project_id", project_id).execute()
-    all_envs = env_res.data or []
+    all_envs = _rows(env_res)
     if all_envs:
-        scene_info = supabase.table("scenes").select("location").eq("id", scene_id).maybe_single().execute()
-        loc_name = (scene_info.data or {}).get("location", "").strip().upper()
-        matched_env = next((e for e in all_envs if e.get("name", "").strip().upper() == loc_name), all_envs[0] if all_envs else None)
+        scene_info = _maybe_single_data(
+            supabase.table("scenes").select("location").eq("id", scene_id).maybe_single().execute()
+        )
+        loc_name = str(scene_info.get("location") or "").strip().upper()
+        matched_env = next(
+            (e for e in all_envs if str(e.get("name") or "").strip().upper() == loc_name),
+            all_envs[0],
+        )
         if matched_env:
             env_url = None
             if matched_env.get("primary_asset_id"):
-                a_res = supabase.table("assets").select("url").eq("id", matched_env["primary_asset_id"]).maybe_single().execute()
-                env_url = (a_res.data or {}).get("url")
+                env_url = _maybe_single_data(
+                    supabase.table("assets").select("url").eq("id", matched_env["primary_asset_id"]).maybe_single().execute()
+                ).get("url")
             environment_out = {
                 **matched_env,
                 "image_url": env_url,
@@ -674,16 +698,16 @@ def _gather_scene_linked_entities(
     objs_res = supabase.table("props").select(
         "id, name, description, tags, primary_asset_id"
     ).eq("project_id", project_id).execute()
-    if objs_res.data:
-        for obj in objs_res.data:
-            obj_url = None
-            if obj.get("primary_asset_id"):
-                a_res = supabase.table("assets").select("url").eq("id", obj["primary_asset_id"]).maybe_single().execute()
-                obj_url = (a_res.data or {}).get("url")
-            objects_out.append({
-                **obj,
-                "image_url": obj_url,
-            })
+    for obj in _rows(objs_res):
+        obj_url = None
+        if obj.get("primary_asset_id"):
+            obj_url = _maybe_single_data(
+                supabase.table("assets").select("url").eq("id", obj["primary_asset_id"]).maybe_single().execute()
+            ).get("url")
+        objects_out.append({
+            **obj,
+            "image_url": obj_url,
+        })
 
     return characters_out, environment_out, objects_out
 
@@ -700,20 +724,18 @@ def generate_scene_storyboard(
     Every screenplay action line produces exactly one storyboard frame, in script order.
     No language model decides the shot count or the prompt wording.
     """
-    supabase = get_supabase_client()
-    if not supabase:
-        raise RuntimeError("Supabase client not initialized")
+    supabase = require_supabase_client()
 
     scene_result = supabase.table("scenes").select(
         "id, project_id, slugline_raw, location, time_of_day, summary"
     ).eq("id", scene_id).eq("project_id", project_id).execute()
-    if not scene_result.data:
+    if not _rows(scene_result):
         raise ValueError("Scene was not found in this project")
-    scene = scene_result.data[0]
+    scene = _rows(scene_result)[0]
     blocks_result = supabase.table("script_blocks").select(
         "id, block_type, content, character_id, character_name, parenthetical, dialogue_mode, sort_order, updated_at"
     ).eq("project_id", project_id).eq("scene_id", scene_id).order("sort_order").execute()
-    blocks = blocks_result.data or []
+    blocks = _rows(blocks_result)
 
     beats = _build_scene_beats(
         blocks,
@@ -770,7 +792,7 @@ def generate_scene_storyboard(
         }
         for index, frame in enumerate(planned_frames)
     ]).execute()
-    shots = shots_result.data or []
+    shots = _rows(shots_result)
     if len(shots) != len(planned_frames):
         raise RuntimeError("Failed to create storyboard shots")
 
@@ -789,9 +811,9 @@ def generate_scene_storyboard(
         },
         "status": "running",
     }).execute()
-    if not job_result.data:
+    if not _rows(job_result):
         raise RuntimeError("Failed to create storyboard generation job")
-    job_id = job_result.data[0]["id"]
+    job_id = _rows(job_result)[0]["id"]
 
     concurrency_limit = max(1, int(os.getenv("STORYBOARD_GENERATION_CONCURRENCY", "3")))
 
@@ -829,7 +851,7 @@ def generate_scene_storyboard(
 
     response_frames: list[StoryboardFrame] = []
     has_failure = False
-    for shot, source_url, generation_error in sorted(results, key=lambda result: result[0].get("sort_order", 0)):
+    for shot, source_url, generation_error in sorted(results, key=lambda result: result[0].get("sort_order") or 0):
         if generation_error or not source_url:
             has_failure = True
             supabase.table("shots").update({"status": "failed"}).eq("id", shot["id"]).execute()
@@ -866,16 +888,15 @@ def regenerate_single_shot_frame(
     model: str = STORYBOARD_MODEL,
 ) -> StoryboardFrame:
     """Regenerate a single storyboard frame/shot."""
-    supabase = get_supabase_client()
-    if not supabase:
-        raise RuntimeError("Supabase client not initialized")
+    supabase = require_supabase_client()
 
-    shot_res = supabase.table("shots").select("*").eq("id", shot_id).eq("project_id", project_id).single().execute()
-    if not shot_res.data:
+    shot = _maybe_single_data(
+        supabase.table("shots").select("*").eq("id", shot_id).eq("project_id", project_id).maybe_single().execute()
+    )
+    if not shot:
         raise ValueError("Shot was not found")
-    shot = shot_res.data
 
-    prompt = prompt_override.strip() if prompt_override and prompt_override.strip() else shot.get("prompt", "")
+    prompt = prompt_override.strip() if prompt_override and prompt_override.strip() else str(shot.get("prompt") or "")
     if not prompt:
         raise ValueError("Prompt is required to regenerate shot")
     image_references = [
@@ -900,9 +921,9 @@ def regenerate_single_shot_frame(
         "settings": {"regeneration": True, "provider": provider},
         "status": "running",
     }).execute()
-    if not job_result.data:
+    if not _rows(job_result):
         raise RuntimeError("Failed to create storyboard regeneration job")
-    job_id = job_result.data[0]["id"]
+    job_id = _rows(job_result)[0]["id"]
 
     try:
         response = generate_provider_images(CreateImageRequest(
@@ -938,7 +959,7 @@ def regenerate_single_shot_frame(
             job_id,
             {**shot, "prompt": apply_visual_style(prompt, visual_style)},
             source_url,
-            shot.get("sort_order", 0),
+            shot.get("sort_order") or 0,
         )
     except Exception as error:
         supabase.table("shots").update({"status": "failed"}).eq("id", shot_id).execute()
