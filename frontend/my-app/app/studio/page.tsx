@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { StudioSidebar } from '@/components/studio/layout/Sidebar';
 import { StudioTopbar } from '@/components/studio/layout/Topbar';
 import { StudioBottomPanel } from '@/components/studio/layout/BottomPanel';
@@ -14,40 +14,51 @@ import { MovieIdea } from '@/components/studio/workspace/MovieIdea';
 import { Outline } from '@/components/studio/workspace/Outline';
 import { StoryboardWorkspace } from '@/components/studio/workspace/StoryboardWorkspace';
 import { ShotListWorkspace } from '@/components/studio/workspace/ShotListWorkspace';
+import { ProjectsGallery } from '@/components/studio/workspace/ProjectsGallery';
+import DeleteConfirmationModal from '@/components/ui/DeleteConfirmationModal';
 import { generateSceneStoryboard } from '@/lib/api/image-generation';
 import { useProject } from '@/lib/useProject';
+import {
+  isNarrativeVideoType,
+  type StudioVideoTypeId,
+} from '@/lib/studioVideoTypes';
 
 export default function StudioPage() {
-  const { projectId, projectName, loadLastProject, createProject } = useProject();
+  const {
+    projectId,
+    projectName,
+    projectVideoType,
+    projects,
+    isProjectsLoading,
+    projectsError,
+    loadLastStudioProject,
+    listStudioProjects,
+    createProject,
+    loadProject,
+    deleteProject,
+  } = useProject();
   const [activeView, setActiveView] = useState('dashboard');
   const [isSidebarVisible, setIsSidebarVisible] = useState(true);
   const [isProjectReady, setIsProjectReady] = useState(false);
   const [projectError, setProjectError] = useState<string | null>(null);
   const [selectedStoryboardSceneId, setSelectedStoryboardSceneId] = useState<string | null>(null);
+  const [isCreatingProject, setIsCreatingProject] = useState(false);
+  const [projectToDelete, setProjectToDelete] = useState<{ id: string; name: string } | null>(null);
+  const [isDeletingProject, setIsDeletingProject] = useState(false);
 
+  const isNarrativeProject = isNarrativeVideoType(projectVideoType);
+
+  // Restore the most recent studio project. No project is auto-created anymore —
+  // the user names their first movie idea instead.
   useEffect(() => {
     let isMounted = true;
 
     async function prepareProject() {
       setProjectError(null);
-      const existingProject = await loadLastProject();
+      await loadLastStudioProject();
 
       if (!isMounted) return;
-
-      if (existingProject) {
-        setIsProjectReady(true);
-        return;
-      }
-
-      const newProjectId = await createProject('Alien Invasion');
-      if (!isMounted) return;
-
-      if (newProjectId) {
-        setIsProjectReady(true);
-      } else {
-        setProjectError('Unable to create a studio project. Check Supabase connection and table policies.');
-        setIsProjectReady(true);
-      }
+      setIsProjectReady(true);
     }
 
     prepareProject();
@@ -55,7 +66,92 @@ export default function StudioPage() {
     return () => {
       isMounted = false;
     };
-  }, [createProject, loadLastProject]);
+  }, [loadLastStudioProject]);
+
+  const handleCreateProject = useCallback(
+    async (name: string, videoType: StudioVideoTypeId) => {
+      const trimmedName = name.trim();
+      if (!trimmedName) return;
+
+      setIsCreatingProject(true);
+      try {
+        const newProjectId = await createProject(trimmedName, { studio: true, videoType });
+
+        if (!newProjectId) {
+          setProjectError(
+            'Unable to create a new movie idea. Check the Supabase connection and table policies.',
+          );
+          return;
+        }
+
+        setProjectError(null);
+        setSelectedStoryboardSceneId(null);
+        await listStudioProjects();
+        setIsProjectReady(true);
+        setActiveView('idea');
+      } finally {
+        setIsCreatingProject(false);
+      }
+    },
+    [createProject, listStudioProjects],
+  );
+
+  const handleSelectProject = useCallback(
+    async (id: string) => {
+      if (!id || id === projectId) return;
+
+      const project = await loadProject(id);
+      if (!project) {
+        setProjectError('Unable to open that movie idea. It may have been deleted.');
+        return;
+      }
+
+      setProjectError(null);
+      setSelectedStoryboardSceneId(null);
+      setActiveView('dashboard');
+    },
+    [loadProject, projectId],
+  );
+
+  const handleRequestDeleteProject = useCallback(
+    (id: string) => {
+      const project = projects.find((item) => item.id === id);
+      setProjectToDelete({ id, name: project?.name ?? 'this movie idea' });
+    },
+    [projects],
+  );
+
+  const handleConfirmDeleteProject = useCallback(async () => {
+    if (!projectToDelete) return;
+
+    const deletedProjectId = projectToDelete.id;
+    const isDeletingActiveProject = deletedProjectId === projectId;
+
+    setIsDeletingProject(true);
+    try {
+      const wasDeleted = await deleteProject(deletedProjectId);
+      if (!wasDeleted) {
+        setProjectError('Unable to delete that movie idea. Please try again.');
+        return;
+      }
+
+      const remainingProjects = await listStudioProjects();
+
+      if (isDeletingActiveProject) {
+        setSelectedStoryboardSceneId(null);
+        const nextProject = remainingProjects.find((project) => project.id !== deletedProjectId);
+
+        if (nextProject) {
+          await handleSelectProject(nextProject.id);
+        } else {
+          setActiveView('dashboard');
+        }
+      }
+    } finally {
+      setIsDeletingProject(false);
+      setProjectToDelete(null);
+    }
+  }, [projectToDelete, projectId, deleteProject, listStudioProjects, handleSelectProject]);
 
   const handleConvertToStoryboard = async (sceneId: string) => {
     if (!projectId) throw new Error('A project is required before generating a storyboard.');
@@ -74,7 +170,7 @@ export default function StudioPage() {
       );
     }
 
-    if (projectError) {
+    if (projectError && !projectId) {
       return (
         <div className="flex h-full items-center justify-center p-8 text-center text-sm text-red-300">
           {projectError}
@@ -82,12 +178,72 @@ export default function StudioPage() {
       );
     }
 
+    if (!projectId) {
+      return (
+        <ProjectsGallery
+          projects={projects}
+          activeProjectId={projectId}
+          isLoading={isProjectsLoading}
+          isCreating={isCreatingProject}
+          error={projectsError}
+          onCreate={handleCreateProject}
+          onSelect={handleSelectProject}
+          onDelete={handleRequestDeleteProject}
+          onRefresh={listStudioProjects}
+        />
+      );
+    }
+
     switch (activeView) {
       case 'dashboard': 
-        return <StudioDashboard onNavigate={setActiveView} />;
+        return (
+          <StudioDashboard
+            onNavigate={setActiveView}
+            projectName={projectName}
+            videoType={projectVideoType}
+            projects={projects}
+            activeProjectId={projectId}
+            onSelectProject={handleSelectProject}
+          />
+        );
+      case 'projects':
+        return (
+          <ProjectsGallery
+            projects={projects}
+            activeProjectId={projectId}
+            isLoading={isProjectsLoading}
+            isCreating={isCreatingProject}
+            error={projectsError}
+            onCreate={handleCreateProject}
+            onSelect={handleSelectProject}
+            onDelete={handleRequestDeleteProject}
+            onRefresh={listStudioProjects}
+          />
+        );
       case 'idea':
-        return <MovieIdea projectId={projectId} onNavigateToCharacters={() => setActiveView('characters')} onNavigateToOutline={() => setActiveView('outline')} />;
+        return (
+          <MovieIdea
+            projectId={projectId}
+            projectName={projectName}
+            videoType={projectVideoType}
+            onNavigateToCharacters={() => setActiveView('characters')}
+            onNavigateToOutline={() => setActiveView('outline')}
+            onNavigateToScript={() => setActiveView('script')}
+          />
+        );
       case 'outline':
+        // Non-narrative video types skip the outline stage entirely.
+        if (!isNarrativeProject) {
+          return (
+            <MovieIdea
+              projectId={projectId}
+              projectName={projectName}
+              videoType={projectVideoType}
+              onNavigateToCharacters={() => setActiveView('characters')}
+              onNavigateToScript={() => setActiveView('script')}
+            />
+          );
+        }
         return <Outline projectId={projectId} onNavigateToIdea={() => setActiveView('idea')} />;
       case 'script': 
         return <ScriptEditor projectId={projectId} />;
@@ -140,7 +296,18 @@ export default function StudioPage() {
 
   return (
     <div className="h-screen w-full flex flex-col bg-[#0A0A0B] text-zinc-100 overflow-hidden font-sans selection:bg-violet-500/30">
-      <StudioTopbar projectName={projectName} />
+      <StudioTopbar
+        projectName={projectId ? projectName : 'No project yet'}
+        projectId={projectId}
+        projects={projects}
+        isProjectsLoading={isProjectsLoading}
+        isCreatingProject={isCreatingProject}
+        onRefreshProjects={listStudioProjects}
+        onSelectProject={handleSelectProject}
+        onCreateProject={handleCreateProject}
+        onDeleteProject={handleRequestDeleteProject}
+        onOpenProjects={() => setActiveView('projects')}
+      />
       <div className="flex-1 flex overflow-hidden relative">
         
         {/* Animated Side Navigation - Shifting, No Overlap */}
@@ -162,7 +329,7 @@ export default function StudioPage() {
             style={{ width: isSidebarVisible ? '16rem' : '0px' }}
           >
             <div className="w-64 shrink-0 h-full">
-              <StudioSidebar activeView={activeView} onNavigate={(view) => {
+              <StudioSidebar activeView={activeView} videoType={projectVideoType} onNavigate={(view) => {
                 setActiveView(view);
                 setIsSidebarVisible(false);
               }} />
@@ -172,10 +339,43 @@ export default function StudioPage() {
 
         {/* Main Content Area Workspace */}
         <main className="flex-1 overflow-auto bg-[#0A0A0B] relative flex flex-col hide-scrollbar ml-4 mr-4">
-          {renderWorkspace()}
+          {projectError && projectId && (
+            <div className="m-4 flex items-start justify-between gap-3 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
+              <span>{projectError}</span>
+              <button
+                type="button"
+                onClick={() => setProjectError(null)}
+                className="shrink-0 text-xs font-semibold uppercase tracking-wide text-rose-300 hover:text-rose-100"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+          {/* Remount on project switch so per-project local state resets */}
+          <div key={projectId ?? 'no-project'} className="flex min-h-0 flex-1 flex-col">
+            {renderWorkspace()}
+          </div>
         </main>
       </div>
       <StudioBottomPanel activeView={activeView} />
+
+      <DeleteConfirmationModal
+        isOpen={Boolean(projectToDelete)}
+        title="Delete project?"
+        message={
+          projectToDelete
+            ? `"${projectToDelete.name}" and all of its documents will be permanently deleted. This cannot be undone.`
+            : ''
+        }
+        confirmLabel="Delete project"
+        isPending={isDeletingProject}
+        onConfirm={() => {
+          void handleConfirmDeleteProject();
+        }}
+        onCancel={() => {
+          if (!isDeletingProject) setProjectToDelete(null);
+        }}
+      />
 
       {/* Global CSS for scrollbars */}
       <style dangerouslySetInnerHTML={{__html: `

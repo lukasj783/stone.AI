@@ -11,6 +11,8 @@ import {
   GenerateStoryboardRequest,
   GenerateStoryboardResponse,
   RegenerateShotFrameRequest,
+  SetCharacterStyleRequest,
+  SetCharacterStyleResponse,
   StoryboardFrame,
 } from '@/lib/types/image-generation';
 
@@ -169,6 +171,33 @@ export async function generateCharacterImages(payload: CreateImageRequest): Prom
   }
 
   return response.json() as Promise<CreateImageResponse>;
+}
+
+export async function saveCharacterVisualStyle(
+  payload: SetCharacterStyleRequest,
+): Promise<SetCharacterStyleResponse> {
+  const response = await fetch(`${getApiBaseUrl()}/api/image/character-style`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    let message = 'Character style update failed';
+    try {
+      const errorPayload = await response.json();
+      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
+        message = errorPayload.detail;
+      }
+    } catch {
+      message = `Character style update failed with status ${response.status}`;
+    }
+    throw new Error(message);
+  }
+
+  return response.json() as Promise<SetCharacterStyleResponse>;
 }
 
 export async function generateScriptCharacterImages(
@@ -331,6 +360,7 @@ export async function generateImageFromUpload(
   provider: 'replicate' | 'wavespeed',
   projectId: string,
   characterId?: string,
+  visualStyle?: string,
 ): Promise<CreateImageResponse> {
   const formData = new FormData();
   formData.append('image', imageFile);
@@ -342,6 +372,9 @@ export async function generateImageFromUpload(
   formData.append('project_id', projectId);
   if (characterId) {
     formData.append('character_id', characterId);
+  }
+  if (visualStyle) {
+    formData.append('visual_style', visualStyle);
   }
 
   const response = await fetch(`${getApiBaseUrl()}/api/image/generate-from-upload`, {
@@ -372,6 +405,7 @@ export async function generateEnvironmentImageFromUpload(
   provider: 'replicate' | 'wavespeed',
   projectId: string,
   environmentId: string,
+  visualStyle?: string,
 ): Promise<CreateImageResponse> {
   const formData = new FormData();
   formData.append('image', imageFile);
@@ -382,6 +416,9 @@ export async function generateEnvironmentImageFromUpload(
   formData.append('resolution', '1K');
   formData.append('project_id', projectId);
   formData.append('environment_id', environmentId);
+  if (visualStyle) {
+    formData.append('visual_style', visualStyle);
+  }
 
   const response = await fetch(`${getApiBaseUrl()}/api/image/environment-generate-from-upload`, {
     method: 'POST',

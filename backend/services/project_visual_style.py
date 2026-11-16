@@ -20,68 +20,46 @@ class ProjectVisualStyle:
 
 
 STYLE_PRESETS = {
-    "Realistic Cinematic": ProjectVisualStyle(
-        label="Realistic Cinematic",
-        style_prompt="Photorealistic live-action cinematic imagery with natural materials, believable scale, and physically plausible lighting.",
-        negative_style_prompt="cartoon, anime, stylized 3D, hand-drawn illustration, rough storyboard sketch",
+    "Realistic": ProjectVisualStyle(
+        label="Realistic",
+        style_prompt="Photorealistic live-action imagery with natural materials, believable scale, and physically plausible lighting.",
+        negative_style_prompt="cartoon, anime, 3D pixel art, stylized 3D, hand-drawn illustration, rough storyboard sketch",
     ),
-    "Hyper-Realistic": ProjectVisualStyle(
-        label="Hyper-Realistic",
-        style_prompt="Highly photorealistic cinematic imagery with precise material detail, natural anatomy, and realistic lighting.",
-        negative_style_prompt="cartoon, anime, stylized 3D, illustration, rough storyboard sketch",
-    ),
-    "Stylized 3D": ProjectVisualStyle(
-        label="Stylized 3D",
-        style_prompt="Finished stylized 3D animated-film imagery with intentional shapes, dimensional materials, and cinematic global illumination.",
-        negative_style_prompt="photorealistic live action, 2D anime, flat cartoon, rough storyboard sketch",
-    ),
-    "Pixar-like": ProjectVisualStyle(
-        label="Pixar-like",
-        style_prompt="Finished stylized 3D family-animation imagery with appealing rounded forms, expressive faces, detailed materials, and cinematic lighting.",
-        negative_style_prompt="photorealistic live action, 2D anime, flat cartoon, rough storyboard sketch",
-    ),
-    "Anime": ProjectVisualStyle(
-        label="Anime",
-        style_prompt="Finished 2D cinematic anime imagery with clean linework, cel shading, expressive faces, and controlled color design.",
-        negative_style_prompt="photorealistic live action, 3D render, western cartoon, rough storyboard sketch",
+    "3D Pixel": ProjectVisualStyle(
+        label="3D Pixel",
+        style_prompt="Finished 3D pixel-art / voxel-style render with visible cubic geometry, deliberate low-resolution texture, and cinematic lighting.",
+        negative_style_prompt="photorealistic live action, flat 2D cartoon, anime, rough storyboard sketch",
     ),
     "Cartoon": ProjectVisualStyle(
         label="Cartoon",
         style_prompt="Finished 2D cartoon imagery with bold clean outlines, simplified consistent proportions, and controlled flat shading.",
-        negative_style_prompt="photorealistic live action, anime, 3D render, rough storyboard sketch",
-    ),
-    "Graphic Novel": ProjectVisualStyle(
-        label="Graphic Novel",
-        style_prompt="Finished graphic-novel imagery with deliberate ink linework, graphic shadows, and a coherent limited color palette.",
-        negative_style_prompt="photorealistic live action, anime, 3D render, rough pencil storyboard",
-    ),
-    "Hand-Drawn Illustration": ProjectVisualStyle(
-        label="Hand-Drawn Illustration",
-        style_prompt="Finished hand-drawn illustration with intentional linework, textured color, and consistent editorial composition.",
-        negative_style_prompt="photorealistic live action, 3D render, rough unfinished storyboard",
-    ),
-    "Digital Painting": ProjectVisualStyle(
-        label="Digital Painting",
-        style_prompt="Finished cinematic digital painting with painterly brushwork, cohesive color, and deliberate lighting.",
-        negative_style_prompt="photorealistic live action, flat cartoon, 3D render, rough unfinished storyboard",
-    ),
-    "Watercolor": ProjectVisualStyle(
-        label="Watercolor",
-        style_prompt="Finished watercolor illustration with translucent pigment, paper texture, and controlled edges.",
-        negative_style_prompt="photorealistic live action, 3D render, flat vector cartoon, rough unfinished storyboard",
-    ),
-    "Oil Painting": ProjectVisualStyle(
-        label="Oil Painting",
-        style_prompt="Finished cinematic oil painting with visible brushwork, rich layered color, and deliberate light.",
-        negative_style_prompt="photorealistic live action, 3D render, flat cartoon, rough unfinished storyboard",
+        negative_style_prompt="photorealistic live action, anime, 3D render, pixel art, rough storyboard sketch",
     ),
 }
 
-DEFAULT_VISUAL_STYLE = STYLE_PRESETS["Realistic Cinematic"]
+DEFAULT_VISUAL_STYLE = STYLE_PRESETS["Realistic"]
+
+# Labels from the previous 11-option picker keep resolving to one of the three
+# supported contracts so existing projects still generate consistently.
+LEGACY_STYLE_ALIASES = {
+    "Realistic Cinematic": "Realistic",
+    "Hyper-Realistic": "Realistic",
+    "Digital Painting": "Realistic",
+    "Oil Painting": "Realistic",
+    "Watercolor": "Realistic",
+    "Graphic Novel": "Realistic",
+    "Hand-Drawn Illustration": "Realistic",
+    "Stylized 3D": "3D Pixel",
+    "Pixar-like": "3D Pixel",
+    "Anime": "Cartoon",
+}
 
 
 def resolve_visual_style(label: object) -> ProjectVisualStyle:
-    return STYLE_PRESETS.get(label, DEFAULT_VISUAL_STYLE) if isinstance(label, str) else DEFAULT_VISUAL_STYLE
+    if not isinstance(label, str):
+        return DEFAULT_VISUAL_STYLE
+    canonical = LEGACY_STYLE_ALIASES.get(label, label)
+    return STYLE_PRESETS.get(canonical, DEFAULT_VISUAL_STYLE)
 
 
 def load_project_visual_style(project_id: str, supabase: Any | None = None) -> ProjectVisualStyle:

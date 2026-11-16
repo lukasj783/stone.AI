@@ -39,3 +39,7 @@ yarn-error.log*
 
 # Misc
 *.log
+
+# Tool / debug output (lint, tsc, pip, ad-hoc scripts)
+/*.txt
+frontend/my-app/*.txt

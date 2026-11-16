@@ -6,6 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from schemas.image_generation import (
     CharacterKeyframe,
+    CharacterStylePropagation,
     CharacterView,
     CreateImageRequest,
     CreateImageResponse,
@@ -17,11 +18,13 @@ from schemas.image_generation import (
     GenerateStoryboardRequest,
     GenerateStoryboardResponse,
     RegenerateCharacterKeyframeRequest,
+    SetCharacterStyleRequest,
+    SetCharacterStyleResponse,
 )
-from services.character_image_to_image import build_character_img2img_view_prompt
-from services.character_text_to_image import (
+from services.character_views import (
     CHARACTER_VIEW_SPECS,
     attach_generation_to_character,
+    build_character_img2img_view_prompt,
     build_character_view_prompt,
     build_script_character_profile,
     finalize_character_generation,
@@ -38,13 +41,40 @@ from services.environment_text_to_image import (
 from services.object_text_to_image import build_object_prompt, load_object, persist_object_generation
 from services.image_generation_service import generate_provider_images
 from services.image_generation_storage import log_generation_to_supabase
-from services.project_visual_style import apply_visual_style, load_project_visual_style
 from services.replicate_service import ReplicateConfigurationError
 from services.storyboard_generation import generate_scene_storyboard
+from services.style_propagation import character_style_impact, propagate_character_style
+from services.visual_style import (
+    apply_visual_style,
+    character_visual_style,
+    find_character_scene_ids,
+    find_style_dependent_assets,
+    load_character,
+    resolve_character_visual_style,
+    resolve_scene_visual_style,
+    resolve_visual_style,
+    save_character_visual_style,
+)
 from services.wavespeed_service import WaveSpeedServiceError
 
 
 router = APIRouter(prefix="/api/image", tags=["text-to-image"])
+
+
+def _resolve_entity_style(
+    project_id: str,
+    entity: dict[str, object],
+    override: str | None = None,
+):
+    """Resolve an explicit request style before the entity's scene style."""
+    if isinstance(override, str) and override.strip():
+        return resolve_visual_style(override)
+    metadata = entity.get("metadata")
+    source_scene_ids = metadata.get("source_scene_ids") if isinstance(metadata, dict) else None
+    return resolve_scene_visual_style(
+        project_id,
+        scene_ids=source_scene_ids if isinstance(source_scene_ids, list) else None,
+    )
 
 
 @router.post("/generate", response_model=CreateImageResponse)
@@ -76,7 +106,7 @@ async def generate_character_images(payload: CreateImageRequest) -> CreateImageR
     """Generate six independently requested, ordered character keyframes."""
     if not payload.project_id:
         raise HTTPException(status_code=400, detail="project_id is required for character generation")
-    visual_style = await asyncio.to_thread(load_project_visual_style, payload.project_id)
+    visual_style = resolve_visual_style(payload.visual_style)
     seed = payload.seed if payload.seed is not None else random.SystemRandom().randint(0, 2_147_483_647)
     concurrency_limit = max(1, int(os.getenv("CHARACTER_GENERATION_CONCURRENCY", "3")))
     semaphore = asyncio.Semaphore(concurrency_limit)
@@ -87,6 +117,7 @@ async def generate_character_images(payload: CreateImageRequest) -> CreateImageR
             "prompt": prompt,
             "num_images": 1,
             "seed": seed,
+            "visual_style": visual_style.label,
         })
         async with semaphore:
             response = await asyncio.to_thread(generate_provider_images, view_payload)
@@ -111,7 +142,7 @@ async def generate_character_images(payload: CreateImageRequest) -> CreateImageR
         generation_job_id, keyframes = await asyncio.to_thread(
             persist_character_generation,
             payload.project_id,
-            payload.model_copy(update={"seed": seed}),
+            payload.model_copy(update={"seed": seed, "visual_style": visual_style.label}),
             keyframes,
         )
     except Exception as error:
@@ -130,7 +161,7 @@ async def generate_script_character_images(payload: GenerateScriptCharacterReque
     """Generate six views from facts persisted by the screenplay extractor."""
     try:
         character = await asyncio.to_thread(load_script_character, payload.project_id, payload.character_id)
-        visual_style = await asyncio.to_thread(load_project_visual_style, payload.project_id)
+        visual_style = resolve_character_visual_style(character, payload.visual_style)
         prompt = build_script_character_profile(character, visual_style)
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
@@ -150,6 +181,7 @@ async def generate_script_character_images(payload: GenerateScriptCharacterReque
         output_format=payload.output_format,
         project_id=payload.project_id,
         seed=seed,
+        visual_style=visual_style.label,
     )
 
     async def generate_view(view: CharacterView) -> CharacterKeyframe:
@@ -183,6 +215,7 @@ async def generate_script_character_images(payload: GenerateScriptCharacterReque
             payload.character_id,
             generation_job_id,
             persisted_keyframes,
+            visual_style=visual_style.label,
         )
     except (ReplicateConfigurationError, WaveSpeedServiceError) as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
@@ -202,7 +235,7 @@ async def generate_script_environment_image(payload: GenerateScriptEnvironmentRe
     """Generate and attach one reference image from persisted screenplay environment facts."""
     try:
         environment = await asyncio.to_thread(load_script_environment, payload.project_id, payload.environment_id)
-        visual_style = await asyncio.to_thread(load_project_visual_style, payload.project_id)
+        visual_style = _resolve_entity_style(payload.project_id, environment, payload.visual_style)
         prompt = build_script_environment_prompt(environment, visual_style)
         image_payload = CreateImageRequest(
             model=payload.model,
@@ -214,6 +247,7 @@ async def generate_script_environment_image(payload: GenerateScriptEnvironmentRe
             output_format=payload.output_format,
             project_id=payload.project_id,
             seed=payload.seed,
+            visual_style=visual_style.label,
         )
         response = await asyncio.to_thread(generate_provider_images, image_payload)
         if not response.images:
@@ -243,10 +277,11 @@ async def generate_object_reference_image(payload: GenerateObjectReferenceReques
     """Generate and attach one square reference image for a project object."""
     try:
         prop = await asyncio.to_thread(load_object, payload.project_id, payload.object_id)
-        visual_style = await asyncio.to_thread(load_project_visual_style, payload.project_id)
+        visual_style = _resolve_entity_style(payload.project_id, prop, payload.visual_style)
         image_payload = CreateImageRequest(
             model=payload.model, provider=payload.provider, prompt=build_object_prompt(prop, visual_style), aspect_ratio=payload.aspect_ratio,
             num_images=1, resolution=payload.resolution, output_format=payload.output_format, project_id=payload.project_id, seed=payload.seed,
+            visual_style=visual_style.label,
         )
         response = await asyncio.to_thread(generate_provider_images, image_payload)
         if not response.images:
@@ -261,6 +296,67 @@ async def generate_object_reference_image(payload: GenerateObjectReferenceReques
         raise HTTPException(status_code=500, detail=str(error)) from error
     except Exception as error:
         raise HTTPException(status_code=400, detail=f"Object generation failed: {error}") from error
+
+
+@router.post("/character-style", response_model=SetCharacterStyleResponse)
+async def set_character_style(
+    payload: SetCharacterStyleRequest,
+    background_tasks: BackgroundTasks,
+) -> SetCharacterStyleResponse:
+    """Save a character style and regenerate its existing visual assets."""
+    try:
+        existing = await asyncio.to_thread(
+            load_character,
+            payload.project_id,
+            payload.character_id,
+        )
+        previous_style = character_visual_style(existing)
+        visual_style = await asyncio.to_thread(
+            save_character_visual_style,
+            payload.project_id,
+            payload.character_id,
+            payload.visual_style,
+        )
+        changed = previous_style.label != visual_style.label
+        impact = await asyncio.to_thread(
+            character_style_impact,
+            payload.project_id,
+            payload.character_id,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Character style update failed: {error}") from error
+
+    environment_ids = impact["environment_ids"]
+    object_ids = impact["object_ids"]
+    has_character_views = bool(impact["has_character_views"])
+    total = int(has_character_views) + len(environment_ids) + len(object_ids)
+
+    if changed:
+        background_tasks.add_task(
+            propagate_character_style,
+            payload.project_id,
+            payload.character_id,
+            visual_style.label,
+            payload.model,
+            payload.provider,
+        )
+
+    return SetCharacterStyleResponse(
+        character_id=payload.character_id,
+        visual_style=visual_style.label,
+        changed=changed,
+        propagation_started=changed,
+        propagation=CharacterStylePropagation(
+            status="queued" if changed else "idle",
+            visual_style=visual_style.label,
+            affected_character_views=has_character_views,
+            affected_environment_ids=environment_ids,
+            affected_object_ids=object_ids,
+            total=total,
+        ),
+    )
 
 
 @router.post("/character-keyframes/{generation_job_id}/{view}/regenerate", response_model=CharacterKeyframe)

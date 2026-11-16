@@ -9,7 +9,7 @@ from schemas.image_generation import (
     CreateImageResponse,
     GenerateScriptCharacterRequest,
 )
-from services.character_text_to_image import build_character_view_prompt, build_script_character_profile
+from services.character_views import build_character_view_prompt, build_script_character_profile
 from services.project_visual_style import DEFAULT_VISUAL_STYLE
 
 
@@ -61,7 +61,7 @@ class TextToImageCharacterTests(unittest.TestCase):
             for index in range(6)
         ]
         with patch("routers.text_to_image.load_script_character", return_value=character), patch(
-            "routers.text_to_image.load_project_visual_style", return_value=DEFAULT_VISUAL_STYLE
+            "routers.text_to_image.resolve_scene_visual_style", return_value=DEFAULT_VISUAL_STYLE
         ), patch(
             "routers.text_to_image.generate_provider_images", side_effect=provider_responses
         ) as generate_provider, patch(
@@ -88,10 +88,10 @@ class TextToImageCharacterTests(unittest.TestCase):
 
     @patch("routers.text_to_image.persist_character_generation")
     @patch("routers.text_to_image.generate_provider_images")
-    @patch("routers.text_to_image.load_project_visual_style", return_value=DEFAULT_VISUAL_STYLE)
+    @patch("routers.text_to_image.resolve_scene_visual_style", return_value=DEFAULT_VISUAL_STYLE)
     def test_character_generation_requests_six_ordered_views(
         self,
-        load_project_visual_style: MagicMock,
+        resolve_scene_visual_style: MagicMock,
         generate_provider: MagicMock,
         persist_generation: MagicMock,
     ) -> None:

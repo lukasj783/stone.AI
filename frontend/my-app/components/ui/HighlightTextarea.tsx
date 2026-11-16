@@ -10,12 +10,12 @@ export function HighlightTextarea({
   value,
   onChange,
   className,
-  tags = [],
+  tags,
   ...textareaProps
 }: HighlightTextareaProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
-  const tagSet = useMemo(() => new Set(tags), [tags]);
+  const tagSet = useMemo(() => new Set(tags || []), [tags]);
 
   // Sync scrolling between textarea and backdrop
   const handleScroll = () => {
@@ -55,7 +55,7 @@ export function HighlightTextarea({
       {/* Backdrop for highlights */}
       <div
         ref={backdropRef}
-        className="absolute inset-0 pointer-events-none break-words whitespace-pre-wrap overflow-hidden"
+        className="absolute inset-0 pointer-events-none wrap-break-words whitespace-pre-wrap overflow-hidden"
         style={{
           padding: '12px 16px 16px 16px', // Matches textarea roughly
           fontFamily: 'inherit',

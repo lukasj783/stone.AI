@@ -6,7 +6,7 @@ from core.config import get_settings
 from routers.image_to_image import router as image_to_image_router
 from routers.text_to_image import router as text_to_image_router
 from routers.video_generation import router as video_generation_router
-from routers.story import router as story_router
+from routers.script import router as story_router
 
 
 app = FastAPI(title="Qwen Image API")

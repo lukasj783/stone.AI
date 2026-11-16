@@ -1,17 +1,29 @@
 "use client";
 
-import React, { useEffect, useMemo, useState, useRef } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Image from "next/image";
-import { BadgePlus, BookOpen, Check, Clock3, Info, Palette, Sparkles, UserPlus, WandSparkles, ChevronLeft, ChevronRight, Play, Pause } from "lucide-react";
+import { BadgePlus, BookOpen, Check, Clock3, Info, Palette, Sparkles, UserPlus, WandSparkles } from "lucide-react";
 import { motion } from "framer-motion";
 import { supabase } from "@/lib/supabaseClient";
 import { cn } from "@/lib/utils";
+import {
+  DEFAULT_STUDIO_VIDEO_TYPE,
+  getVideoTypeConfig,
+  resolveVideoType,
+  type StudioVideoTypeConfig,
+  type StudioVideoTypeId,
+} from "@/lib/studioVideoTypes";
 import AlertModal from '@/components/ui/AlertModal';
 
 interface MovieIdeaProps {
   projectId: string | null;
+  /** Video type of the active project — decides Idea (films) vs Brief (others). */
+  videoType?: StudioVideoTypeId | string | null;
+  /** Display name of the active project, shown in the page header. */
+  projectName?: string | null;
   onNavigateToCharacters?: () => void;
   onNavigateToOutline?: () => void;
+  onNavigateToScript?: () => void;
 }
 
 interface IdeaCharacter {
@@ -24,77 +36,92 @@ interface IdeaCharacter {
   imageUrl: string | null;
 }
 
-type VisualStyle =
-  | "Realistic Cinematic"
-  | "Hyper-Realistic"
-  | "Stylized 3D"
-  | "Pixar-like"
-  | "Anime"
-  | "Cartoon"
-  | "Graphic Novel"
-  | "Hand-Drawn Illustration"
-  | "Digital Painting"
-  | "Watercolor"
-  | "Oil Painting";
+type VisualStyle = "Realistic" | "3D Pixel" | "Cartoon";
 
 interface IdeaFormState {
-  projectType: "Feature Film" | "Short" | "Series";
+  projectType: string;
   duration: string;
   genres: string[];
   logline: string;
   premise: string;
-  themeTone: string[];
   endingType: "Bittersweet" | "Positive" | "Cliffhanger" | "Ambiguous";
   visualStyle: VisualStyle;
 }
 
 const VISUAL_STYLES: { label: VisualStyle; emoji: string; gradient: string }[] = [
-  { label: "Realistic Cinematic", emoji: "🎬", gradient: "from-amber-900/40 via-orange-950/30 to-yellow-950/20" },
-  { label: "Hyper-Realistic", emoji: "🔍", gradient: "from-slate-800/40 via-zinc-900/30 to-neutral-950/20" },
-  { label: "Stylized 3D", emoji: "💎", gradient: "from-cyan-900/40 via-teal-950/30 to-emerald-950/20" },
-  { label: "Pixar-like", emoji: "🧸", gradient: "from-sky-800/40 via-blue-950/30 to-indigo-950/20" },
-  { label: "Anime", emoji: "⚡", gradient: "from-pink-800/40 via-rose-950/30 to-fuchsia-950/20" },
+  { label: "Realistic", emoji: "🎬", gradient: "from-amber-900/40 via-orange-950/30 to-yellow-950/20" },
+  { label: "3D Pixel", emoji: "🧊", gradient: "from-cyan-900/40 via-teal-950/30 to-emerald-950/20" },
   { label: "Cartoon", emoji: "🎨", gradient: "from-yellow-700/40 via-lime-950/30 to-green-950/20" },
-  { label: "Graphic Novel", emoji: "💥", gradient: "from-red-900/40 via-orange-950/30 to-amber-950/20" },
-  { label: "Hand-Drawn Illustration", emoji: "✏️", gradient: "from-stone-700/40 via-amber-950/30 to-orange-950/20" },
-  { label: "Digital Painting", emoji: "🖥️", gradient: "from-violet-900/40 via-purple-950/30 to-fuchsia-950/20" },
-  { label: "Watercolor", emoji: "💧", gradient: "from-sky-700/40 via-cyan-950/30 to-teal-950/20" },
-  { label: "Oil Painting", emoji: "🖌️", gradient: "from-amber-800/40 via-yellow-950/30 to-orange-950/20" },
 ];
 
-const TONE_OPTIONS: { label: string; color: string; bg: string; border: string }[] = [
-  { label: "Dark", color: "text-purple-300", bg: "bg-purple-500/20", border: "border-purple-500/50" },
-  { label: "Humorous", color: "text-yellow-300", bg: "bg-yellow-500/20", border: "border-yellow-500/50" },
-  { label: "Suspenseful", color: "text-red-300", bg: "bg-red-500/20", border: "border-red-500/50" },
-  { label: "Romantic", color: "text-pink-300", bg: "bg-pink-500/20", border: "border-pink-500/50" },
-  { label: "Melancholic", color: "text-blue-300", bg: "bg-blue-500/20", border: "border-blue-500/50" },
-  { label: "Gritty", color: "text-stone-300", bg: "bg-stone-500/20", border: "border-stone-500/50" },
-  { label: "Whimsical", color: "text-emerald-300", bg: "bg-emerald-500/20", border: "border-emerald-500/50" },
-  { label: "Uplifting", color: "text-amber-300", bg: "bg-amber-500/20", border: "border-amber-500/50" },
-  { label: "Mysterious", color: "text-indigo-300", bg: "bg-indigo-500/20", border: "border-indigo-500/50" },
-  { label: "Epic", color: "text-orange-300", bg: "bg-orange-500/20", border: "border-orange-500/50" },
-  { label: "Cyberpunk", color: "text-fuchsia-300", bg: "bg-fuchsia-500/20", border: "border-fuchsia-500/50" },
-  { label: "Dystopian", color: "text-zinc-300", bg: "bg-zinc-500/20", border: "border-zinc-500/50" },
-  { label: "Noir", color: "text-neutral-300", bg: "bg-neutral-500/20", border: "border-neutral-500/50" },
-  { label: "Surreal", color: "text-violet-300", bg: "bg-violet-500/20", border: "border-violet-500/50" },
-  { label: "Nostalgic", color: "text-rose-300", bg: "bg-rose-500/20", border: "border-rose-500/50" },
-];
-
-const DEFAULT_IDEA: IdeaFormState = {
-  projectType: "Feature Film",
-  duration: "120 min",
-  genres: ["Sci-Fi", "Thriller"],
-  logline: "",
-  premise: "",
-  themeTone: ["Cyberpunk", "Melancholic"],
-  endingType: "Bittersweet",
-  visualStyle: "Realistic Cinematic",
+/**
+ * Older projects stored one of the previous 11 style labels. Map them onto the
+ * three supported styles so loading an idea never leaves the picker empty.
+ */
+const LEGACY_VISUAL_STYLE_ALIASES: Record<string, VisualStyle> = {
+  "Realistic Cinematic": "Realistic",
+  "Hyper-Realistic": "Realistic",
+  "Digital Painting": "Realistic",
+  "Oil Painting": "Realistic",
+  "Watercolor": "Realistic",
+  "Graphic Novel": "Realistic",
+  "Hand-Drawn Illustration": "Realistic",
+  "Stylized 3D": "3D Pixel",
+  "Pixar-like": "3D Pixel",
+  Anime: "Cartoon",
 };
+
+function normalizeVisualStyle(value: unknown): VisualStyle {
+  if (typeof value !== "string") return "Realistic";
+  if (VISUAL_STYLES.some((style) => style.label === value)) return value as VisualStyle;
+  return LEGACY_VISUAL_STYLE_ALIASES[value] ?? "Realistic";
+}
+
+
+interface CreativeBriefState {
+  concept: string;
+  keyMoments: string[];
+  targetAudience: string;
+  references: string;
+}
+
+const DEFAULT_BRIEF: CreativeBriefState = {
+  concept: "",
+  keyMoments: [],
+  targetAudience: "",
+  references: "",
+};
+
+/** Seed the form from the active video type instead of always assuming a film. */
+function buildDefaultIdea(config: StudioVideoTypeConfig): IdeaFormState {
+  return {
+    projectType: config.formatOptions[0] ?? config.label,
+    duration: config.defaultDuration,
+    genres: [...config.defaultGenres],
+    logline: "",
+    premise: "",
+    endingType: "Bittersweet",
+    visualStyle: "Realistic",
+  };
+}
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-export function MovieIdea({ projectId, onNavigateToCharacters, onNavigateToOutline }: MovieIdeaProps) {
-  const [idea, setIdea] = useState<IdeaFormState>(DEFAULT_IDEA);
+export function MovieIdea({
+  projectId,
+  videoType,
+  projectName,
+  onNavigateToCharacters,
+  onNavigateToOutline,
+  onNavigateToScript,
+}: MovieIdeaProps) {
+  const videoTypeConfig = getVideoTypeConfig(
+    resolveVideoType(videoType ?? DEFAULT_STUDIO_VIDEO_TYPE),
+  );
+  const isNarrative = videoTypeConfig.requiresOutline;
+
+  const [idea, setIdea] = useState<IdeaFormState>(() => buildDefaultIdea(videoTypeConfig));
+  const [brief, setBrief] = useState<CreativeBriefState>(DEFAULT_BRIEF);
   const [characters, setCharacters] = useState<IdeaCharacter[]>([]);
   const [ideaDocumentId, setIdeaDocumentId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -138,60 +165,7 @@ export function MovieIdea({ projectId, onNavigateToCharacters, onNavigateToOutli
     });
   };
 
-  // States for Carousel Autoplay & Navigation Controls
-  const [isAutoplay, setIsAutoplay] = useState(true);
-  const carouselRef = useRef<HTMLDivElement>(null);
-
   const secondaryCast = useMemo(() => Math.max(characters.length - 1, 0), [characters.length]);
-
-  // Autoplay effect for Visual Style Carousel
-  useEffect(() => {
-    if (!isAutoplay) return;
-
-    const interval = setInterval(() => {
-      if (!carouselRef.current) return;
-
-      const container = carouselRef.current;
-      const currentScroll = container.scrollLeft;
-      const selectButton = container.querySelector('button');
-      if (!selectButton) return;
-      const itemWidth = selectButton.getBoundingClientRect().width + 16; // 16px gap
-      const maxScroll = container.scrollWidth - container.clientWidth;
-
-      if (currentScroll >= maxScroll - 5) {
-        // Scroll back to start
-        container.scrollTo({ left: 0, behavior: "smooth" });
-      } else {
-        // Scroll forward
-        container.scrollTo({ left: currentScroll + itemWidth, behavior: "smooth" });
-      }
-    }, 3000);
-
-    return () => clearInterval(interval);
-  }, [isAutoplay]);
-
-  const scrollCarousel = (direction: "forward" | "backward") => {
-    if (!carouselRef.current) return;
-    setIsAutoplay(false); // Stop autoplay when user manually navigates
-
-    const container = carouselRef.current;
-    const selectButton = container.querySelector('button');
-    if (!selectButton) return;
-    const itemWidth = selectButton.getBoundingClientRect().width + 16;
-    const currentScroll = container.scrollLeft;
-
-    if (direction === "forward") {
-      container.scrollTo({
-        left: currentScroll + itemWidth,
-        behavior: "smooth"
-      });
-    } else {
-      container.scrollTo({
-        left: currentScroll - itemWidth,
-        behavior: "smooth"
-      });
-    }
-  };
 
   useEffect(() => {
     if (!projectId) return;
@@ -211,21 +185,46 @@ export function MovieIdea({ projectId, onNavigateToCharacters, onNavigateToOutli
 
         if (docError) throw docError;
 
+        const defaults = buildDefaultIdea(videoTypeConfig);
+
         if (docData) {
           setIdeaDocumentId(docData.id as string);
           const metadata = (docData.metadata as Record<string, unknown> | null) ?? {};
+          // Stored movie defaults should not leak into a brief of another type.
+          const storedVideoType =
+            typeof metadata.videoType === "string" ? resolveVideoType(metadata.videoType) : null;
+          const sameType = !storedVideoType || storedVideoType === videoTypeConfig.id;
+
           setIdea({
-            projectType: (metadata.projectType as IdeaFormState["projectType"]) || "Feature Film",
-            duration: (metadata.duration as string) || "120 min",
-            genres: (metadata.genres as string[]) || ["Sci-Fi", "Thriller"],
-            logline: (metadata.logline as string) || "",
-            premise: docData.content || (metadata.premise as string) || "",
-            themeTone: (metadata.themeTone as string[]) || ["Cyberpunk", "Melancholic"],
-            endingType: (metadata.endingType as IdeaFormState["endingType"]) || "Bittersweet",
-            visualStyle: (metadata.visualStyle as VisualStyle) || "Realistic Cinematic",
+            projectType:
+              sameType && typeof metadata.projectType === "string"
+                ? metadata.projectType
+                : defaults.projectType,
+            duration:
+              sameType && typeof metadata.duration === "string"
+                ? metadata.duration
+                : defaults.duration,
+            genres:
+              sameType && Array.isArray(metadata.genres)
+                ? (metadata.genres as string[])
+                : defaults.genres,
+            logline: typeof metadata.logline === "string" ? metadata.logline : "",
+            premise: docData.content || (typeof metadata.premise === "string" ? metadata.premise : ""),
+            endingType: (metadata.endingType as IdeaFormState["endingType"]) || defaults.endingType,
+            visualStyle: normalizeVisualStyle(metadata.visualStyle),
+          });
+
+          const storedBrief = (metadata.brief as Partial<CreativeBriefState> | undefined) ?? {};
+          setBrief({
+            concept: typeof storedBrief.concept === "string" ? storedBrief.concept : "",
+            keyMoments: Array.isArray(storedBrief.keyMoments) ? storedBrief.keyMoments : [],
+            targetAudience:
+              typeof storedBrief.targetAudience === "string" ? storedBrief.targetAudience : "",
+            references: typeof storedBrief.references === "string" ? storedBrief.references : "",
           });
         } else {
-          setIdea(DEFAULT_IDEA);
+          setIdea(defaults);
+          setBrief(DEFAULT_BRIEF);
           setIdeaDocumentId(null);
         }
 
@@ -260,14 +259,14 @@ export function MovieIdea({ projectId, onNavigateToCharacters, onNavigateToOutli
         }));
         setCharacters(mapped);
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load movie idea data.");
+        setError(e instanceof Error ? e.message : "Failed to load project idea data.");
       } finally {
         setIsLoading(false);
       }
     }, 0);
 
     return () => clearTimeout(timer);
-  }, [projectId]);
+  }, [projectId, videoTypeConfig, videoTypeConfig.id]);
 
   const saveIdea = async () => {
     if (!projectId) return;
@@ -276,17 +275,18 @@ export function MovieIdea({ projectId, onNavigateToCharacters, onNavigateToOutli
     const payload = {
       project_id: projectId,
       type: "idea",
-      title: "Movie Idea",
-      content: idea.premise,
+      title: isNarrative ? "Movie Idea" : `${videoTypeConfig.label} Brief`,
+      content: isNarrative ? idea.premise : brief.concept || idea.premise,
       metadata: {
+        videoType: videoTypeConfig.id,
         projectType: idea.projectType,
         duration: idea.duration,
         genres: idea.genres,
         logline: idea.logline,
         premise: idea.premise,
-        themeTone: idea.themeTone,
         endingType: idea.endingType,
         visualStyle: idea.visualStyle,
+        brief,
       },
     };
 
@@ -297,15 +297,28 @@ export function MovieIdea({ projectId, onNavigateToCharacters, onNavigateToOutli
     const { data, error: saveError } = await query;
     if (saveError) throw saveError;
     if (data?.id) setIdeaDocumentId(data.id as string);
-    setMessage("Idea saved successfully.");
+
+    // Keep projects.settings in sync so the video type survives a reload even
+    // for projects created before settings carried a video type.
+    const { error: settingsError } = await supabase
+      .from("projects")
+      .update({ settings: { app: "studio", videoType: videoTypeConfig.id } })
+      .eq("id", projectId);
+    if (settingsError) {
+      console.warn("Could not persist project video type:", settingsError.message);
+    }
+
+    setMessage(isNarrative ? "Idea saved successfully." : "Brief saved successfully.");
   };
 
   const clearIdea = async () => {
     if (!projectId) return;
 
+    const ideaLabel = isNarrative ? "Movie Idea" : `${videoTypeConfig.label} Brief`;
+
     showConfirm(
-      "Reset Movie Idea",
-      "Are you sure you want to delete and reset your Movie Idea? This will permanently erase the premise and logline.",
+      `Reset ${ideaLabel}`,
+      `Are you sure you want to delete and reset your ${ideaLabel}? This will permanently erase the saved ${isNarrative ? "premise and logline" : "concept and key moments"}.`,
       async () => {
         setIsClearing(true);
         setError(null);
@@ -330,9 +343,10 @@ export function MovieIdea({ projectId, onNavigateToCharacters, onNavigateToOutli
             if (deleteError) throw deleteError;
           }
 
-          setIdea(DEFAULT_IDEA);
+          setIdea(buildDefaultIdea(videoTypeConfig));
+          setBrief(DEFAULT_BRIEF);
           setIdeaDocumentId(null);
-          showAlert("Reset Movie Idea", "Your Movie Idea has been cleared and reset successfully.", "success");
+          showAlert(`Reset ${ideaLabel}`, `Your ${ideaLabel} has been cleared and reset successfully.`, "success");
         } catch (e) {
           showAlert("Error", e instanceof Error ? e.message : "Failed to delete idea.", "error");
         } finally {
@@ -362,7 +376,6 @@ export function MovieIdea({ projectId, onNavigateToCharacters, onNavigateToOutli
             projectType: idea.projectType,
             duration: idea.duration,
             genres: idea.genres,
-            themeTone: idea.themeTone,
             endingType: idea.endingType,
             visualStyle: idea.visualStyle,
           },
@@ -423,13 +436,69 @@ export function MovieIdea({ projectId, onNavigateToCharacters, onNavigateToOutli
     }
   };
 
-  const toggleTone = (tone: string) => {
-    setIdea((s) => ({
-      ...s,
-      themeTone: s.themeTone.includes(tone)
-        ? s.themeTone.filter((t) => t !== tone)
-        : [...s.themeTone, tone],
-    }));
+  const generateScript = async () => {
+    if (!projectId) return;
+
+    setIsGenerating(true);
+    setError(null);
+    setMessage(null);
+
+    try {
+      await saveIdea();
+
+      const response = await fetch(`${API_URL}/api/story/generate-script`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: projectId,
+          video_type: videoTypeConfig.id,
+          outline: "",
+          brief: {
+            concept: brief.concept || idea.premise,
+            keyMoments: brief.keyMoments,
+            targetAudience: brief.targetAudience,
+            references: brief.references,
+            duration: idea.duration,
+            visualStyle: idea.visualStyle,
+          },
+          basics: {
+            projectType: videoTypeConfig.label,
+            duration: idea.duration,
+            genres: idea.genres,
+            endingType: idea.endingType,
+            visualStyle: idea.visualStyle,
+          },
+          characters: characters.map((c) => ({
+            name: c.name,
+            role: c.role,
+            archetype: c.archetype,
+            personality: c.summary,
+            tags: c.traits,
+          })),
+        }),
+      });
+
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload?.detail || "Failed to generate script.");
+      }
+
+      setMessage(`${videoTypeConfig.label} script generation started. Opening the script...`);
+      onNavigateToScript?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Script generation failed.");
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const toggleKeyMoment = (value: string) => {
+    if (!value.trim()) return;
+    setBrief((s) =>
+      s.keyMoments.includes(value)
+        ? { ...s, keyMoments: s.keyMoments.filter((moment) => moment !== value) }
+        : { ...s, keyMoments: [...s.keyMoments, value] },
+    );
   };
 
   return (
@@ -440,10 +509,18 @@ export function MovieIdea({ projectId, onNavigateToCharacters, onNavigateToOutli
           <div>
             <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-violet-400">
               <BookOpen className="h-4 w-4" />
-              Movie Idea
+              {isNarrative ? "Movie Idea" : `${videoTypeConfig.label} Brief`}
             </div>
-            <h1 className="text-2xl font-bold tracking-tight text-white md:text-3xl">{isLoading ? "Loading..." : "Untitled Epic"}</h1>
-            <p className="mt-2 max-w-2xl text-sm text-zinc-400">Shape premise and cast, then generate your outline.</p>
+            <h1 className="text-2xl font-bold tracking-tight text-white md:text-3xl">
+              {isLoading
+                ? "Loading..."
+                : projectName?.trim() || (isNarrative ? "Movie Idea" : videoTypeConfig.label)}
+            </h1>
+            <p className="mt-2 max-w-2xl text-sm text-zinc-400">
+              {isNarrative
+                ? "Shape premise and cast, then generate your outline."
+                : "Jaza maelezo mafupi (brief) kisha tengeneza script moja kwa moja — hakuna hatua ya outline."}
+            </p>
           </div>
           <div className="flex gap-2">
             {ideaDocumentId && (
@@ -453,7 +530,7 @@ export function MovieIdea({ projectId, onNavigateToCharacters, onNavigateToOutli
                 disabled={isClearing}
                 className="inline-flex h-10 items-center justify-center rounded-full border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 px-5 text-sm font-semibold text-rose-400 disabled:opacity-50"
               >
-                {isClearing ? "Clearing..." : "Delete Idea"}
+                {isClearing ? "Clearing..." : isNarrative ? "Delete Idea" : "Delete Brief"}
               </button>
             )}
             <button
@@ -461,16 +538,16 @@ export function MovieIdea({ projectId, onNavigateToCharacters, onNavigateToOutli
               onClick={saveIdea}
               className="inline-flex h-10 items-center justify-center rounded-full border border-zinc-700 px-5 text-sm font-semibold text-zinc-200 hover:bg-zinc-900"
             >
-              Save Idea
+              {isNarrative ? "Save Idea" : "Save Brief"}
             </button>
             <button
               type="button"
-              onClick={generateOutline}
+              onClick={isNarrative ? generateOutline : generateScript}
               disabled={!projectId || isGenerating}
               className="inline-flex h-10 items-center justify-center gap-2 rounded-full bg-violet-500 px-5 text-sm font-semibold text-white transition-colors hover:bg-violet-400 disabled:opacity-60"
             >
               <Sparkles className="h-4 w-4" />
-              {isGenerating ? "Generating..." : "Generate Outline"}
+              {isGenerating ? "Generating..." : videoTypeConfig.primaryAction}
             </button>
           </div>
         </section>
@@ -480,19 +557,28 @@ export function MovieIdea({ projectId, onNavigateToCharacters, onNavigateToOutli
 
         {/* Basics */}
         <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-          <Panel>
-            <FieldLabel icon={Info}>Project Type</FieldLabel>
-            <select
-              aria-label="Project type"
-              className="h-10 w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 text-sm"
-              value={idea.projectType}
-              onChange={(e) => setIdea((s) => ({ ...s, projectType: e.target.value as IdeaFormState["projectType"] }))}
-            >
-              <option value="Feature Film">Feature Film</option>
-              <option value="Short">Short</option>
-              <option value="Series">Series</option>
-            </select>
-          </Panel>
+          {isNarrative ? (
+            <Panel>
+              <FieldLabel icon={Info}>Format</FieldLabel>
+              <select
+                aria-label="Project format"
+                className="h-10 w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 text-sm"
+                value={idea.projectType}
+                onChange={(e) => setIdea((s) => ({ ...s, projectType: e.target.value }))}
+              >
+                {videoTypeConfig.formatOptions.map((format) => (
+                  <option key={format} value={format}>{format}</option>
+                ))}
+              </select>
+            </Panel>
+          ) : (
+            <Panel>
+              <FieldLabel icon={Info}>Project Type</FieldLabel>
+              <div className="flex h-10 w-full items-center rounded-lg border border-zinc-800 bg-zinc-950/60 px-3 text-sm text-zinc-300">
+                {videoTypeConfig.label}
+              </div>
+            </Panel>
+          )}
 
           <Panel>
             <FieldLabel icon={Clock3}>Duration</FieldLabel>
@@ -505,85 +591,58 @@ export function MovieIdea({ projectId, onNavigateToCharacters, onNavigateToOutli
           </Panel>
 
           <Panel>
-            <FieldLabel>Ending Type</FieldLabel>
-            <select
-              aria-label="Ending type"
+            <FieldLabel>{isNarrative ? "Genres" : "Category / Genres"}</FieldLabel>
+            <input
+              aria-label="Genres"
               className="h-10 w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 text-sm"
-              value={idea.endingType}
-              onChange={(e) => setIdea((s) => ({ ...s, endingType: e.target.value as IdeaFormState["endingType"] }))}
-            >
-              <option value="Bittersweet">Bittersweet</option>
-              <option value="Positive">Positive</option>
-              <option value="Cliffhanger">Cliffhanger</option>
-              <option value="Ambiguous">Ambiguous</option>
-            </select>
+              placeholder={videoTypeConfig.examples.join(", ")}
+              value={idea.genres.join(", ")}
+              onChange={(e) =>
+                setIdea((s) => ({
+                  ...s,
+                  genres: e.target.value.split(",").map((genre) => genre.trim()).filter(Boolean),
+                }))
+              }
+            />
           </Panel>
+
+          {isNarrative && (
+            <Panel>
+              <FieldLabel>Ending Type</FieldLabel>
+              <select
+                aria-label="Ending type"
+                className="h-10 w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 text-sm"
+                value={idea.endingType}
+                onChange={(e) => setIdea((s) => ({ ...s, endingType: e.target.value as IdeaFormState["endingType"] }))}
+              >
+                <option value="Bittersweet">Bittersweet</option>
+                <option value="Positive">Positive</option>
+                <option value="Cliffhanger">Cliffhanger</option>
+                <option value="Ambiguous">Ambiguous</option>
+              </select>
+            </Panel>
+          )}
         </section>
 
         {/* Creative Direction: Visual Style */}
         <section className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <SectionTitle icon={Palette} title="Visual Style" />
-              <p className="text-xs text-zinc-500 mt-1">Choose the look and feel for your movie&apos;s visuals.</p>
-            </div>
-            
-            {/* Carousel Controls */}
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setIsAutoplay(!isAutoplay)}
-                title={isAutoplay ? "Pause Autoplay" : "Start Autoplay"}
-                className={cn(
-                  "p-2 rounded-lg border border-zinc-800 hover:border-zinc-700 bg-zinc-900/50 hover:bg-zinc-800 transition text-zinc-400 hover:text-zinc-200",
-                  isAutoplay && "text-violet-400 border-violet-500/30 bg-violet-500/5"
-                )}
-              >
-                {isAutoplay ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-              </button>
-              <button
-                type="button"
-                onClick={() => scrollCarousel("backward")}
-                title="Scroll Left"
-                className="p-2 rounded-lg border border-zinc-800 hover:border-zinc-700 bg-zinc-900/50 hover:bg-zinc-800 transition text-zinc-400 hover:text-zinc-200"
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </button>
-              <button
-                type="button"
-                onClick={() => scrollCarousel("forward")}
-                title="Scroll Right"
-                className="p-2 rounded-lg border border-zinc-800 hover:border-zinc-700 bg-zinc-900/50 hover:bg-zinc-800 transition text-zinc-400 hover:text-zinc-200"
-              >
-                <ChevronRight className="h-4 w-4" />
-              </button>
-            </div>
+          <div>
+            <SectionTitle icon={Palette} title="Visual Style" />
+            <p className="text-xs text-zinc-500 mt-1">Choose the look and feel for your project&apos;s visuals.</p>
           </div>
-          
-          {/* Horizontal Snap Carousel Container */}
-          <div 
-            ref={carouselRef}
-            onMouseEnter={() => setIsAutoplay(false)}
-            onMouseLeave={() => setIsAutoplay(true)}
-            className="flex w-full snap-x snap-mandatory gap-4 overflow-x-auto pb-4 scrollbar-hide" 
-            style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-          >
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             {VISUAL_STYLES.map((style) => {
               const isSelected = idea.visualStyle === style.label;
               return (
                 <motion.button
                   key={style.label}
                   type="button"
-                  layout
-                  onClick={() => {
-                    setIsAutoplay(false); // Pause autoplay on manual selection
-                    setIdea((s) => ({ ...s, visualStyle: style.label }));
-                  }}
+                  onClick={() => setIdea((s) => ({ ...s, visualStyle: style.label }))}
                   whileHover={{ scale: 1.03 }}
                   whileTap={{ scale: 0.98 }}
                   className={cn(
-                    "group relative flex flex-col items-center justify-center overflow-hidden rounded-xl border-2 p-4 transition-colors duration-200 snap-center shrink-0",
-                    "w-40 sm:w-48 h-32",
+                    "group relative flex h-32 flex-col items-center justify-center overflow-hidden rounded-xl border-2 p-4 transition-colors duration-200",
                     isSelected
                       ? "border-violet-500 shadow-[0_0_20px_rgba(139,92,246,0.3)]"
                       : "border-zinc-800 hover:border-zinc-600 bg-zinc-900/50"
@@ -614,62 +673,107 @@ export function MovieIdea({ projectId, onNavigateToCharacters, onNavigateToOutli
           </div>
         </section>
 
-        {/* Creative Direction: Tones */}
+        {/* Story Foundation / Creative Brief */}
         <section className="space-y-4">
-          <SectionTitle icon={WandSparkles} title="Tone & Mood" />
-          <p className="text-xs text-zinc-500 -mt-2">Select one or more tones that define the feeling of your story.</p>
-          <div className="flex flex-wrap gap-2">
-            {TONE_OPTIONS.map((tone) => {
-              const isSelected = idea.themeTone.includes(tone.label);
-              return (
-                <button
-                  key={tone.label}
-                  type="button"
-                  onClick={() => toggleTone(tone.label)}
-                  className={cn(
-                    "inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs font-medium transition-all duration-200",
-                    isSelected
-                      ? cn(tone.bg, tone.border, tone.color, "shadow-sm")
-                      : "border-zinc-800 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300"
-                  )}
-                >
-                  {isSelected && <Check className="h-3 w-3" />}
-                  {tone.label}
-                </button>
-              );
-            })}
-          </div>
+          <SectionTitle
+            icon={WandSparkles}
+            title={isNarrative ? "Story Foundation" : "Creative Brief"}
+          />
+          {isNarrative ? (
+            <>
+              <Panel>
+                <FieldLabel>Logline</FieldLabel>
+                <textarea
+                  aria-label="Logline"
+                  rows={2}
+                  className="w-full rounded-xl border border-zinc-800 bg-zinc-950 p-3 text-sm"
+                  value={idea.logline}
+                  onChange={(e) => setIdea((s) => ({ ...s, logline: e.target.value }))}
+                />
+              </Panel>
+              <Panel>
+                <FieldLabel>Premise</FieldLabel>
+                <textarea
+                  aria-label="Premise"
+                  rows={6}
+                  className="w-full rounded-xl border border-zinc-800 bg-zinc-950 p-3 text-sm"
+                  value={idea.premise}
+                  onChange={(e) => setIdea((s) => ({ ...s, premise: e.target.value }))}
+                />
+              </Panel>
+            </>
+          ) : (
+            <>
+              <Panel>
+                <FieldLabel>Concept / Wazo Kuu</FieldLabel>
+                <textarea
+                  aria-label="Concept"
+                  rows={5}
+                  placeholder={`Eleza wazo la ${videoTypeConfig.label.toLowerCase()} kwa ufupi...`}
+                  className="w-full rounded-xl border border-zinc-800 bg-zinc-950 p-3 text-sm"
+                  value={brief.concept}
+                  onChange={(e) => setBrief((s) => ({ ...s, concept: e.target.value }))}
+                />
+              </Panel>
+              <Panel>
+                <FieldLabel>Key Moments (kila mstari ni wazo moja)</FieldLabel>
+                <textarea
+                  aria-label="Key moments"
+                  rows={5}
+                  placeholder={"Hook ya kwanza\nKilele cha kati\nKufunga kwa kuvutia"}
+                  className="w-full rounded-xl border border-zinc-800 bg-zinc-950 p-3 text-sm"
+                  value={brief.keyMoments.join("\n")}
+                  onChange={(e) =>
+                    setBrief((s) => ({
+                      ...s,
+                      keyMoments: e.target.value.split("\n").filter((line) => line.trim().length > 0),
+                    }))
+                  }
+                />
+                {brief.keyMoments.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {brief.keyMoments.map((moment) => (
+                      <button
+                        key={moment}
+                        type="button"
+                        onClick={() => toggleKeyMoment(moment)}
+                        className="inline-flex items-center gap-1 rounded-full border border-violet-500/40 bg-violet-500/10 px-2.5 py-1 text-[11px] text-violet-200"
+                      >
+                        {moment}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </Panel>
+              <Panel>
+                <FieldLabel>Target Audience</FieldLabel>
+                <input
+                  aria-label="Target audience"
+                  className="h-10 w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 text-sm"
+                  placeholder="Mfano: vijana wa 18–30, wapenzi wa muziki"
+                  value={brief.targetAudience}
+                  onChange={(e) => setBrief((s) => ({ ...s, targetAudience: e.target.value }))}
+                />
+              </Panel>
+              <Panel>
+                <FieldLabel>References / Marejeo</FieldLabel>
+                <textarea
+                  aria-label="References"
+                  rows={3}
+                  placeholder="Video au brand zinazofanana na unachotaka kufikia"
+                  className="w-full rounded-xl border border-zinc-800 bg-zinc-950 p-3 text-sm"
+                  value={brief.references}
+                  onChange={(e) => setBrief((s) => ({ ...s, references: e.target.value }))}
+                />
+              </Panel>
+            </>
+          )}
         </section>
 
-        {/* Story Foundation */}
-        <section className="space-y-4">
-          <SectionTitle icon={WandSparkles} title="Story Foundation" />
-          <Panel>
-            <FieldLabel>Logline</FieldLabel>
-            <textarea
-              aria-label="Logline"
-              rows={2}
-              className="w-full rounded-xl border border-zinc-800 bg-zinc-950 p-3 text-sm"
-              value={idea.logline}
-              onChange={(e) => setIdea((s) => ({ ...s, logline: e.target.value }))}
-            />
-          </Panel>
-          <Panel>
-            <FieldLabel>Premise</FieldLabel>
-            <textarea
-              aria-label="Premise"
-              rows={6}
-              className="w-full rounded-xl border border-zinc-800 bg-zinc-950 p-3 text-sm"
-              value={idea.premise}
-              onChange={(e) => setIdea((s) => ({ ...s, premise: e.target.value }))}
-            />
-          </Panel>
-        </section>
-
-        {/* Main Characters */}
+        {/* Characters / Cast */}
         <section className="space-y-4">
           <div className="flex items-center justify-between">
-            <SectionTitle icon={UserPlus} title="Main Characters" />
+            <SectionTitle icon={UserPlus} title={isNarrative ? "Main Characters" : "Cast / Talent"} />
             <button
               type="button"
               onClick={() => onNavigateToCharacters?.()}
@@ -700,17 +804,32 @@ export function MovieIdea({ projectId, onNavigateToCharacters, onNavigateToOutli
               </div>
             ))}
           </div>
-          {!characters.length && <p className="text-sm text-zinc-500">No characters yet. Add them from the Characters page.</p>}
+          {!characters.length && (
+            <p className="text-sm text-zinc-500">
+              {isNarrative
+                ? "No characters yet. Add them from the Characters page."
+                : "No cast or talent yet. Add them from the Characters page."}
+            </p>
+          )}
         </section>
 
         {/* Outline Readiness */}
         <aside className="rounded-xl border border-zinc-800 bg-zinc-950 p-4">
-          <h2 className="mb-2 text-xs font-bold uppercase tracking-widest text-zinc-500">Outline Readiness</h2>
+          <h2 className="mb-2 text-xs font-bold uppercase tracking-widest text-zinc-500">
+            {isNarrative ? "Outline Readiness" : "Script Readiness"}
+          </h2>
           <ul className="space-y-2 text-sm text-zinc-300">
-            <li>• Basics: {idea.projectType} / {idea.duration}</li>
+            <li>• Type: {videoTypeConfig.label} / {idea.duration}</li>
             <li>• Visual Style: {idea.visualStyle}</li>
-            <li>• Tones: {idea.themeTone.length > 0 ? idea.themeTone.join(", ") : "None selected"}</li>
-            <li>• Logline: {idea.logline.trim() ? "Provided" : "Missing"}</li>
+            {isNarrative ? (
+              <li>• Logline: {idea.logline.trim() ? "Provided" : "Missing"}</li>
+            ) : (
+              <>
+                <li>• Concept: {brief.concept.trim() ? "Provided" : "Missing"}</li>
+                <li>• Key moments: {brief.keyMoments.length}</li>
+                <li>• Target audience: {brief.targetAudience.trim() ? "Provided" : "Missing"}</li>
+              </>
+            )}
             <li>• Cast: {characters.length} ({secondaryCast} secondary)</li>
           </ul>
         </aside>

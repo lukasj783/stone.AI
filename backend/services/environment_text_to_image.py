@@ -5,7 +5,7 @@ import httpx
 
 from core.supabase_client import get_supabase_client
 from schemas.image_generation import CreateImageRequest
-from services.project_visual_style import ProjectVisualStyle
+from services.visual_style import VisualStyle
 
 
 def load_script_environment(project_id: str, environment_id: str) -> dict[str, object]:
@@ -25,7 +25,7 @@ def load_script_environment(project_id: str, environment_id: str) -> dict[str, o
 
 def build_script_environment_prompt(
     environment: dict[str, object],
-    visual_style: ProjectVisualStyle | None = None,
+    visual_style: VisualStyle | None = None,
 ) -> str:
     """Build an image prompt strictly from persisted screenplay setting facts."""
     metadata = environment.get("metadata") or {}
@@ -91,7 +91,11 @@ def persist_environment_generation(project_id: str, environment_id: str, payload
             "url": stored_url,
             "storage_path": storage_path,
             "mime_type": "image/png",
-            "metadata": {"environment_id": environment_id, "environment_generation": True},
+            "metadata": {
+                "environment_id": environment_id,
+                "environment_generation": True,
+                "visual_style": payload.visual_style,
+            },
         }).execute()
         if not asset_result.data:
             raise RuntimeError("Failed to create environment reference asset")

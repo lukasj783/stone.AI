@@ -35,6 +35,7 @@ class CreateImageRequest(BaseModel):
     image_mapping: dict[str, str] | None = Field(default=None)  # Tag names (e.g., "[image1]") to image URLs
     project_id: str | None = Field(default=None)
     seed: int | None = Field(default=None)
+    visual_style: str | None = Field(default=None, max_length=40)
 
 
 class CharacterKeyframe(BaseModel):
@@ -61,6 +62,7 @@ class GenerateScriptCharacterRequest(BaseModel):
     resolution: str | None = Field(default="1k")
     output_format: str = Field(default="jpg")
     seed: int | None = None
+    visual_style: str | None = Field(default=None, max_length=40)
 
 
 class GenerateScriptEnvironmentRequest(BaseModel):
@@ -72,6 +74,7 @@ class GenerateScriptEnvironmentRequest(BaseModel):
     resolution: str | None = Field(default="1k")
     output_format: str = Field(default="jpg")
     seed: int | None = None
+    visual_style: str | None = Field(default=None, max_length=40)
 
 
 class GenerateObjectReferenceRequest(BaseModel):
@@ -83,6 +86,7 @@ class GenerateObjectReferenceRequest(BaseModel):
     resolution: str | None = Field(default="1k")
     output_format: str = Field(default="jpg")
     seed: int | None = None
+    visual_style: str | None = Field(default=None, max_length=40)
 
 
 class CreateImageResponse(BaseModel):
@@ -108,6 +112,15 @@ class RegenerateShotFrameRequest(BaseModel):
     model: str = Field(default="nanobanana")
 
 
+class StoryboardCharacter(BaseModel):
+    """A character detected in a frame, with the tags and font color used to label it."""
+
+    id: str | None = None
+    name: str
+    tags: list[str] = Field(default_factory=list)
+    color: str | None = None
+
+
 class StoryboardFrame(BaseModel):
     shot_id: str
     shot_number: int
@@ -118,6 +131,7 @@ class StoryboardFrame(BaseModel):
     image_url: str | None = None
     status: str
     error: str | None = None
+    characters: list[StoryboardCharacter] = Field(default_factory=list)
 
 
 class GenerateStoryboardResponse(BaseModel):
@@ -140,6 +154,36 @@ class FinalizeCharacterRequest(BaseModel):
 class FinalizeCharacterResponse(BaseModel):
     character_id: str
     primary_asset_id: str
+
+
+class SetCharacterStyleRequest(BaseModel):
+    project_id: str = Field(min_length=1)
+    character_id: str = Field(min_length=1)
+    visual_style: str = Field(min_length=1, max_length=40)
+    model: str = Field(default="nanobanana")
+    provider: str = Field(default="replicate")
+
+
+class CharacterStylePropagation(BaseModel):
+    status: str
+    visual_style: str
+    affected_character_views: bool = False
+    affected_environment_ids: list[str] = Field(default_factory=list)
+    affected_object_ids: list[str] = Field(default_factory=list)
+    completed: int = 0
+    total: int = 0
+    errors: list[str] = Field(default_factory=list)
+    started_at: str | None = None
+    finished_at: str | None = None
+
+
+class SetCharacterStyleResponse(BaseModel):
+    character_id: str
+    visual_style: str
+    changed: bool
+    propagation_started: bool
+    propagation: CharacterStylePropagation
+
 
 class AssetDeleteRequest(BaseModel):
     id: int

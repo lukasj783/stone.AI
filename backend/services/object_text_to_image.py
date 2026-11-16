@@ -5,7 +5,7 @@ import httpx
 
 from core.supabase_client import get_supabase_client
 from schemas.image_generation import CreateImageRequest
-from services.project_visual_style import ProjectVisualStyle
+from services.visual_style import VisualStyle
 
 
 def load_object(project_id: str, object_id: str) -> dict[str, object]:
@@ -23,7 +23,7 @@ def load_object(project_id: str, object_id: str) -> dict[str, object]:
 
 def build_object_prompt(
     prop: dict[str, object],
-    visual_style: ProjectVisualStyle | None = None,
+    visual_style: VisualStyle | None = None,
 ) -> str:
     metadata = prop.get("metadata") if isinstance(prop.get("metadata"), dict) else {}
     description = prop.get("description") if isinstance(prop.get("description"), str) else ""
@@ -64,7 +64,9 @@ def persist_object_generation(project_id: str, object_id: str, payload: CreateIm
         stored_url = supabase.storage.from_("output-images").get_public_url(storage_path)
         asset = supabase.table("assets").insert({
             "project_id": project_id, "type": "image", "source": "generation", "name": "Object reference", "url": stored_url,
-            "storage_path": storage_path, "mime_type": "image/png", "metadata": {"object_id": object_id, "object_generation": True},
+            "storage_path": storage_path, "mime_type": "image/png", "metadata": {
+                "object_id": object_id, "object_generation": True, "visual_style": payload.visual_style,
+            },
         }).execute()
         if not asset.data:
             raise RuntimeError("Failed to create object reference asset")

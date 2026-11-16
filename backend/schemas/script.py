@@ -131,9 +131,7 @@ class MovieBasics(BaseModel):
     projectType: Literal["Feature Film", "Short", "Series"] | str = "Feature Film"
     duration: str = "120 min"
     genres: list[str] = Field(default_factory=list)
-    themeTone: list[str] = Field(default_factory=list)
     endingType: Literal["Bittersweet", "Positive", "Cliffhanger", "Ambiguous"] | str = "Bittersweet"
-    visualStyle: str = "Realistic Cinematic"
 
 
 class MovieStory(BaseModel):
@@ -152,9 +150,23 @@ class GenerateOutlineResponse(BaseModel):
     outline: str
 
 
+class CreativeBrief(BaseModel):
+    """Brief used by non-narrative video types to drive script generation."""
+
+    concept: str = ""
+    keyMoments: list[str] = Field(default_factory=list)
+    targetAudience: str = ""
+    references: str = ""
+    duration: str = ""
+
+
 class GenerateScriptPayload(BaseModel):
     project_id: str
-    outline: str
+    # Narrative projects send a generated outline; non-narrative video types
+    # (music video, documentary, advertisement) send a creative brief instead.
+    outline: str = ""
+    video_type: str | None = None
+    brief: CreativeBrief | None = None
     basics: MovieBasics | None = None
     characters: list[CharacterSchema] = Field(default_factory=list)
 

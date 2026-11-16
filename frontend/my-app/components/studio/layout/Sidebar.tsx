@@ -6,15 +6,17 @@ import {
   Users, MountainSnow, Box, LayoutGrid, 
   ListVideo, Mic2, Music, Sparkles, 
   Video, Mic, MonitorPlay, Scissors, 
-  Type, PlaySquare, Film, UploadCloud
+  Type, PlaySquare, Film, UploadCloud, FolderOpen
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { isNarrativeVideoType } from '@/lib/studioVideoTypes';
 
 const NAVIGATION = [
   {
     category: 'Project',
     items: [
       { id: 'dashboard', label: 'Project Dashboard', icon: Film },
+      { id: 'projects', label: 'All Movie Ideas', icon: FolderOpen },
       { id: 'idea', label: 'Idea', icon: Lightbulb },
       { id: 'outline', label: 'Outline', icon: List },
       { id: 'script', label: 'Script', icon: FileText },
@@ -71,13 +73,27 @@ const NAVIGATION = [
 interface SidebarProps {
   activeView: string;
   onNavigate: (id: string) => void;
+  /** Active project video type — controls which pipeline steps are shown. */
+  videoType?: string | null;
 }
 
-export function StudioSidebar({ activeView, onNavigate }: SidebarProps) {
+export function StudioSidebar({ activeView, onNavigate, videoType }: SidebarProps) {
+  const isNarrative = isNarrativeVideoType(videoType ?? null);
+  const navigation = NAVIGATION.map((section) => ({
+    ...section,
+    items: section.items
+      .filter((item) => (item.id === 'outline' ? isNarrative : true))
+      .map((item) => {
+        if (item.id === 'idea') return { ...item, label: isNarrative ? 'Idea' : 'Brief' };
+        if (item.id === 'projects') return { ...item, label: 'All Projects' };
+        return item;
+      }),
+  }));
+
   return (
     <aside className="h-full w-64 xl:w-72 shrink-0 border-r border-zinc-800 bg-zinc-950 flex flex-col overflow-y-auto shadow-2xl shadow-black/50">
       <div className="p-4">
-        {NAVIGATION.map((section, idx) => (
+        {navigation.map((section, idx) => (
           <div key={idx} className="mb-6 last:mb-0">
             <h3 className="px-3 mb-2 text-xs font-semibold uppercase tracking-wider text-zinc-500">
               {section.category}

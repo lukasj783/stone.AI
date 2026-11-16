@@ -24,30 +24,9 @@ export function VideoThumbnail({ asset }: { asset: UploadedAsset }) {
   const mediaRef = useRef<HTMLVideoElement>(null);
   const wavesurferRef = useRef<WaveSurfer | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [hasPreviewFrame, setHasPreviewFrame] = useState(false);
-  const [loadError, setLoadError] = useState(false);
 
   useEffect(() => {
-    const media = mediaRef.current;
-    if (!containerRef.current || !media) return;
-
-    const handleLoadedMetadata = () => {
-      const previewTime = Math.min(1, Math.max(0, media.duration * 0.2));
-      if (Number.isFinite(previewTime)) {
-        media.currentTime = previewTime;
-      }
-    };
-
-    const handleSeeked = () => setHasPreviewFrame(true);
-    const handleError = () => setLoadError(true);
-
-    media.addEventListener('loadedmetadata', handleLoadedMetadata);
-    media.addEventListener('seeked', handleSeeked);
-    media.addEventListener('error', handleError);
-
-    if (media.readyState >= 1) {
-      handleLoadedMetadata();
-    }
+    if (!containerRef.current || !mediaRef.current) return;
 
     const ws = WaveSurfer.create({
       container: containerRef.current,
@@ -57,7 +36,7 @@ export function VideoThumbnail({ asset }: { asset: UploadedAsset }) {
       barWidth: 2,
       barGap: 1,
       height: 30,
-      media, // Sync perfectly with the video element
+      media: mediaRef.current, // Sync perfectly with the video element
     });
     
     wavesurferRef.current = ws;
@@ -67,9 +46,6 @@ export function VideoThumbnail({ asset }: { asset: UploadedAsset }) {
     ws.on('finish', () => setIsPlaying(false));
 
     return () => {
-      media.removeEventListener('loadedmetadata', handleLoadedMetadata);
-      media.removeEventListener('seeked', handleSeeked);
-      media.removeEventListener('error', handleError);
       ws.destroy();
     };
   }, [asset.url]);
@@ -83,33 +59,10 @@ export function VideoThumbnail({ asset }: { asset: UploadedAsset }) {
 
   return (
     <div className="relative w-full aspect-video bg-zinc-900 rounded-md overflow-hidden border border-zinc-700 group cursor-pointer" onClick={togglePlay}>
-      <video
-        ref={mediaRef}
-        src={asset.url}
-        className={`w-full h-full object-cover transition-opacity ${hasPreviewFrame ? 'opacity-100' : 'opacity-40'}`}
-        preload="metadata"
-        muted
-        playsInline
-      />
-
-      {!hasPreviewFrame && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-zinc-950/60 px-3 text-center pointer-events-none">
-          {loadError ? (
-            <>
-              <AlertCircle size={18} className="text-red-400" />
-              <span className="text-[10px] font-semibold text-red-300">Preview unavailable</span>
-            </>
-          ) : (
-            <>
-              <Loader size={18} className="animate-spin text-zinc-500" />
-              <span className="text-[10px] font-semibold text-zinc-500">Loading preview</span>
-            </>
-          )}
-        </div>
-      )}
+      <video ref={mediaRef} src={asset.url} className="w-full h-full object-cover" preload="metadata" />
       
       {/* Waveform Overlay at the bottom */}
-      <div className="absolute bottom-0 left-0 right-0 h-[30px] bg-gradient-to-t from-black/80 to-transparent pointer-events-none">
+      <div className="absolute bottom-0 left-0 right-0 h-7.5 bg-linear-to-t from-black/80 to-transparent pointer-events-none">
         <div ref={containerRef} className="w-full h-full opacity-0 group-hover:opacity-100 transition-opacity" />
       </div>
 

@@ -1,0 +1,7 @@
+# Pyrefly configuration for this repository.
+#
+# The FastAPI backend is run from `backend/` (see backend/README.md), so its
+# absolute imports (e.g. `from routers.story import router`) are resolved
+# relative to that directory. Listing it here keeps IDE/type-checker import
+# resolution consistent with runtime, regardless of the workspace root.
+search-path = ["backend"]

@@ -1,11 +1,16 @@
 import json
 import replicate
+import uuid
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 import asyncio
 
-from core.supabase_client import get_supabase_client
+from supabase import Client
+from typing import Any
+
+from core.supabase_client import get_supabase_client, require_supabase_client
+from core.supabase_records import as_records, maybe_single_record
 from core.config import get_settings
-from schemas.story import (
+from schemas.script import (
     CharacterProfileResponse,
     CharacterScriptSyncPreviewResponse,
     ConfirmCharacterScriptSyncPayload,
@@ -35,9 +40,60 @@ from schemas.image_generation import (
     StoryboardFrame,
 )
 from services.storyboard_generation import generate_scene_storyboard, regenerate_single_shot_frame
-from services.character_text_to_image import EDITABLE_CHARACTER_FIELDS, effective_character_profile
+from services.character_views import EDITABLE_CHARACTER_FIELDS, effective_character_profile
 
 router = APIRouter(prefix="/api/story", tags=["story"])
+
+
+def _gemini_input(
+    prompt: str,
+    *,
+    system_instruction: str | None = None,
+    thinking_level: str | None = None,
+    temperature: float | None = None,
+) -> dict[str, object]:
+    """Build the Replicate input payload for the configured Gemini model.
+
+    Fields mirror the google/gemini-3.5-flash schema: prompt, system_instruction,
+    thinking_level ("none" | "low" | "high"), temperature, top_p,
+    max_output_tokens, images, videos, video_fps and audio.
+    """
+    settings = get_settings()
+    payload: dict[str, object] = {"prompt": prompt}
+    level = (thinking_level or settings.gemini_thinking_level or "none").strip().lower()
+    if level in {"none", "low", "high"}:
+        payload["thinking_level"] = level
+    if system_instruction:
+        payload["system_instruction"] = system_instruction
+    if temperature is not None:
+        payload["temperature"] = temperature
+    return payload
+
+
+def _run_gemini(
+    client: replicate.Client,
+    prompt: str,
+    *,
+    system_instruction: str | None = None,
+    thinking_level: str | None = None,
+    temperature: float | None = None,
+) -> str:
+    """Run the configured Gemini model on Replicate and return the response text.
+
+    Gemini 3.x streams its answer (output schema is `string[]`), so the client
+    returns either a plain string or an iterator of chunks that must be joined.
+    """
+    settings = get_settings()
+    output = client.run(
+        settings.gemini_model,
+        input=_gemini_input(
+            prompt,
+            system_instruction=system_instruction,
+            thinking_level=thinking_level,
+            temperature=temperature,
+        ),
+    )
+    return output if isinstance(output, str) else "".join(output)
 
 
 def _parse_json_object(value: str) -> object:
@@ -57,6 +113,13 @@ def _parse_json_object(value: str) -> object:
 
 def _normalize_character_name(value: str) -> str:
     return " ".join(value.upper().strip().split())
+
+
+def _as_int(value: object, default: int = 0) -> int:
+    """Read an integer out of a JSON payload without trusting its runtime type."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return default
+    return value
 
 
 def _manual_override_fields(metadata: object) -> list[str]:
@@ -103,42 +166,52 @@ def _build_character_script_description(character: dict) -> str:
     return f"{character['name']} is {description}."
 
 
-def _load_script_character_for_profile(supabase: object, project_id: str, character_id: str) -> dict:
+def _load_script_character_for_profile(supabase: Client, project_id: str, character_id: str) -> dict:
     result = supabase.table("characters").select(
         "id, name, role, age, gender, race, appearance, personality, metadata"
     ).eq("id", character_id).eq("project_id", project_id).maybe_single().execute()
-    character = result.data
+    character = maybe_single_record(result)
     metadata = (character or {}).get("metadata") or {}
     if not character or not isinstance(metadata, dict) or metadata.get("source") != "script":
         raise ValueError("Script-derived character was not found in this project")
     return character
 
 
-def _find_character_first_appearance(supabase: object, project_id: str, character: dict) -> tuple[dict, dict, dict | None]:
+def _find_character_first_appearance(supabase: Client, project_id: str, character: dict) -> tuple[dict, dict, dict | None]:
     scenes_result = supabase.table("scenes").select("id, slugline_raw, sort_order").eq(
         "project_id", project_id
     ).order("sort_order").execute()
-    scenes_by_id = {scene["id"]: scene for scene in (scenes_result.data or [])}
+    scenes_by_id = {str(scene["id"]): scene for scene in as_records(scenes_result.data) if scene.get("id")}
     blocks_result = supabase.table("script_blocks").select(
         "id, scene_id, character_id, character_name, sort_order, metadata"
     ).eq("project_id", project_id).execute()
+    blocks = as_records(blocks_result.data)
     character_name = _normalize_character_name(str(character["name"]))
     appearances = [
-        block for block in (blocks_result.data or [])
+        block for block in blocks
         if block.get("scene_id") in scenes_by_id
         and (block.get("character_id") == character["id"] or _normalize_character_name(str(block.get("character_name") or "")) == character_name)
     ]
     if not appearances:
         raise ValueError("This character does not have an on-screen appearance in the saved script")
-    first = min(appearances, key=lambda block: (scenes_by_id[block["scene_id"]].get("sort_order", 0), block.get("sort_order", 0)))
+    first = min(
+        appearances,
+        key=lambda block: (
+            _as_int(scenes_by_id[str(block["scene_id"])].get("sort_order")),
+            _as_int(block.get("sort_order")),
+        ),
+    )
     managed = next((
-        block for block in (blocks_result.data or [])
+        block for block in blocks
         if block.get("scene_id") == first["scene_id"]
         and isinstance(block.get("metadata"), dict)
         and block["metadata"].get("source") == "character_profile_sync"
         and block["metadata"].get("character_id") == character["id"]
     ), None)
-    return first, scenes_by_id[first["scene_id"]], managed
+    first_scene = scenes_by_id.get(str(first["scene_id"]))
+    if first_scene is None:
+        raise ValueError("The first appearance of this character could not be resolved to a scene")
+    return first, first_scene, managed
 
 
 def _normalize_environment_name(value: str) -> str:
@@ -217,11 +290,11 @@ def _extract_script_environments(scenes: list[dict]) -> list[dict]:
     return list(environments_by_key.values())
 
 
-def _persist_script_environments(supabase: object, project_id: str, environments: list[dict]) -> None:
+def _persist_script_environments(supabase: Client, project_id: str, environments: list[dict]) -> None:
     existing_result = supabase.table("environments").select("id, metadata").eq("project_id", project_id).execute()
     existing_by_key = {
-        str(metadata.get("script_key")): environment
-        for environment in (existing_result.data or [])
+        metadata.get("script_key"): environment
+        for environment in as_records(existing_result.data)
         if isinstance((metadata := environment.get("metadata")), dict)
         and metadata.get("source") == "script"
         and isinstance(metadata.get("script_key"), str)
@@ -247,7 +320,7 @@ def _persist_script_environments(supabase: object, project_id: str, environments
             supabase.table("environments").insert({"project_id": project_id, **values}).execute()
 
 
-def _extract_script_objects(client: object, screenplay: dict) -> list[ExtractedObjectSchema]:
+def _extract_script_objects(client: replicate.Client, screenplay: dict) -> list[ExtractedObjectSchema]:
     prompt = f"""You extract explicitly supported, reusable physical objects from a screenplay.
 
 Screenplay JSON:
@@ -257,8 +330,7 @@ Return ONLY valid JSON in this shape:
 {{"objects":[{{"name":"", "description":null, "tags":[], "image_prompt":"", "source_scene_indexes":[]}}]}}
 
 Include only story-significant physical objects that are explicitly named or unambiguously described, such as a named weapon, letter, vehicle, device, or recurring personal item. Exclude characters, locations, generic set dressing, clothing, food, and broad groups of objects. Do not infer factual details. Merge repeated mentions into one object. `source_scene_indexes` must use the zero-based scene indexes supplied in the screenplay. `description` and `image_prompt` must contain only explicit screenplay facts; use null or an empty string when unavailable."""
-    output = client.run("google/gemini-2.5-flash", input={"prompt": prompt})
-    parsed = _parse_json_object(output if isinstance(output, str) else "".join(output))
+    parsed = _parse_json_object(_run_gemini(client, prompt, thinking_level="low"))
     raw_objects = parsed.get("objects", []) if isinstance(parsed, dict) else parsed
     if not isinstance(raw_objects, list):
         raise ValueError("Object extractor response is missing objects")
@@ -294,10 +366,10 @@ Include only story-significant physical objects that are explicitly named or una
     return list(extracted_by_name.values())
 
 
-def _persist_script_objects(supabase: object, project_id: str, objects: list[ExtractedObjectSchema], scenes: list[dict]) -> None:
+def _persist_script_objects(supabase: Client, project_id: str, objects: list[ExtractedObjectSchema], scenes: list[dict]) -> None:
     existing_result = supabase.table("props").select("id, name, description, tags, metadata").eq("project_id", project_id).execute()
     existing_by_key: dict[str, dict] = {}
-    for prop in existing_result.data or []:
+    for prop in as_records(existing_result.data):
         metadata = prop.get("metadata") if isinstance(prop.get("metadata"), dict) else {}
         for key in (_normalize_object_name(str(prop.get("name") or "")), metadata.get("script_key")):
             if isinstance(key, str) and key:
@@ -324,7 +396,7 @@ def _persist_script_objects(supabase: object, project_id: str, objects: list[Ext
             "extraction_version": 1,
             "manual_overrides": overrides,
         }
-        values: dict[str, object] = {"metadata": metadata}
+        values: dict[str, Any] = {"metadata": metadata}
         if "name" not in overrides:
             values["name"] = extracted.name
         if "description" not in overrides:
@@ -350,7 +422,7 @@ def _normalize_extracted_character(raw_character: dict) -> dict:
     return normalized
 
 
-def _extract_script_characters(client: object, screenplay: dict) -> list[ExtractedCharacterSchema]:
+def _extract_script_characters(client: replicate.Client, screenplay: dict) -> list[ExtractedCharacterSchema]:
     prompt = f"""You extract only explicitly supported character facts from a screenplay.
 
 Screenplay JSON:
@@ -360,8 +432,7 @@ Return ONLY valid JSON in this shape:
 {{"characters":[{{"name":"", "character_type":"main" | "supporting", "role":null, "age":null, "gender":null, "race":null, "appearance":null, "personality":null, "tags":[], "image_prompt":""}}]}}
 
 Include every named speaking or explicitly named character. Set `character_type` to `main` only for characters central to the screenplay's main plot; set it to `supporting` for all other named characters. Do not infer, guess, or stereotype age, gender, race, visual traits, role, or personality. `age` must be an exact whole number or null; do not use ranges or labels such as "40s". Use null when the screenplay does not explicitly establish a fact. `image_prompt` must be a concise visual description composed only from explicit screenplay facts; use an empty string when no visual facts are present."""
-    output = client.run("google/gemini-2.5-flash", input={"prompt": prompt})
-    parsed = _parse_json_object(output if isinstance(output, str) else "".join(output))
+    parsed = _parse_json_object(_run_gemini(client, prompt, thinking_level="low"))
     raw_characters = parsed.get("characters", []) if isinstance(parsed, dict) else parsed
     if not isinstance(raw_characters, list):
         raise ValueError("Character extractor response is missing characters")
@@ -380,11 +451,11 @@ Include every named speaking or explicitly named character. Set `character_type`
     return extracted
 
 
-def _persist_script_characters(supabase: object, project_id: str, characters: list[ExtractedCharacterSchema]) -> None:
+def _persist_script_characters(supabase: Client, project_id: str, characters: list[ExtractedCharacterSchema]) -> None:
     existing_result = supabase.table("characters").select("id, name, metadata").eq("project_id", project_id).execute()
     existing_by_name = {
         _normalize_character_name(str(character.get("name") or "")): character
-        for character in (existing_result.data or [])
+        for character in as_records(existing_result.data)
     }
     character_id_by_name: dict[str, str] = {}
 
@@ -402,20 +473,21 @@ def _persist_script_characters(supabase: object, project_id: str, characters: li
         }
         if existing:
             supabase.table("characters").update(values).eq("id", existing["id"]).execute()
-            character_id_by_name[normalized_name] = existing["id"]
+            character_id_by_name[normalized_name] = str(existing["id"])
         else:
             result = supabase.table("characters").insert({"project_id": project_id, **values}).execute()
-            if result.data:
-                character_id_by_name[normalized_name] = result.data[0]["id"]
-            else:
-                inserted = supabase.table("characters").select("id").eq("project_id", project_id).eq(
-                    "name", character.name
-                ).order("created_at", desc=True).limit(1).execute()
-                if inserted.data:
-                    character_id_by_name[normalized_name] = inserted.data[0]["id"]
+            inserted = as_records(result.data)
+            if not inserted:
+                inserted = as_records(
+                    supabase.table("characters").select("id").eq("project_id", project_id).eq(
+                        "name", character.name
+                    ).order("created_at", desc=True).limit(1).execute().data
+                )
+            if inserted:
+                character_id_by_name[normalized_name] = str(inserted[0]["id"])
 
     blocks_result = supabase.table("script_blocks").select("id, character_name").eq("project_id", project_id).execute()
-    for block in blocks_result.data or []:
+    for block in as_records(blocks_result.data):
         character_name = block.get("character_name")
         if not isinstance(character_name, str):
             continue
@@ -433,32 +505,33 @@ async def extract_characters_from_existing_script(
     if not settings.replicate_api_token:
         raise HTTPException(status_code=500, detail="REPLICATE_API_TOKEN not configured")
 
-    supabase = get_supabase_client()
-    if not supabase:
-        raise HTTPException(status_code=500, detail="Supabase client not configured")
+    supabase = require_supabase_client()
 
-    scenes_result = supabase.table("scenes").select("id, slugline_raw, sort_order").eq(
-        "project_id", payload.project_id
-    ).order("sort_order").execute()
-    scenes = scenes_result.data or []
-    blocks_result = supabase.table("script_blocks").select(
-        "scene_id, block_type, content, character_name, parenthetical, sort_order"
-    ).eq("project_id", payload.project_id).order("sort_order").execute()
+    scenes = as_records(
+        supabase.table("scenes").select("id, slugline_raw, sort_order").eq(
+            "project_id", payload.project_id
+        ).order("sort_order").execute().data
+    )
     blocks_by_scene: dict[str, list[dict]] = {}
-    for block in blocks_result.data or []:
-        blocks_by_scene.setdefault(block["scene_id"], []).append(block)
+    for block in as_records(
+        supabase.table("script_blocks").select(
+            "scene_id, block_type, content, character_name, parenthetical, sort_order"
+        ).eq("project_id", payload.project_id).order("sort_order").execute().data
+    ):
+        scene_id = block.get("scene_id")
+        if isinstance(scene_id, str):
+            blocks_by_scene.setdefault(scene_id, []).append(block)
 
-    screenplay = {
-        "scenes": [
-            {
-                "slugline_raw": scene.get("slugline_raw", ""),
-                "blocks": blocks_by_scene.get(scene["id"], []),
-            }
-            for scene in scenes
-        ],
-    }
-    if not any(scene["blocks"] for scene in screenplay["scenes"]):
+    screenplay_scenes: list[dict[str, Any]] = [
+        {
+            "slugline_raw": scene.get("slugline_raw", ""),
+            "blocks": blocks_by_scene.get(str(scene["id"]), []),
+        }
+        for scene in scenes
+    ]
+    if not any(scene_payload["blocks"] for scene_payload in screenplay_scenes):
         raise HTTPException(status_code=400, detail="No screenplay blocks were found for this project")
+    screenplay: dict[str, Any] = {"scenes": screenplay_scenes}
 
     try:
         client = replicate.Client(api_token=settings.replicate_api_token)
@@ -586,25 +659,32 @@ async def confirm_character_script_sync(
             "manual_override_fields": _manual_override_fields(character.get("metadata")),
         }
         if managed_block:
-            result = supabase.table("script_blocks").update({"content": expected_content, "metadata": metadata}).eq(
-                "id", managed_block["id"]
-            ).select("id").single().execute()
+            script_block_id = str(managed_block["id"])
+            supabase.table("script_blocks").update({"content": expected_content, "metadata": metadata}).eq(
+                "id", script_block_id
+            ).execute()
             action = "replace"
         else:
-            scene_blocks = supabase.table("script_blocks").select("id, sort_order").eq(
+            scene_blocks = as_records(supabase.table("script_blocks").select("id, sort_order").eq(
                 "scene_id", first_appearance["scene_id"]
-            ).order("sort_order", desc=True).execute()
-            for block in scene_blocks.data or []:
-                if block.get("sort_order", 0) >= first_appearance.get("sort_order", 0):
-                    supabase.table("script_blocks").update({"sort_order": block["sort_order"] + 1}).eq("id", block["id"]).execute()
-            result = supabase.table("script_blocks").insert({
+            ).order("sort_order", desc=True).execute().data)
+            insert_order = _as_int(first_appearance.get("sort_order"))
+            for block in scene_blocks:
+                if not block.get("id") or _as_int(block.get("sort_order")) < insert_order:
+                    continue
+                supabase.table("script_blocks").update(
+                    {"sort_order": _as_int(block.get("sort_order")) + 1}
+                ).eq("id", block["id"]).execute()
+            script_block_id = str(uuid.uuid4())
+            supabase.table("script_blocks").insert({
+                "id": script_block_id,
                 "project_id": payload.project_id,
                 "scene_id": first_appearance["scene_id"],
                 "block_type": "action",
                 "content": expected_content,
-                "sort_order": first_appearance.get("sort_order", 0),
+                "sort_order": insert_order,
                 "metadata": metadata,
-            }).select("id").single().execute()
+            }).execute()
             action = "insert"
         return ConfirmCharacterScriptSyncResponse(
             character_id=payload.character_id,
@@ -612,7 +692,7 @@ async def confirm_character_script_sync(
             scene_slugline=scene.get("slugline_raw"),
             content=expected_content,
             action=action,
-            script_block_id=str(result.data["id"]),
+            script_block_id=script_block_id,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -633,7 +713,7 @@ async def extract_environments_from_existing_script(
         result = supabase.table("scenes").select(
             "id, slugline_raw, location_type, location, time_of_day, sort_order"
         ).eq("project_id", payload.project_id).order("sort_order").execute()
-        environments = _extract_script_environments(result.data or [])
+        environments = _extract_script_environments(as_records(result.data))
         _persist_script_environments(supabase, payload.project_id, environments)
         return ExtractScriptEnvironmentsResponse(count=len(environments))
     except Exception as error:
@@ -655,20 +735,21 @@ async def extract_objects_from_existing_script(
         scenes_result = supabase.table("scenes").select("id, slugline_raw, sort_order").eq(
             "project_id", payload.project_id
         ).order("sort_order").execute()
-        scenes = scenes_result.data or []
+        scenes = as_records(scenes_result.data)
         blocks_result = supabase.table("script_blocks").select(
             "scene_id, block_type, content, character_name, parenthetical, sort_order"
         ).eq("project_id", payload.project_id).order("sort_order").execute()
         blocks_by_scene: dict[str, list[dict]] = {}
-        for block in blocks_result.data or []:
-            if isinstance(block.get("scene_id"), str):
-                blocks_by_scene.setdefault(block["scene_id"], []).append(block)
+        for block in as_records(blocks_result.data):
+            scene_id = block.get("scene_id")
+            if isinstance(scene_id, str):
+                blocks_by_scene.setdefault(scene_id, []).append(block)
         screenplay = {
             "scenes": [
                 {
                     "scene_index": index,
                     "slugline_raw": scene.get("slugline_raw", ""),
-                    "blocks": blocks_by_scene.get(scene["id"], []),
+                    "blocks": blocks_by_scene.get(str(scene["id"]), []),
                 }
                 for index, scene in enumerate(scenes)
             ],
@@ -694,11 +775,21 @@ async def list_objects(project_id: str) -> list[ObjectProfileResponse]:
         result = supabase.table("props").select("id, name, description, tags, primary_asset_id, metadata").eq(
             "project_id", project_id
         ).order("name").execute()
-        props = result.data or []
-        asset_ids = [prop["primary_asset_id"] for prop in props if isinstance(prop.get("primary_asset_id"), str)]
-        assets = supabase.table("assets").select("id, url").in_("id", asset_ids).execute().data if asset_ids else []
-        urls = {asset["id"]: asset["url"] for asset in assets or [] if isinstance(asset.get("url"), str)}
-        return [_object_profile_response(prop, urls.get(prop.get("primary_asset_id"))) for prop in props]
+        props = as_records(result.data)
+        asset_ids = [str(prop["primary_asset_id"]) for prop in props if isinstance(prop.get("primary_asset_id"), str)]
+        assets = (
+            as_records(supabase.table("assets").select("id, url").in_("id", asset_ids).execute().data)
+            if asset_ids
+            else []
+        )
+        urls = {str(asset["id"]): str(asset["url"]) for asset in assets if isinstance(asset.get("url"), str)}
+        return [
+            _object_profile_response(
+                prop,
+                urls.get(str(prop.get("primary_asset_id"))) if isinstance(prop.get("primary_asset_id"), str) else None,
+            )
+            for prop in props
+        ]
     except Exception as error:
         raise HTTPException(status_code=500, detail=f"Failed to load objects: {error}") from error
 
@@ -715,12 +806,12 @@ async def create_object(payload: CreateObjectPayload) -> ObjectProfileResponse:
     tags = _normalize_object_tags(payload.tags)
     metadata = {"sources": ["manual"], "manual_overrides": {"name": True, "description": True, "tags": True}}
     try:
-        result = supabase.table("props").insert({
+        created = as_records(supabase.table("props").insert({
             "project_id": payload.project_id, "name": name, "description": description, "tags": tags, "metadata": metadata,
-        }).execute()
-        if not result.data:
+        }).execute().data)
+        if not created:
             raise RuntimeError("Object could not be created")
-        return _object_profile_response(result.data[0])
+        return _object_profile_response(created[0])
     except Exception as error:
         raise HTTPException(status_code=400, detail=f"Object creation failed: {error}") from error
 
@@ -731,9 +822,9 @@ async def update_object(object_id: str, payload: UpdateObjectPayload) -> ObjectP
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase client not configured")
     try:
-        loaded = supabase.table("props").select("id, name, description, tags, metadata").eq("id", object_id).eq(
+        loaded = maybe_single_record(supabase.table("props").select("id, name, description, tags, metadata").eq("id", object_id).eq(
             "project_id", payload.project_id
-        ).maybe_single().execute().data
+        ).maybe_single().execute())
         if not loaded:
             raise ValueError("Object was not found in this project")
         metadata = dict(loaded.get("metadata") or {})
@@ -741,7 +832,7 @@ async def update_object(object_id: str, payload: UpdateObjectPayload) -> ObjectP
         sources = {value for value in metadata.get("sources", []) if isinstance(value, str)}
         sources.add("manual")
         metadata["sources"] = sorted(sources)
-        values: dict[str, object] = {"metadata": metadata}
+        values: dict[str, Any] = {"metadata": metadata}
         if "name" in payload.model_fields_set:
             name = " ".join((payload.name or "").strip().split())
             if not name:
@@ -756,9 +847,9 @@ async def update_object(object_id: str, payload: UpdateObjectPayload) -> ObjectP
             overrides["tags"] = True
         metadata["manual_overrides"] = overrides
         supabase.table("props").update(values).eq("id", object_id).eq("project_id", payload.project_id).execute()
-        updated = supabase.table("props").select("id, name, description, tags, metadata").eq("id", object_id).eq(
+        updated = maybe_single_record(supabase.table("props").select("id, name, description, tags, metadata").eq("id", object_id).eq(
             "project_id", payload.project_id
-        ).maybe_single().execute().data
+        ).maybe_single().execute())
         if not updated:
             raise ValueError("Object was not found after updating")
         return _object_profile_response(updated)
@@ -774,7 +865,9 @@ async def delete_object(object_id: str, project_id: str) -> None:
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase client not configured")
     try:
-        existing = supabase.table("props").select("id").eq("id", object_id).eq("project_id", project_id).maybe_single().execute().data
+        existing = maybe_single_record(
+            supabase.table("props").select("id").eq("id", object_id).eq("project_id", project_id).maybe_single().execute()
+        )
         if not existing:
             raise ValueError("Object was not found in this project")
         supabase.table("props").delete().eq("id", object_id).eq("project_id", project_id).execute()
@@ -809,9 +902,7 @@ Basics:
 - Project Type: {payload.basics.projectType}
 - Duration: {payload.basics.duration}
 - Genres: {', '.join(payload.basics.genres) if payload.basics.genres else 'N/A'}
-- Themes/Tone: {', '.join(payload.basics.themeTone) if payload.basics.themeTone else 'N/A'}
 - Ending Type: {payload.basics.endingType}
-- Visual Style: {payload.basics.visualStyle}
 
 Story:
 - Logline: {payload.story.logline}
@@ -830,15 +921,7 @@ Return the output in clean Markdown format with professional sluglines.
 
         client = replicate.Client(api_token=api_token)
 
-        output = client.run(
-            "google/gemini-2.5-flash",
-            input={
-                "prompt": prompt
-            }
-        )
-
-        # Gemini returns the output as a generator or string, handle that
-        outline_text = "".join(output) if not isinstance(output, str) else output
+        outline_text = _run_gemini(client, prompt)
 
         return GenerateOutlineResponse(outline=outline_text)
     except Exception as e:
@@ -853,21 +936,77 @@ async def generate_script(payload: GenerateScriptPayload, background_tasks: Back
         if not api_token:
             raise HTTPException(status_code=500, detail="REPLICATE_API_TOKEN not configured")
             
-        supabase = get_supabase_client()
+        supabase = require_supabase_client()
 
         # Check if we already have scenes to generate.
         # Step 1: Draft the scene index/beatsheet outline dividing the whole story into a sequence of scenes
         characters_text = "\n".join(
             [f"- {c.name}: {c.archetype or c.role}" for c in payload.characters]
-        ) if payload.characters else "- Elements inferred from outline"
+        ) if payload.characters else "- Elements inferred from the source material"
+
+        video_type = (payload.video_type or "").strip() or None
+        outline_text = payload.outline.strip()
+        narrative_types = {"feature_film", "short_film"}
+
+        brief = payload.brief
+        brief_lines: list[str] = []
+        if brief:
+            if brief.concept.strip():
+                brief_lines.append(f"- Concept: {brief.concept.strip()}")
+            if brief.keyMoments:
+                brief_lines.append(
+                    "- Key moments:\n" + "\n".join(f"  * {m}" for m in brief.keyMoments if m.strip())
+                )
+            if brief.targetAudience.strip():
+                brief_lines.append(f"- Target audience: {brief.targetAudience.strip()}")
+            if brief.references.strip():
+                brief_lines.append(f"- References: {brief.references.strip()}")
+            if brief.duration.strip():
+                brief_lines.append(f"- Duration: {brief.duration.strip()}")
+        brief_text = "\n".join(brief_lines)
+
+        # Feature/short films keep a three-act narrative structure; music videos,
+        # documentaries and adverts get a visual beat plan built from the brief.
+        # Legacy callers that only send an outline stay on the narrative track.
+        is_narrative = (video_type in narrative_types) or (
+            video_type is None and bool(outline_text) and not brief_text
+        )
+
+        if is_narrative:
+            structure_note = (
+                "Break the outline down into an ordered sequence of screenplay scenes "
+                "following a three-act narrative structure."
+            )
+        else:
+            structure_note = (
+                "This is a NON-NARRATIVE production (music video / documentary / advertisement). "
+                "Do NOT force a three-act story structure or fictional characters. Sequence the "
+                "scenes as a visual beat plan that realises the brief: a strong hook, the listed key "
+                "moments in order, and a memorable closing beat, matching the requested duration."
+            )
+
+        if outline_text:
+            source_label = "Here is the screenplay outline:"
+            source_body = outline_text
+        else:
+            source_label = "Here is the creative brief:"
+            source_body = brief_text
+
+        if not source_body:
+            raise HTTPException(
+                status_code=400,
+                detail="Either an outline or a creative brief is required to generate a script.",
+            )
 
         plan_prompt = f"""
 You are an expert Hollywood screenwriter and story planner.
-Analyze the provided screenplay outline and break it down into a sequence of structured screenplay scenes.
+Analyze the provided source material and break it down into a sequence of structured screenplay scenes.
 Do not write the screenplay content yet. Just outline and define the sequence of scenes.
 
-Here is the outline:
-{payload.outline}
+{structure_note}
+
+{source_label}
+{source_body}
 
 Characters:
 {characters_text}
@@ -886,20 +1025,14 @@ Output ONLY valid JSON matching this schema:
 }}
 
 Format rules:
-- Extract all scenes from the outline. Provide the list of scenes.
+- Extract all scenes from the source material. Provide the list of scenes.
 - Ensure strict JSON formatting. No markdown code blocks around the response, just the raw JSON object.
 """
 
         client = replicate.Client(api_token=api_token)
 
-        output = client.run(
-            "google/gemini-2.5-flash",
-            input={
-                "prompt": plan_prompt
-            }
-        )
-
-        beats_text = "".join(output) if not isinstance(output, str) else output
+        # Gemini streams its answer (string[] output), _run_gemini joins it for us.
+        beats_text = _run_gemini(client, plan_prompt)
         
         # Clean up possible markdown wrappers from LLM response
         cleaned_beats = beats_text.strip()
@@ -944,7 +1077,7 @@ Format rules:
         else:
             beats_list = []
 
-        scenes_inserted = []
+        scenes_inserted: list[dict] = []
         scene_order = 0
         
         # Clean up existing scenes and blocks for the project first
@@ -968,8 +1101,10 @@ Format rules:
                     "sort_order": idx
                 }).execute()
                 
-                if scene_res and hasattr(scene_res, 'data') and scene_res.data and len(scene_res.data) > 0:
-                    scenes_inserted.append(scene_res.data[0])
+                if scene_res and scene_res.data:
+                    inserted_scenes = as_records(scene_res.data)
+                    if inserted_scenes:
+                        scenes_inserted.append(inserted_scenes[0])
             except Exception as scene_err:
                 print(f"Failed to insert placeholder scene {idx}: {scene_err}")
 
@@ -1010,22 +1145,24 @@ class RewriteIncompletePayload(BaseModel):
 @router.post("/rewrite-incomplete")
 async def rewrite_incomplete(payload: RewriteIncompletePayload, background_tasks: BackgroundTasks):
     try:
-        supabase = get_supabase_client()
+        supabase = require_supabase_client()
         
         # 1. Fetch all scenes for the project
-        scenes_res = supabase.table("scenes").select("*").eq("project_id", payload.project_id).order("sort_order", desc=False).execute()
-        all_scenes = scenes_res.data if scenes_res and hasattr(scenes_res, 'data') else []
+        all_scenes = as_records(
+            supabase.table("scenes").select("*").eq("project_id", payload.project_id).order("sort_order", desc=False).execute().data
+        )
         
         if not all_scenes:
             raise HTTPException(status_code=400, detail="No scenes found for this project. Please generate the screenplay layout first.")
 
         # 2. Fetch script blocks to find which scene ids already have content
-        blocks_res = supabase.table("script_blocks").select("scene_id").eq("project_id", payload.project_id).execute()
-        blocks_data = blocks_res.data if blocks_res and hasattr(blocks_res, 'data') else []
+        blocks_data = as_records(
+            supabase.table("script_blocks").select("scene_id").eq("project_id", payload.project_id).execute().data
+        )
         completed_scene_ids = {b.get("scene_id") for b in blocks_data if b.get("scene_id")}
 
         # 3. Filter to find the incomplete scenes (or scenes with no blocks)
-        incomplete_scenes = []
+        incomplete_scenes: list[dict] = []
         for s in all_scenes:
             scene_id = s.get("id")
             if scene_id not in completed_scene_ids or s.get("status") in ["pending", "failed", "in_progress"]:
@@ -1048,19 +1185,20 @@ async def rewrite_incomplete(payload: RewriteIncompletePayload, background_tasks
             return {"message": "All scenes are already generated and completed!", "rewritten_count": 0}
 
         # 4. Fetch characters to build the description text
-        char_res = supabase.table("characters").select("*").eq("project_id", payload.project_id).execute()
-        char_list = char_res.data if char_res and hasattr(char_res, 'data') else []
+        char_list = as_records(
+            supabase.table("characters").select("*").eq("project_id", payload.project_id).execute().data
+        )
         characters_text = "\n".join(
             [f"- {c.get('name')}: {c.get('role') or c.get('archetype', 'Character')}" for c in char_list]
         ) if char_list else "- Elements inferred from outline"
 
         # 5. Fetch project detail to supply basic configuration
-        proj_res = supabase.table("projects").select("*").eq("id", payload.project_id).execute()
-        proj_data = proj_res.data[0] if proj_res and hasattr(proj_res, 'data') and proj_res.data else {}
+        proj_data = as_records(
+            supabase.table("projects").select("*").eq("id", payload.project_id).execute().data
+        )
         basics_dict = {
-            "projectType": proj_data.get("description") or "Feature Film",
+            "projectType": (proj_data[0].get("description") if proj_data else None) or "Feature Film",
             "genres": [],
-            "visualStyle": "Realistic Cinematic"
         }
 
         # 6. Launch the progressive backdrop generator
@@ -1088,14 +1226,16 @@ async def progressive_generation_worker(
     scenes: list,
     characters_text: str,
     basics_dict: dict
-):
+) -> None:
+    # Assigned before the try block so the error handler below can still persist
+    # whatever was generated when a scene fails mid-way.
+    consolidated_screenplay: dict[str, Any] = {"scenes": []}
     try:
         settings = get_settings()
         api_token = settings.replicate_api_token
-        supabase = get_supabase_client()
+        supabase = require_supabase_client()
         client = replicate.Client(api_token=api_token)
 
-        consolidated_screenplay = {"scenes": []}
         previous_scene_context = "This is the first scene of the screenplay."
 
         for i, scene in enumerate(scenes):
@@ -1121,7 +1261,6 @@ Beat description: {summary}
 Global Movie Metadata:
 Type: {basics_dict.get("projectType", "Feature Film")}
 Genres: {", ".join(basics_dict.get("genres", []))}
-Visual style: {basics_dict.get("visualStyle", "Realistic Cinematic")}
 
 Characters:
 {characters_text}
@@ -1149,12 +1288,7 @@ Format rules:
 - Ensure strict JSON formatting. No markdown code blocks around the response, just the raw JSON object.
 """
 
-            output = client.run(
-                "google/gemini-2.5-flash",
-                input={"prompt": draft_prompt}
-            )
-            
-            blocks_text = "".join(output) if not isinstance(output, str) else output
+            blocks_text = _run_gemini(client, draft_prompt)
             
             cleaned_blocks = blocks_text.strip()
             if cleaned_blocks.startswith("```"):
@@ -1256,7 +1390,7 @@ Format rules:
                 "type": "script",
                 "title": "Generated Script",
                 "content": full_script_str,
-                "metadata": {"source": "gemini-2.5-flash-progressive"}
+                "metadata": {"source": f"{get_settings().gemini_model}-progressive"}
             }).execute()
         except:
             pass
@@ -1266,12 +1400,14 @@ Format rules:
 
         # Finally, save consolidated full file to project_documents
         try:
-            supabase.table("project_documents").insert({
-                "project_id": project_id,
-                "type": "script",
-                "title": "Generated Screenplay",
-                "content": json.dumps(consolidated_screenplay),
-                "metadata": {"source": "gemini-2.5-flash-progressive"}
-            }).execute()
+            fallback_client = get_supabase_client()
+            if fallback_client is not None:
+                fallback_client.table("project_documents").insert({
+                    "project_id": project_id,
+                    "type": "script",
+                    "title": "Generated Screenplay",
+                    "content": json.dumps(consolidated_screenplay),
+                    "metadata": {"source": f"{get_settings().gemini_model}-progressive"}
+                }).execute()
         except Exception as block_save_err:
             print(f"Failed consolidating complete screenplay: {block_save_err}")

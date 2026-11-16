@@ -347,6 +347,9 @@ export interface Project {
   name: string;
   timelineState: TimelineState;
   userId?: string;
+  description?: string | null;
+  status?: string;
+  settings?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
 }

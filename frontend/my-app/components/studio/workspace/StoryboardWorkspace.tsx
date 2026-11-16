@@ -8,6 +8,8 @@ import {
   RefreshCw, Sparkles, ChevronDown, User, MountainSnow, Box, Edit2, Check, Film, RotateCcw
 } from 'lucide-react';
 import { supabase } from '@/lib/supabaseClient';
+import { characterTags, characterTheme } from '@/lib/characterTheme';
+import type { StoryboardCharacterLabel } from '@/lib/types/image-generation';
 import { generateSceneStoryboard, regenerateShotFrame } from '@/lib/api/image-generation';
 import {
   getShotVideoBatch,
@@ -38,12 +40,41 @@ interface ShotRecord {
   prompt?: string | null;
   status: string;
   sort_order: number;
+  metadata?: { characters?: StoryboardCharacterLabel[] | null } | null;
 }
 
 interface EntityBadge {
   id: string;
   name: string;
   type: 'character' | 'environment' | 'object';
+  tags?: string[];
+}
+
+/** Character name plus its tag aliases, colored so each character stays recognizable. */
+function CharacterChip({ character, compact = false }: { character: StoryboardCharacterLabel; compact?: boolean }): JSX.Element {
+  const theme = characterTheme(character);
+  const tags = characterTags(character);
+  return (
+    <span
+      className={`inline-flex max-w-full items-center gap-1 rounded-full border font-semibold ${
+        compact ? 'px-1.5 py-0.5 text-[10px]' : 'px-2 py-1 text-[11px]'
+      }`}
+      style={{ borderColor: theme.border, backgroundColor: theme.soft, color: theme.accent }}
+      title={tags.length > 0 ? `Tags: ${tags.join(', ')}` : character.name}
+    >
+      <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: theme.accent }} />
+      <span className="truncate">{character.name}</span>
+      {tags.map((tag) => (
+        <span
+          key={tag}
+          className="shrink-0 rounded bg-black/40 px-1 text-[9px] font-medium uppercase tracking-wide"
+          style={{ color: theme.accent }}
+        >
+          {tag}
+        </span>
+      ))}
+    </span>
+  );
 }
 
 export function StoryboardWorkspace({ 
@@ -121,7 +152,7 @@ export function StoryboardWorkspace({
 
         const { data: shotsData, error: shotsError } = await supabase
           .from('shots')
-          .select('id, shot_number, description, camera_angle, camera_motion, prompt, status, sort_order')
+          .select('id, shot_number, description, camera_angle, camera_motion, prompt, status, sort_order, metadata')
           .eq('scene_id', activeSceneId)
           .eq('project_id', projectId)
           .order('sort_order', { ascending: true });
@@ -164,8 +195,8 @@ export function StoryboardWorkspace({
 
         // Fetch scene linked entity badges (Characters, Environments, Objects)
         const fetchedBadges: EntityBadge[] = [];
-        const { data: chars } = await supabase.from('characters').select('id, name').eq('project_id', projectId);
-        (chars ?? []).forEach(c => fetchedBadges.push({ id: c.id, name: c.name, type: 'character' }));
+        const { data: chars } = await supabase.from('characters').select('id, name, tags').eq('project_id', projectId);
+        (chars ?? []).forEach(c => fetchedBadges.push({ id: c.id, name: c.name, type: 'character', tags: (c.tags as string[] | null) ?? [] }));
 
         const { data: envs } = await supabase.from('environments').select('id, name').eq('project_id', projectId);
         (envs ?? []).forEach(e => fetchedBadges.push({ id: e.id, name: e.name, type: 'environment' }));
@@ -250,6 +281,7 @@ export function StoryboardWorkspace({
         prompt: f.prompt,
         status: f.status,
         sort_order: idx,
+        metadata: { characters: f.characters ?? [] },
       }));
       setShots(updatedShots);
 
@@ -476,17 +508,22 @@ export function StoryboardWorkspace({
           {entities.length > 0 && (
             <div className="mt-4 flex flex-wrap items-center gap-2 pt-2 border-t border-zinc-800/40">
               <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Context Assets:</span>
-              {entities.map((e) => (
-                <span
-                  key={e.id}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-zinc-800 bg-zinc-900/80 px-2.5 py-0.5 text-[11px] font-medium text-zinc-300"
-                >
-                  {e.type === 'character' && <User className="h-3 w-3 text-pink-400" />}
-                  {e.type === 'environment' && <MountainSnow className="h-3 w-3 text-emerald-400" />}
-                  {e.type === 'object' && <Box className="h-3 w-3 text-amber-400" />}
-                  {e.name}
-                </span>
-              ))}
+              {entities.map((e) => {
+                const theme = e.type === 'character' ? characterTheme(e) : null;
+                return (
+                  <span
+                    key={e.id}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-zinc-800 bg-zinc-900/80 px-2.5 py-0.5 text-[11px] font-medium text-zinc-300"
+                    style={theme ? { borderColor: theme.border, backgroundColor: theme.soft, color: theme.accent } : undefined}
+                    title={e.tags && e.tags.length > 0 ? `Tags: ${e.tags.join(', ')}` : undefined}
+                  >
+                    {e.type === 'character' && <User className="h-3 w-3" />}
+                    {e.type === 'environment' && <MountainSnow className="h-3 w-3 text-emerald-400" />}
+                    {e.type === 'object' && <Box className="h-3 w-3 text-amber-400" />}
+                    {e.name}
+                  </span>
+                );
+              })}
             </div>
           )}
         </div>
@@ -540,6 +577,7 @@ export function StoryboardWorkspace({
                 const videoJob = videoBatch?.jobs.find((job) => job.shot_id === shot.id);
                 const isRegenerating = regeneratingShotId === shot.id;
                 const isEditing = editingShotId === shot.id;
+                const cast = shot.metadata?.characters ?? [];
 
                 return (
                   <article key={shot.id} className="group overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/70 shadow-xl transition-all hover:border-zinc-700">
@@ -612,6 +650,14 @@ export function StoryboardWorkspace({
                       <p className="text-xs leading-relaxed text-zinc-200 line-clamp-3">
                         {shot.description || 'No description available.'}
                       </p>
+
+                      {cast.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {cast.map((character) => (
+                            <CharacterChip key={character.id ?? character.name} character={character} compact />
+                          ))}
+                        </div>
+                      )}
 
                       {videoJob && !videoUrl && (
                         <p className={`text-[11px] font-medium ${videoJob.status === 'failed' ? 'text-red-300' : 'text-cyan-300'}`}>

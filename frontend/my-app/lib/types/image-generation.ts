@@ -1,4 +1,5 @@
 export type ImageModel = 'nanobanana' | 'nanobanana2' | 'seedream45' | 'qwen' | 'z-image' | 'flux-klein';
+export type VisualStyle = 'Realistic' | 'Anime' | '3D' | 'Pixel' | 'Cartoon';
 export type CharacterView =
   | 'front'
   | 'left_three_quarter'
@@ -21,6 +22,7 @@ export interface CreateImageRequest {
   image_mapping?: Record<string, string>;
   project_id?: string;
   seed?: number;
+  visual_style?: VisualStyle | string;
 }
 
 export interface CharacterKeyframe {
@@ -49,6 +51,7 @@ export interface GenerateScriptCharacterRequest {
   resolution?: string;
   output_format?: string;
   seed?: number;
+  visual_style?: VisualStyle | string;
 }
 
 export interface GenerateScriptEnvironmentRequest {
@@ -60,6 +63,7 @@ export interface GenerateScriptEnvironmentRequest {
   resolution?: string;
   output_format?: string;
   seed?: number;
+  visual_style?: VisualStyle | string;
 }
 
 export interface GenerateObjectReferenceRequest {
@@ -71,6 +75,7 @@ export interface GenerateObjectReferenceRequest {
   resolution?: string;
   output_format?: string;
   seed?: number;
+  visual_style?: VisualStyle | string;
 }
 
 export interface GenerateStoryboardRequest {
@@ -89,6 +94,13 @@ export interface RegenerateShotFrameRequest {
   model?: string;
 }
 
+export interface StoryboardCharacterLabel {
+  id?: string | null;
+  name: string;
+  tags?: string[];
+  color?: string | null;
+}
+
 export interface StoryboardFrame {
   shot_id: string;
   shot_number: number;
@@ -99,6 +111,7 @@ export interface StoryboardFrame {
   image_url?: string | null;
   status: string;
   error?: string | null;
+  characters?: StoryboardCharacterLabel[];
 }
 
 export interface GenerateStoryboardResponse {
@@ -121,6 +134,35 @@ export interface FinalizeCharacterRequest {
 export interface FinalizeCharacterResponse {
   character_id: string;
   primary_asset_id: string;
+}
+
+export interface SetCharacterStyleRequest {
+  project_id: string;
+  character_id: string;
+  visual_style: VisualStyle | string;
+  model?: string;
+  provider?: string;
+}
+
+export interface CharacterStylePropagation {
+  status: 'queued' | 'running' | 'complete' | 'error' | 'idle' | string;
+  visual_style: string;
+  affected_character_views: boolean;
+  affected_environment_ids: string[];
+  affected_object_ids: string[];
+  completed: number;
+  total: number;
+  errors: string[];
+  started_at?: string | null;
+  finished_at?: string | null;
+}
+
+export interface SetCharacterStyleResponse {
+  character_id: string;
+  visual_style: string;
+  changed: boolean;
+  propagation_started: boolean;
+  propagation: CharacterStylePropagation;
 }
 
 export type InpaintModel = 'wavespeed-ai/flux-fill-dev' | 'google/nano-banana-pro/edit';

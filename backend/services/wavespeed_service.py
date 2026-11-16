@@ -24,7 +24,9 @@ INPAINT_MODELS = {"wavespeed-ai/flux-fill-dev", "google/nano-banana-pro/edit"}
 
 def _create_wavespeed_client() -> wavespeed.Client:
     api_key = os.environ.get("WAVESPEED_API_KEY")
-    return wavespeed.Client(api_key=api_key) if api_key else wavespeed.Client()
+    if api_key:
+        return wavespeed.Client(api_key=api_key)
+    return wavespeed.Client()
 
 
 def _normalize_output_format(output_format: str | None) -> str:
@@ -587,4 +589,3 @@ def synthesize_lipsync(request: CreateLipsyncRequest) -> str:
         return _store_generated_video(video_url)
     except Exception as e:
         raise WaveSpeedServiceError(f"Failed to upload generated lipsync output to Supabase: {str(e)}")
-

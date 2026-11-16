@@ -3,14 +3,37 @@
 import React from 'react';
 import { Search, Bell, Settings, User, Home } from 'lucide-react';
 import Link from 'next/link';
+import type { Project } from '@/lib/types/layers.types';
+import type { StudioVideoTypeId } from '@/lib/studioVideoTypes';
+import { ProjectSwitcher } from '@/components/studio/layout/ProjectSwitcher';
 
 interface StudioTopbarProps {
   projectName?: string;
+  projectId?: string | null;
+  projects?: Project[];
+  isProjectsLoading?: boolean;
+  isCreatingProject?: boolean;
+  onRefreshProjects?: () => void | Promise<unknown>;
+  onSelectProject?: (id: string) => void | Promise<void>;
+  onCreateProject?: (name: string, videoType: StudioVideoTypeId) => Promise<void> | void;
+  onDeleteProject?: (id: string) => void;
+  onOpenProjects?: () => void;
 }
 
-export function StudioTopbar({ projectName = 'Untitled' }: StudioTopbarProps) {
+export function StudioTopbar({
+  projectName = 'Untitled',
+  projectId = null,
+  projects = [],
+  isProjectsLoading = false,
+  isCreatingProject = false,
+  onRefreshProjects,
+  onSelectProject,
+  onCreateProject,
+  onDeleteProject,
+  onOpenProjects,
+}: StudioTopbarProps) {
   return (
-    <header className="h-14 border-b border-zinc-800 bg-[#0A0A0B] shrink-0 flex items-center justify-between px-4 z-10">
+    <header className="h-14 border-b border-zinc-800 bg-[#0A0A0B] shrink-0 flex items-center justify-between px-4 z-20">
       <div className="flex items-center gap-2">
         <Link href="/story" className="p-2 hover:bg-zinc-800 rounded-lg transition-colors text-zinc-400 hover:text-white">
           <Home size={18} />
@@ -19,9 +42,21 @@ export function StudioTopbar({ projectName = 'Untitled' }: StudioTopbarProps) {
           <span className="font-bold text-white text-lg leading-none">A</span>
         </div>
         <div className="flex flex-col ml-2">
-          <span className="text-sm font-semibold leading-none text-zinc-100">AI Movie Studio</span>
-          <span className="text-xs text-zinc-500 leading-none mt-1">Project: {projectName}</span>
+          <span className="text-sm font-semibold leading-none text-zinc-100 whitespace-nowrap">AI Movie Studio</span>
+          <span className="text-xs text-zinc-500 leading-none mt-1 whitespace-nowrap">Project workspace</span>
         </div>
+        <ProjectSwitcher
+          projectId={projectId}
+          projectName={projectName}
+          projects={projects}
+          isLoading={isProjectsLoading}
+          isCreating={isCreatingProject}
+          onRefresh={onRefreshProjects ?? (() => undefined)}
+          onSelect={onSelectProject ?? (() => undefined)}
+          onDelete={onDeleteProject ?? (() => undefined)}
+          onCreate={onCreateProject ?? (() => undefined)}
+          onOpenGallery={onOpenProjects ?? (() => undefined)}
+        />
       </div>
       
       <div className="flex-1 max-w-md mx-8">

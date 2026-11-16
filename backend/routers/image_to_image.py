@@ -7,10 +7,10 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Uploa
 
 from core.supabase_client import get_supabase_client
 from schemas.image_generation import BatchDeleteRequest, CharacterKeyframe, CreateImageRequest, CreateImageResponse
-from services.character_image_to_image import build_character_img2img_view_prompt
-from services.character_text_to_image import (
+from services.character_views import (
     CHARACTER_VIEW_SPECS,
     attach_generation_to_character,
+    build_character_img2img_view_prompt,
     build_script_character_profile,
     load_script_character,
     persist_character_generation,
@@ -23,8 +23,13 @@ from services.environment_text_to_image import (
 from services.huggingface_service import HuggingFaceServiceError, hf_face_swap, hf_multiple_angle
 from services.image_generation_service import generate_provider_images
 from services.image_generation_storage import extract_storage_filename, log_generation_to_supabase
-from services.project_visual_style import apply_visual_style, load_project_visual_style
 from services.replicate_service import ReplicateConfigurationError
+from services.visual_style import (
+    apply_visual_style,
+    resolve_character_visual_style,
+    resolve_scene_visual_style,
+    resolve_visual_style,
+)
 from services.wavespeed_service import (
     INPAINT_MODELS,
     WaveSpeedServiceError,
@@ -34,6 +39,21 @@ from services.wavespeed_service import (
 
 
 router = APIRouter(prefix="/api/image", tags=["image-to-image"])
+
+
+def _resolve_entity_style(
+    project_id: str,
+    entity: dict[str, object],
+    override: str | None = None,
+):
+    if isinstance(override, str) and override.strip():
+        return resolve_visual_style(override)
+    metadata = entity.get("metadata")
+    source_scene_ids = metadata.get("source_scene_ids") if isinstance(metadata, dict) else None
+    return resolve_scene_visual_style(
+        project_id,
+        scene_ids=source_scene_ids if isinstance(source_scene_ids, list) else None,
+    )
 
 
 @router.post("/batch-delete")
@@ -74,14 +94,13 @@ def batch_delete_assets(payload: BatchDeleteRequest) -> dict[str, str]:
 
     return {"message": "Batch delete processed"}
 
-
 @router.post("/generate-with-image", response_model=CreateImageResponse)
 async def generate_image_with_file(
     payload: CreateImageRequest,
     background_tasks: BackgroundTasks,
 ) -> CreateImageResponse:
     try:
-        response = generate_provider_images(payload)
+        response = await asyncio.to_thread(generate_provider_images, payload)
         background_tasks.add_task(log_generation_to_supabase, payload, response)
         return response
     except ValueError as error:
@@ -193,6 +212,7 @@ async def generate_from_upload(
     resolution: str = Form("1K"),
     project_id: str = Form(...),
     character_id: str | None = Form(None),
+    visual_style: str | None = Form(None),
     seed: int | None = Form(None),
 ) -> CreateImageResponse:
     supabase = get_supabase_client()
@@ -202,14 +222,16 @@ async def generate_from_upload(
         raise HTTPException(status_code=400, detail="Uploaded file must be an image")
     try:
         selected_character_id = character_id.strip() if isinstance(character_id, str) else None
-        visual_style = await asyncio.to_thread(load_project_visual_style, project_id)
         character_profile = ""
         if selected_character_id:
             try:
                 character = await asyncio.to_thread(load_script_character, project_id, selected_character_id)
-                character_profile = build_script_character_profile(character, visual_style)
+                resolved_style = resolve_character_visual_style(character, visual_style)
+                character_profile = build_script_character_profile(character, resolved_style)
             except ValueError as error:
                 raise HTTPException(status_code=404, detail=str(error)) from error
+        else:
+            resolved_style = resolve_visual_style(visual_style)
 
         image_bytes = await image.read()
         if not image_bytes:
@@ -234,7 +256,7 @@ async def generate_from_upload(
             section for section in (character_profile, guidance_prompt.strip()) if section
         ) or "Generate character reference views."
         if not character_profile:
-            prompt_context = apply_visual_style(prompt_context, visual_style)
+            prompt_context = apply_visual_style(prompt_context, resolved_style)
         base_payload = CreateImageRequest(
             model=model,
             provider=provider,
@@ -246,6 +268,7 @@ async def generate_from_upload(
             google_search=False,
             project_id=project_id,
             seed=shared_seed,
+            visual_style=resolved_style.label,
         )
 
         concurrency_limit = max(1, int(os.getenv("CHARACTER_GENERATION_CONCURRENCY", "3")))
@@ -279,9 +302,10 @@ async def generate_from_upload(
             await asyncio.to_thread(
                 attach_generation_to_character,
                 project_id,
-            selected_character_id,
+                selected_character_id,
                 generation_job_id,
                 keyframes,
+                resolved_style.label,
             )
         return CreateImageResponse(
             model=model,
@@ -307,6 +331,7 @@ async def generate_environment_from_upload(
     resolution: str = Form("1K"),
     project_id: str = Form(...),
     environment_id: str = Form(...),
+    visual_style: str | None = Form(None),
     seed: int | None = Form(None),
 ) -> CreateImageResponse:
     """Generate an environment reference from an uploaded visual reference and script facts."""
@@ -318,8 +343,8 @@ async def generate_environment_from_upload(
 
     try:
         environment = await asyncio.to_thread(load_script_environment, project_id, environment_id)
-        visual_style = await asyncio.to_thread(load_project_visual_style, project_id)
-        environment_prompt = build_script_environment_prompt(environment, visual_style)
+        resolved_style = _resolve_entity_style(project_id, environment, visual_style)
+        environment_prompt = build_script_environment_prompt(environment, resolved_style)
         image_bytes = await image.read()
         if not image_bytes:
             raise HTTPException(status_code=400, detail="Uploaded image is empty")
@@ -353,6 +378,7 @@ async def generate_environment_from_upload(
             google_search=False,
             project_id=project_id,
             seed=seed if seed is not None else random.SystemRandom().randint(0, 2_147_483_647),
+            visual_style=resolved_style.label,
         )
         response = await asyncio.to_thread(generate_provider_images, payload)
         if not response.images:

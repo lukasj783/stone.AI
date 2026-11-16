@@ -1,15 +1,22 @@
 "use client";
 
-import React from 'react';
-import { Users, LayoutGrid, MonitorPlay, FileText, CheckCircle2, Circle, Lightbulb } from 'lucide-react';
+import { Users, LayoutGrid, MonitorPlay, FileText, CheckCircle2, Circle, FolderOpen, Plus } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import type { Project } from '@/lib/types/layers.types';
+import { VideoTypeBadge } from '@/components/studio/projects/VideoTypeSelector';
+import { getVideoTypeConfig, resolveVideoType } from '@/lib/studioVideoTypes';
 
 interface DashboardProps {
   onNavigate: (view: string) => void;
+  projectName?: string;
+  /** Video type of the active project (Feature Film, Music Video, ...). */
+  videoType?: string | null;
+  projects?: Project[];
+  activeProjectId?: string | null;
+  onSelectProject?: (id: string) => void | Promise<void>;
 }
 
 const STAGES = [
-  { id: 'idea', label: 'Idea', status: 'complete', progress: 100 },
   { id: 'script', label: 'Story', status: 'complete', progress: 100 },
   { id: 'characters', label: 'Assets', status: 'complete', progress: 100 },
   { id: 'storyboards', label: 'Storyboard', status: 'in_progress', progress: 60 },
@@ -18,13 +25,87 @@ const STAGES = [
   { id: 'publish', label: 'Export', status: 'pending', progress: 0 },
 ];
 
-export function StudioDashboard({ onNavigate }: DashboardProps) {
+export function StudioDashboard({
+  onNavigate,
+  projectName = 'Untitled',
+  videoType,
+  projects = [],
+  activeProjectId = null,
+  onSelectProject,
+}: DashboardProps) {
+  const activeVideoType = getVideoTypeConfig(resolveVideoType(videoType ?? null));
+  const otherProjects = projects.filter((project) => project.id !== activeProjectId).slice(0, 3);
+
   return (
     <div className="p-8 max-w-5xl mx-auto w-full">
-      <div className="mb-10">
-        <h1 className="text-3xl font-bold tracking-tight text-white mb-2">Alien Invasion</h1>
-        <p className="text-zinc-400">Project Workspace</p>
+      <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <VideoTypeBadge videoType={activeVideoType} className="mb-2" />
+          <h1 className="text-3xl font-bold tracking-tight text-white mb-2">{projectName}</h1>
+          <p className="text-zinc-400">
+            {activeVideoType.requiresOutline
+              ? 'Project Workspace · Idea → Outline → Script'
+              : 'Project Workspace · Brief → Script'}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onNavigate('projects')}
+            className="inline-flex h-9 items-center gap-2 rounded-lg border border-zinc-700 px-3 text-sm font-semibold text-zinc-300 transition-colors hover:bg-zinc-900 hover:text-white"
+          >
+            <FolderOpen size={15} />
+            All Projects
+          </button>
+          <button
+            type="button"
+            onClick={() => onNavigate('projects')}
+            className="inline-flex h-9 items-center gap-2 rounded-lg bg-violet-600 px-3 text-sm font-semibold text-white transition-colors hover:bg-violet-500"
+          >
+            <Plus size={15} />
+            New Project
+          </button>
+        </div>
       </div>
+
+      {otherProjects.length > 0 && (
+        <div className="mb-10">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-500">
+              Your Projects
+            </h2>
+            <button
+              type="button"
+              onClick={() => onNavigate('projects')}
+              className="text-xs font-semibold text-violet-400 transition-colors hover:text-violet-300"
+            >
+              View all
+            </button>
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            {otherProjects.map((project) => (
+              <button
+                key={project.id}
+                type="button"
+                onClick={() => {
+                  void onSelectProject?.(project.id);
+                  onNavigate('dashboard');
+                }}
+                className="flex flex-col gap-1 rounded-xl border border-zinc-800 bg-zinc-900/50 p-4 text-left transition-colors hover:border-violet-500/60 hover:bg-zinc-900"
+              >
+                <span className="line-clamp-2 text-sm font-semibold text-zinc-100">
+                  {project.name}
+                </span>
+                <span className="text-xs text-zinc-500">
+                  {project.updatedAt
+                    ? `Updated ${new Date(project.updatedAt).toLocaleDateString()}`
+                    : 'Never updated'}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
         <div className="col-span-2 rounded-xl border border-zinc-800 bg-zinc-900/50 p-6 flex flex-col justify-center">
@@ -78,19 +159,6 @@ export function StudioDashboard({ onNavigate }: DashboardProps) {
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6 flex flex-col">
           <h2 className="text-lg font-semibold text-zinc-100 mb-6">Continue Working</h2>
           <div className="space-y-3 flex-1">
-            <button
-              onClick={() => onNavigate('idea')}
-              className="w-full flex items-center gap-3 p-3 rounded-lg bg-zinc-900 border border-zinc-800 hover:border-violet-500 hover:bg-zinc-800/80 transition-all text-left"
-            >
-              <div className="w-8 h-8 rounded-md bg-violet-600/20 text-violet-500 flex items-center justify-center shrink-0">
-                <Lightbulb className="w-4 h-4" />
-              </div>
-              <div>
-                <div className="text-sm font-medium text-zinc-200">Develop Movie Idea</div>
-                <div className="text-xs text-zinc-500">Story Foundation</div>
-              </div>
-            </button>
-
             <button 
               onClick={() => onNavigate('script')}
               className="w-full flex items-center gap-3 p-3 rounded-lg bg-zinc-900 border border-zinc-800 hover:border-violet-500 hover:bg-zinc-800/80 transition-all text-left"

@@ -1,15 +1,13 @@
 import concurrent.futures
-import json
 import os
 import re
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
 import httpx
-import replicate
 
-from core.config import get_settings
 from core.supabase_client import get_supabase_client
 from schemas.image_generation import (
     CreateImageRequest,
@@ -21,23 +19,55 @@ from services.project_visual_style import ProjectVisualStyle, apply_visual_style
 
 
 STORYBOARD_MODEL = "nanobanana"
-MIN_STORYBOARD_FRAMES = 2
-MAX_STORYBOARD_FRAMES = 8
+
+# One screenplay action line maps to exactly one storyboard frame. These knobs only
+# bound cost and reference payloads; they never change that 1:1 mapping.
+DEFAULT_MAX_ACTION_FRAMES = 24
+DEFAULT_CHARACTER_VIEW_ORDER = ("front", "left_three_quarter")
+DEFAULT_MAX_REFERENCE_IMAGES = 6
+
+ACTION_BLOCK_TYPE = "action"
+DIALOGUE_BLOCK_TYPE = "dialogue"
+BEAT_BOUNDARY_BLOCK_TYPES = frozenset({"scene_heading", "transition"})
+SPEAKER_FRAME_CAMERA_ANGLE = "medium close-up"
+STATIC_CAMERA_MOTION = "static"
 
 
-def _extract_json_object(value: str) -> dict[str, Any]:
-    cleaned = value.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned).strip()
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError("Storyboard planner did not return a JSON object")
-    result = json.loads(cleaned[start : end + 1])
-    if not isinstance(result, dict):
-        raise ValueError("Storyboard planner returned an invalid response")
-    return result
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw.strip())
+    except ValueError:
+        return default
 
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_csv(name: str, default: Sequence[str]) -> tuple[str, ...]:
+    raw = os.getenv(name)
+    if raw is None:
+        return tuple(default)
+    items = tuple(part.strip() for part in raw.split(",") if part.strip())
+    return items or tuple(default)
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+ 
 
 def _scene_context(
     scene: dict[str, Any],
@@ -61,9 +91,11 @@ def _scene_context(
         c_name = c.get("name", "Unknown Character")
         views = c.get("views", {})
         view_summary = ", ".join(f"{v}: {url}" for v, url in views.items() if url)
+        tags = _clean_labels(c.get("tags") or [])
+        tag_line = f"\n  Tags: {', '.join(tags)}" if tags else ""
         char_lines.append(
             f"- {c_name} (Role: {c.get('role', 'N/A')}, Age: {c.get('age', 'N/A')}, Gender: {c.get('gender', 'N/A')}, Race: {c.get('race', 'N/A')})\n"
-            f"  Appearance: {c.get('appearance', 'N/A')}\n"
+            f"  Appearance: {c.get('appearance', 'N/A')}{tag_line}\n"
             f"  Visual Keyframe Views: {view_summary or 'None'}"
         )
     char_text = "\n".join(char_lines) if char_lines else "No specific character keyframes linked."
@@ -105,66 +137,369 @@ OBJECTS / PROPS:
 {block_text or 'No screenplay blocks are available.'}"""
 
 
-def _plan_storyboard_frames(
-    scene: dict[str, Any],
+def _block_type(block: dict[str, Any]) -> str:
+    return str(block.get("block_type") or ACTION_BLOCK_TYPE).strip().lower()
+
+
+def _block_text(block: dict[str, Any]) -> str:
+    return str(block.get("content") or "").strip()
+
+
+def _action_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [block for block in blocks if _block_type(block) == ACTION_BLOCK_TYPE and _block_text(block)]
+
+
+def _has_adjacent_action(blocks: list[dict[str, Any]], index: int) -> bool:
+    """True when the dialogue block at *index* sits inside a run of action beats."""
+    for step in (-1, 1):
+        cursor = index + step
+        while 0 <= cursor < len(blocks):
+            neighbour_type = _block_type(blocks[cursor])
+            if neighbour_type == ACTION_BLOCK_TYPE:
+                if _block_text(blocks[cursor]):
+                    return True
+            elif neighbour_type in BEAT_BOUNDARY_BLOCK_TYPES:
+                break
+            cursor += step
+    return False
+
+
+def _build_scene_beats(
     blocks: list[dict[str, Any]],
+    include_speaker_frames: bool = True,
+) -> list[dict[str, Any]]:
+    """Map screenplay blocks to storyboard beats: one action line -> exactly one beat.
+
+    Dialogue never renders a frame on its own image content. It only adds a
+    speaker-presence beat when no action line covers that beat visually, which keeps
+    dialogue-only scenes storyboarded without leaking dialogue text into prompts.
+    """
+    beats: list[dict[str, Any]] = []
+    for index, block in enumerate(blocks):
+        block_type = _block_type(block)
+        if block_type == ACTION_BLOCK_TYPE:
+            text = _block_text(block)
+            if not text:
+                continue
+            beats.append({"kind": "action", "block": block, "text": text, "speaker": ""})
+            continue
+
+        if block_type != DIALOGUE_BLOCK_TYPE or not include_speaker_frames:
+            continue
+        if str(block.get("dialogue_mode") or "normal").strip().lower() != "normal":
+            continue
+        if _has_adjacent_action(blocks, index):
+            continue
+        speaker = str(block.get("character_name") or "").strip()
+        if not speaker:
+            continue
+        if beats and beats[-1]["kind"] == "speaker" and beats[-1]["speaker"].casefold() == speaker.casefold():
+            continue
+        beats.append({"kind": "speaker", "block": block, "text": f"{speaker} speaks", "speaker": speaker})
+    return beats
+
+
+def _apply_action_frame_cap(
+    beats: list[dict[str, Any]], max_action_frames: int
+) -> tuple[list[dict[str, Any]], bool]:
+    """Bound the number of action frames without reordering the remaining beats."""
+    if max_action_frames <= 0:
+        return list(beats), False
+    capped: list[dict[str, Any]] = []
+    action_count = 0
+    for beat in beats:
+        if beat["kind"] == "action":
+            action_count += 1
+            if action_count > max_action_frames:
+                return capped, True
+        capped.append(beat)
+    return capped, False
+
+
+def _match_name_patterns(name: str) -> list[str]:
+    cleaned = re.sub(r"\s+", " ", str(name or "")).strip()
+    if not cleaned:
+        return []
+    patterns = [cleaned]
+    first_token = cleaned.split(" ")[0]
+    if len(first_token) >= 3 and first_token.casefold() != cleaned.casefold():
+        patterns.append(first_token)
+    return patterns
+
+
+def _clean_labels(values: Any) -> list[str]:
+    """Normalise a name plus its tag aliases into unique, trimmed labels."""
+    if isinstance(values, str):
+        values = [values]
+    labels: list[str] = []
+    for value in values or []:
+        text = " ".join(str(value or "").split())
+        if text and text.casefold() not in {label.casefold() for label in labels}:
+            labels.append(text)
+    return labels
+
+
+def _character_aliases(character: dict[str, Any]) -> list[str]:
+    """A character answers to its name and to every tag stored on it.
+
+    Tags double as screenplay aliases ("VOSS", "DETECTIVE"), so an action line that
+    only uses a nickname still maps onto the right keyframe set.
+    """
+    tags = character.get("tags")
+    return _clean_labels([character.get("name"), *(tags if isinstance(tags, list) else [])])
+
+
+def _name_appears(text: str, name: str) -> bool:
+    haystack = f" {str(text or '').lower()} "
+    for pattern in _match_name_patterns(name):
+        if re.search(rf"(?<![a-z0-9]){re.escape(pattern.lower())}(?![a-z0-9])", haystack):
+            return True
+    return False
+
+
+def _matches_any_label(text: str, labels: Sequence[str]) -> bool:
+    return any(_name_appears(text, label) for label in labels)
+
+
+def _match_characters(text: str, characters: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    return [
+        character
+        for character in characters or []
+        if _matches_any_label(text, _character_aliases(character))
+    ]
+
+
+def _match_character_by_label(label: str, characters: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Resolve a screenplay speaker label (name, tag, or first name) to characters."""
+    target = " ".join(str(label or "").split())
+    if not target:
+        return []
+    folded = target.casefold()
+    exact = [
+        character
+        for character in characters or []
+        if any(alias.casefold() == folded for alias in _character_aliases(character))
+    ]
+    return exact or _match_characters(target, characters)
+
+
+def _match_objects(text: str, objects: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    return [
+        obj
+        for obj in objects or []
+        if _matches_any_label(text, _clean_labels([obj.get("name"), *(obj.get("tags") or [])]))
+    ]
+
+
+HEX_COLOR_PATTERN = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _character_color(character: dict[str, Any]) -> str | None:
+    """Read an explicit per-character font color so the UI and the model agree.
+
+    Characters without an override fall back to the deterministic palette in the frontend,
+    keyed on the character id, so colors stay stable across every workspace.
+    """
+    metadata = character.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    for key in ("font_color", "accent_color", "color"):
+        value = metadata.get(key)
+        if isinstance(value, str) and HEX_COLOR_PATTERN.match(value.strip()):
+            return value.strip().lower()
+    return None
+
+
+def _character_labels(character: dict[str, Any]) -> dict[str, Any]:
+    tags = character.get("tags")
+    return {
+        "id": character.get("id"),
+        "name": str(character.get("name") or "Unknown Character"),
+        "tags": _clean_labels(tags if isinstance(tags, list) else []),
+        "color": _character_color(character),
+    }
+
+
+
+def _character_reference_urls(character: dict[str, Any], view_order: Sequence[str]) -> list[str]:
+    views = character.get("views") or {}
+    ordered = [views[view] for view in view_order if views.get(view)]
+    ordered.extend(url for view, url in views.items() if view not in view_order and url)
+    if not ordered and character.get("image_url"):
+        ordered.append(str(character["image_url"]))
+    urls: list[str] = []
+    for url in ordered:
+        if url and url not in urls:
+            urls.append(str(url))
+    return urls
+
+
+def _describe_character(character: dict[str, Any], name_override: str | None = None) -> str:
+    name = str(name_override or character.get("name") or "Unknown Character").strip()
+    descriptors: list[str] = []
+    role = str(character.get("role") or "").strip()
+    if role:
+        descriptors.append(role)
+    elif str(character.get("character_type") or "").strip() == "main":
+        descriptors.append("lead")
+    for key in ("age", "gender", "race"):
+        value = character.get(key)
+        if value:
+            descriptors.append(str(value))
+    header = f"{name} ({', '.join(descriptors)})" if descriptors else name
+    aliases = [
+        alias
+        for alias in _character_aliases(character)
+        if alias.casefold() != name.casefold()
+    ][:4]
+    if aliases:
+        header = f"{header} [also called: {', '.join(aliases)}]"
+    appearance = str(character.get("appearance") or "").strip()
+    return f"{header}: {appearance}" if appearance else header
+
+
+def _describe_location(scene: dict[str, Any], environment: dict[str, Any] | None) -> str:
+    location = str(scene.get("location") or "Unknown location").strip()
+    time_of_day = str(scene.get("time_of_day") or "").strip()
+    details = f"{location}, {time_of_day}" if time_of_day else location
+    environment_description = str((environment or {}).get("description") or "").strip()
+    return f"{details}: {environment_description}" if environment_description else details
+
+
+FRAME_PROMPT_GUARDRAIL = (
+    "Render exactly one finished 16:9 frame. No collage, no split screen, no multiple panels, "
+    "no text overlays, no subtitles, no captions, no speech bubbles, no on-screen lettering."
+)
+
+
+def _build_frames_from_action_lines(
+    beats: list[dict[str, Any]],
+    scene: dict[str, Any],
     characters: list[dict[str, Any]] | None = None,
     environment: dict[str, Any] | None = None,
     objects: list[dict[str, Any]] | None = None,
-    visual_style: ProjectVisualStyle | None = None,
 ) -> list[dict[str, Any]]:
-    settings = get_settings()
-    if not settings.replicate_api_token:
-        raise RuntimeError("REPLICATE_API_TOKEN not configured")
-
-    prompt = f"""You are an expert cinematic storyboard director. Break the following screenplay scene into essential visual 16:9 storyboard stills based on the action lines and linked visual assets.
-
-{_scene_context(scene, blocks, characters, environment, objects, visual_style)}
-
-Create between {MIN_STORYBOARD_FRAMES} and {MAX_STORYBOARD_FRAMES} shots based on character actions, dialogue beats, and visual changes. Use fewer shots for simple moments and more only when narrative needs them.
-
-Return ONLY valid JSON in this exact shape:
-{{
-  "shots": [
-    {{
-      "description": "What the frame shows and its narrative purpose",
-      "camera_angle": "wide shot, medium shot, close-up, over the shoulder, etc.",
-      "camera_motion": "static, tracking shot, pan, zoom in, etc.",
-      "prompt": "A complete cinematic image-generation prompt for one 16:9 storyboard still",
-      "image_references": ["http://url-of-character-keyframe-or-environment-if-applicable"]
-    }}
-  ]
-}}
-
-Each prompt must describe one single finished 16:9 cinematic previs frame. It must obey the project visual contract and match linked reference assets. Do not request collages, split screens, text overlays, multiple panels, rough sketches, or a different rendering medium."""
-    client = replicate.Client(api_token=settings.replicate_api_token)
-    output = client.run("google/gemini-2.5-flash", input={"prompt": prompt})
-    text = output if isinstance(output, str) else "".join(output)
-    planned = _extract_json_object(text).get("shots")
-    if not isinstance(planned, list):
-        raise ValueError("Storyboard planner response is missing shots")
+    """Build deterministic frame specs so every action line yields exactly one frame."""
+    view_order = _env_csv("STORYBOARD_CHARACTER_VIEWS", DEFAULT_CHARACTER_VIEW_ORDER)
+    max_references = max(0, _env_int("STORYBOARD_MAX_REFERENCE_IMAGES", DEFAULT_MAX_REFERENCE_IMAGES))
+    location_text = _describe_location(scene, environment)
 
     frames: list[dict[str, Any]] = []
-    for raw_frame in planned[:MAX_STORYBOARD_FRAMES]:
-        if not isinstance(raw_frame, dict):
-            continue
-        description = str(raw_frame.get("description") or "").strip()
-        image_prompt = str(raw_frame.get("prompt") or "").strip()
-        if not description or not image_prompt:
-            continue
-        refs = raw_frame.get("image_references")
-        image_refs = [str(r).strip() for r in refs if isinstance(r, str) and str(r).strip()] if isinstance(refs, list) else []
+    action_index = 0
+    for beat in beats:
+        block = beat["block"]
+        if beat["kind"] == "action":
+            matched_characters = _match_characters(beat["text"], characters)
+            camera_angle = "wide establishing shot" if action_index == 0 else "medium shot"
+            action_index += 1
+            description = beat["text"]
+            beat_line = f"ACTION: {beat['text']}"
+            speaker = None
+        else:
+            speaker = beat["speaker"]
+            matched_characters = _match_character_by_label(speaker, characters)
+            camera_angle = SPEAKER_FRAME_CAMERA_ANGLE
+            description = beat["text"]
+            beat_line = (
+                f"BEAT: {speaker} is speaking, mouth open, mid-sentence, "
+                "facing the camera or their scene partner."
+            )
+
+        matched_objects = _match_objects(beat["text"], objects)
+
+        reference_urls: list[str] = []
+        for character in matched_characters:
+            for url in _character_reference_urls(character, view_order):
+                if url not in reference_urls:
+                    reference_urls.append(url)
+        environment_url = (environment or {}).get("image_url")
+        if environment_url and str(environment_url) not in reference_urls:
+            reference_urls.append(str(environment_url))
+        for obj in matched_objects:
+            obj_url = obj.get("image_url")
+            if obj_url and str(obj_url) not in reference_urls:
+                reference_urls.append(str(obj_url))
+        if max_references:
+            reference_urls = reference_urls[:max_references]
+
+        prompt_parts = ["16:9 cinematic storyboard frame.", beat_line]
+        if matched_characters:
+            prompt_parts.append("CHARACTERS:")
+            prompt_parts.extend(f"- {_describe_character(c, speaker)}" for c in matched_characters)
+        else:
+            prompt_parts.append("CHARACTERS: none visible in this frame.")
+        prompt_parts.append(f"LOCATION: {location_text}")
+        if matched_objects:
+            prompt_parts.append("PROPS: " + ", ".join(str(o.get("name")) for o in matched_objects))
+        prompt_parts.append(f"CAMERA: {camera_angle}, {STATIC_CAMERA_MOTION}.")
+        prompt_parts.append(FRAME_PROMPT_GUARDRAIL)
+
         frames.append({
             "description": description,
-            "camera_angle": str(raw_frame.get("camera_angle") or "").strip(),
-            "camera_motion": str(raw_frame.get("camera_motion") or "").strip(),
-            "prompt": image_prompt,
-            "image_references": image_refs,
+            "camera_angle": camera_angle,
+            "camera_motion": STATIC_CAMERA_MOTION,
+            "prompt": "\n".join(prompt_parts),
+            "image_references": reference_urls,
+            "source_block_id": block.get("id"),
+            "source_block_type": _block_type(block),
+            "source_text": _block_text(block),
+            "character_ids": [character["id"] for character in matched_characters if character.get("id")],
+            "characters": [
+                _character_labels(character)
+                for character in matched_characters
+                if character.get("id")
+            ],
         })
-
-    if len(frames) < MIN_STORYBOARD_FRAMES:
-        raise ValueError(f"Storyboard planner must produce at least {MIN_STORYBOARD_FRAMES} usable shots")
     return frames
+
+
+def _storyboard_matches_script(shots: list[dict[str, Any]], beats: list[dict[str, Any]]) -> bool:
+    """Reuse only when every stored shot maps 1:1 onto the current storyboard beats."""
+    if not shots or len(shots) != len(beats):
+        return False
+    stored_ids = [(shot.get("metadata") or {}).get("source_block_id") for shot in shots]
+    expected_ids = [beat["block"].get("id") for beat in beats]
+    if any(not block_id for block_id in stored_ids) or any(not block_id for block_id in expected_ids):
+        return False
+    if stored_ids != expected_ids:
+        return False
+    for shot, beat in zip(shots, beats):
+        block_updated = _parse_timestamp(beat["block"].get("updated_at"))
+        shot_created = _parse_timestamp(shot.get("created_at"))
+        if block_updated and shot_created and block_updated > shot_created:
+            return False
+    return True
+
+
+def _clear_storyboard_shots(project_id: str, scene_id: str) -> None:
+    """Drop previous shots and their storyboard asset links before writing new frames."""
+    supabase = get_supabase_client()
+    old_shots = ("shots").select("id").eq("scene_id", scene_id).eq("project_id", project_id).execute()
+    old_shot_ids = [shot["id"] for shot in (old_shots.data or [])]
+    if not old_shot_ids:
+        return
+    supabase.table("asset_links").delete().eq("project_id", project_id).eq("target_type", "shot").eq(
+        "role", "storyboard"
+    ).in_("target_id", old_shot_ids).execute()
+    supabase.table("shots").delete().eq("scene_id", scene_id).eq("project_id", project_id).execute()
+
+
+def _frame_character_labels(shot: dict[str, Any]) -> list[dict[str, Any]]:
+    metadata = shot.get("metadata") or {}
+    labels = metadata.get("characters")
+    if not isinstance(labels, list):
+        return []
+    cleaned: list[dict[str, Any]] = []
+    for label in labels:
+        if not isinstance(label, dict) or not label.get("name"):
+            continue
+        cleaned.append({
+            "id": label.get("id"),
+            "name": str(label["name"]),
+            "tags": _clean_labels(label.get("tags") or []),
+            "color": label.get("color") if isinstance(label.get("color"), str) else None,
+        })
+    return cleaned
 
 
 def _frame_response(shot: dict[str, Any], image_url: str | None = None, error: str | None = None) -> StoryboardFrame:
@@ -178,16 +513,23 @@ def _frame_response(shot: dict[str, Any], image_url: str | None = None, error: s
         image_url=image_url,
         status=shot.get("status") or ("failed" if error else "pending"),
         error=error,
+        characters=_frame_character_labels(shot),
     )
 
 
-def _existing_storyboard(project_id: str, scene_id: str) -> GenerateStoryboardResponse | None:
+def _existing_storyboard(
+    project_id: str,
+    scene_id: str,
+    beats: list[dict[str, Any]] | None = None,
+) -> GenerateStoryboardResponse | None:
     supabase = get_supabase_client()
     shots_result = supabase.table("shots").select(
-        "id, shot_number, description, camera_angle, camera_motion, prompt, status, sort_order"
+        "id, shot_number, description, camera_angle, camera_motion, prompt, status, sort_order, metadata, created_at"
     ).eq("project_id", project_id).eq("scene_id", scene_id).order("sort_order").execute()
     shots = shots_result.data or []
     if not shots:
+        return None
+    if beats is not None and not _storyboard_matches_script(shots, beats):
         return None
 
     shot_ids = [shot["id"] for shot in shots]
@@ -263,50 +605,49 @@ def _persist_frame_image(
 def _gather_scene_linked_entities(
     project_id: str, scene_id: str, blocks: list[dict[str, Any]]
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None, list[dict[str, Any]]]:
-    """Gather all character keyframe views, environment images, and object/prop images for a scene."""
+    """Gather character keyframe views, the environment image, and prop images for a scene.
+
+    Every character that has keyframes is returned: action lines decide which character
+    appears in a frame, so restricting this to names mentioned in dialogue beats would
+    drop exactly the characters this pipeline needs.
+    """
     supabase = get_supabase_client()
 
     # 1. Characters
     characters_out: list[dict[str, Any]] = []
-    char_names = {
-        block["character_name"].strip().upper()
-        for block in blocks
-        if block.get("character_name") and str(block["character_name"]).strip()
-    }
-    if char_names:
-        chars_res = supabase.table("characters").select(
-            "id, name, role, age, gender, race, appearance, personality"
-        ).eq("project_id", project_id).execute()
-        scene_chars = [c for c in (chars_res.data or []) if c.get("name", "").strip().upper() in char_names]
-        
-        char_ids = [c["id"] for c in scene_chars]
-        if char_ids:
-            links_res = supabase.table("asset_links").select("target_id, asset_id, metadata").eq(
-                "project_id", project_id
-            ).eq("target_type", "character").in_("target_id", char_ids).execute()
-            links = links_res.data or []
-            
-            asset_ids = [l["asset_id"] for l in links if l.get("asset_id")]
-            assets_dict = {}
-            if asset_ids:
-                assets_res = supabase.table("assets").select("id, url").in_("id", asset_ids).execute()
-                assets_dict = {a["id"]: a["url"] for a in (assets_res.data or [])}
+    chars_res = supabase.table("characters").select(
+        "id, name, role, character_type, age, gender, race, appearance, personality, "
+        "tags, metadata, primary_asset_id"
+    ).eq("project_id", project_id).execute()
+    project_characters = chars_res.data or []
+    if project_characters:
+        char_ids = [c["id"] for c in project_characters]
+        links_res = supabase.table("asset_links").select("target_id, asset_id, metadata").eq(
+            "project_id", project_id
+        ).eq("target_type", "character").in_("target_id", char_ids).execute()
+        links = links_res.data or []
 
-            links_by_char: dict[str, dict[str, str]] = {}
-            for l in links:
-                c_id = l["target_id"]
-                view = (l.get("metadata") or {}).get("view") or "front"
-                url = assets_dict.get(l["asset_id"])
-                if url:
-                    if c_id not in links_by_char:
-                        links_by_char[c_id] = {}
-                    links_by_char[c_id][view] = url
+        asset_ids = [link["asset_id"] for link in links if link.get("asset_id")]
+        asset_ids.extend(c["primary_asset_id"] for c in project_characters if c.get("primary_asset_id"))
+        assets_dict: dict[str, str] = {}
+        if asset_ids:
+            assets_res = supabase.table("assets").select("id, url").in_("id", asset_ids).execute()
+            assets_dict = {a["id"]: a["url"] for a in (assets_res.data or [])}
 
-            for c in scene_chars:
-                characters_out.append({
-                    **c,
-                    "views": links_by_char.get(c["id"], {}),
-                })
+        links_by_char: dict[str, dict[str, str]] = {}
+        for link in links:
+            c_id = link["target_id"]
+            view = (link.get("metadata") or {}).get("view") or "front"
+            url = assets_dict.get(link["asset_id"])
+            if url:
+                links_by_char.setdefault(c_id, {})[view] = url
+
+        for c in project_characters:
+            characters_out.append({
+                **c,
+                "views": links_by_char.get(c["id"], {}),
+                "image_url": assets_dict.get(c.get("primary_asset_id")),
+            })
 
     # 2. Environment
     environment_out: dict[str, Any] | None = None
@@ -330,7 +671,9 @@ def _gather_scene_linked_entities(
 
     # 3. Objects / Props
     objects_out: list[dict[str, Any]] = []
-    objs_res = supabase.table("props").select("id, name, description, primary_asset_id").eq("project_id", project_id).execute()
+    objs_res = supabase.table("props").select(
+        "id, name, description, tags, primary_asset_id"
+    ).eq("project_id", project_id).execute()
     if objs_res.data:
         for obj in objs_res.data:
             obj_url = None
@@ -352,15 +695,14 @@ def generate_scene_storyboard(
     provider: str = "replicate",
     model: str = STORYBOARD_MODEL,
 ) -> GenerateStoryboardResponse:
-    """Plan and generate durable storyboard stills for one screenplay scene."""
+    """Build durable storyboard stills for one screenplay scene.
+
+    Every screenplay action line produces exactly one storyboard frame, in script order.
+    No language model decides the shot count or the prompt wording.
+    """
     supabase = get_supabase_client()
     if not supabase:
         raise RuntimeError("Supabase client not initialized")
-
-    if not force_regenerate:
-        existing = _existing_storyboard(project_id, scene_id)
-        if existing:
-            return existing
 
     scene_result = supabase.table("scenes").select(
         "id, project_id, slugline_raw, location, time_of_day, summary"
@@ -369,21 +711,42 @@ def generate_scene_storyboard(
         raise ValueError("Scene was not found in this project")
     scene = scene_result.data[0]
     blocks_result = supabase.table("script_blocks").select(
-        "block_type, content, character_name, sort_order"
+        "id, block_type, content, character_id, character_name, parenthetical, dialogue_mode, sort_order, updated_at"
     ).eq("project_id", project_id).eq("scene_id", scene_id).order("sort_order").execute()
     blocks = blocks_result.data or []
 
+    beats = _build_scene_beats(
+        blocks,
+        include_speaker_frames=_env_flag("STORYBOARD_SPEAKER_PRESENCE_FRAMES", True),
+    )
+    if not beats:
+        raise ValueError("Scene has no action lines to storyboard")
+
+    if not force_regenerate:
+        existing = _existing_storyboard(project_id, scene_id, beats)
+        if existing:
+            return existing
+
     visual_style = load_project_visual_style(project_id, supabase)
     characters, environment, objects = _gather_scene_linked_entities(project_id, scene_id, blocks)
-    planned_frames = _plan_storyboard_frames(scene, blocks, characters, environment, objects, visual_style)
 
-    if force_regenerate:
-        # Delete old shots and linked storyboard asset_links
-        old_shots_res = supabase.table("shots").select("id").eq("scene_id", scene_id).eq("project_id", project_id).execute()
-        old_shot_ids = [s["id"] for s in (old_shots_res.data or [])]
-        if old_shot_ids:
-            supabase.table("asset_links").delete().eq("project_id", project_id).eq("target_type", "shot").eq("role", "storyboard").in_("target_id", old_shot_ids).execute()
-            supabase.table("shots").delete().eq("scene_id", scene_id).eq("project_id", project_id).execute()
+    max_action_frames = _env_int("STORYBOARD_MAX_ACTION_FRAMES", DEFAULT_MAX_ACTION_FRAMES)
+    capped_beats, truncated = _apply_action_frame_cap(beats, max_action_frames)
+    planned_frames = _build_frames_from_action_lines(capped_beats, scene, characters, environment, objects)
+
+    action_blocks = _action_blocks(blocks)
+    expected_action_frames = len(action_blocks)
+    if max_action_frames > 0:
+        expected_action_frames = min(expected_action_frames, max_action_frames)
+    planned_action_frames = sum(1 for frame in planned_frames if frame["source_block_type"] == ACTION_BLOCK_TYPE)
+    if planned_action_frames != expected_action_frames:
+        raise RuntimeError(
+            "Storyboard mapping broke: every action line must produce exactly one frame "
+            f"(expected {expected_action_frames}, got {planned_action_frames})"
+        )
+
+    # Replacing the shots guarantees the stored storyboard maps 1:1 onto the current script.
+    _clear_storyboard_shots(project_id, scene_id)
 
     shots_result = supabase.table("shots").insert([
         {
@@ -396,6 +759,14 @@ def generate_scene_storyboard(
             "prompt": frame["prompt"],
             "status": "in_progress",
             "sort_order": index,
+            "metadata": {
+                "source_block_id": frame["source_block_id"],
+                "source_block_type": frame["source_block_type"],
+                "source_text": frame["source_text"],
+                "character_ids": frame["character_ids"],
+                "characters": frame["characters"],
+                "image_references": frame["image_references"],
+            },
         }
         for index, frame in enumerate(planned_frames)
     ]).execute()
@@ -409,7 +780,13 @@ def generate_scene_storyboard(
         "kind": "storyboard",
         "model": model,
         "prompt": _scene_context(scene, blocks, characters, environment, objects, visual_style),
-        "settings": {"frame_count": len(shots), "prompts": [frame["prompt"] for frame in planned_frames]},
+        "settings": {
+            "frame_count": len(shots),
+            "action_block_count": len(action_blocks),
+            "max_action_frames": max_action_frames,
+            "truncated": truncated,
+            "prompts": [frame["prompt"] for frame in planned_frames],
+        },
         "status": "running",
     }).execute()
     if not job_result.data:
@@ -501,6 +878,11 @@ def regenerate_single_shot_frame(
     prompt = prompt_override.strip() if prompt_override and prompt_override.strip() else shot.get("prompt", "")
     if not prompt:
         raise ValueError("Prompt is required to regenerate shot")
+    image_references = [
+        str(url)
+        for url in ((shot.get("metadata") or {}).get("image_references") or [])
+        if url
+    ]
     visual_style = load_project_visual_style(project_id, supabase)
 
     if prompt != shot.get("prompt"):
@@ -533,6 +915,7 @@ def regenerate_single_shot_frame(
             image_search=False,
             google_search=False,
             output_format="jpg",
+            image_input=image_references or None,
             project_id=project_id,
         ))
         if not response.images:

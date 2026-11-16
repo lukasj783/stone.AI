@@ -106,7 +106,7 @@ export default function ColorPicker({ color, onChange, label }: ColorPickerProps
                     key={presetColor}
                     onClick={() => onChange(presetColor)}
                     className={cn(
-                      "w-6 h-6 rounded border-2 transition-all hover:scale-110 [background-color:var(--preset-color)]",
+                      "w-6 h-6 rounded border-2 transition-all hover:scale-110 bg-(--preset-color)",
                       color.toLowerCase() === presetColor.toLowerCase()
                         ? "border-white shadow-lg"
                         : "border-zinc-800 hover:border-zinc-700"

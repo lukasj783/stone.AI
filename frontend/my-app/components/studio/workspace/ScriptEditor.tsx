@@ -3,6 +3,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Bot, Play, RefreshCw, Trash2, Edit2, Check, X, Eye, BookOpen } from 'lucide-react';
 import { supabase } from "@/lib/supabaseClient";
+import { characterMatchesLabel, characterTags, characterTheme } from '@/lib/characterTheme';
 import AlertModal from '@/components/ui/AlertModal';
 
 interface ScriptProps {
@@ -30,9 +31,17 @@ interface ScriptBlock {
   block_order: number;
 }
 
+interface ScriptCharacter {
+  id: string;
+  name: string;
+  tags: string[];
+  metadata: Record<string, unknown> | null;
+}
+
 export function ScriptEditor({ projectId }: ScriptProps) {
   const [scenes, setScenes] = useState<ScriptScene[]>([]);
   const [blocks, setBlocks] = useState<ScriptBlock[]>([]);
+  const [characters, setCharacters] = useState<ScriptCharacter[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeSceneId, setActiveSceneId] = useState<string | null>(null);
@@ -593,6 +602,20 @@ export function ScriptEditor({ projectId }: ScriptProps) {
             }
           }
         }
+
+        const { data: characterRows } = await supabase
+          .from("characters")
+          .select("id, name, tags, metadata")
+          .eq("project_id", projectId);
+
+        if (isMounted && characterRows) {
+          setCharacters((characterRows as Record<string, unknown>[]).map((row) => ({
+            id: row.id as string,
+            name: (row.name as string) ?? "",
+            tags: (row.tags as string[] | null) ?? [],
+            metadata: (row.metadata as Record<string, unknown> | null) ?? null,
+          })));
+        }
       } catch (e) {
         if (isMounted) {
           setError(e instanceof Error ? e.message : "Failed to load script data.");
@@ -727,6 +750,16 @@ export function ScriptEditor({ projectId }: ScriptProps) {
   const progressPercent = totalScenes > 0 ? Math.round((completedScenes / totalScenes) * 100) : 0;
   const activeScene = scenes.find((s) => s.id === activeSceneId);
 
+  // Resolve a screenplay name to its character record so its color and tags stay consistent.
+  const findCharacter = (label?: string | null): ScriptCharacter | null => {
+    const target = (label ?? "").trim();
+    if (!target) return null;
+    const exact = characters.find((character) => characterMatchesLabel(character, target));
+    if (exact) return exact;
+    const firstName = target.split(" ")[0].toLowerCase();
+    return characters.find((character) => character.name.trim().toLowerCase().split(" ")[0] === firstName) ?? null;
+  };
+
   const renderBlock = (block: ScriptBlock) => {
     const isEditing = editingBlockId === block.id;
     const isHovered = hoveredBlockId === block.id;
@@ -804,23 +837,55 @@ export function ScriptEditor({ projectId }: ScriptProps) {
             {block.content}
           </p>
         );
-      case "character":
+      case "character": {
+        const character = findCharacter(block.content);
+        const theme = character ? characterTheme(character) : null;
+        const tags = character ? characterTags(character) : [];
         return renderActionRow(
           <div className="max-w-100 mx-auto mt-2">
-            <h4 className="text-center text-zinc-100 font-bold uppercase w-50 mx-auto">{block.content}</h4>
+            <h4
+              className="text-center text-zinc-100 font-bold uppercase w-50 mx-auto"
+              style={theme ? { color: theme.accent } : undefined}
+            >
+              {block.content}
+            </h4>
+            {theme && tags.length > 0 && (
+              <div className="mt-1 flex flex-wrap items-center justify-center gap-1">
+                {tags.map((tag) => (
+                  <span
+                    key={tag}
+                    className="rounded-full border px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide"
+                    style={{ borderColor: theme.border, backgroundColor: theme.soft, color: theme.accent }}
+                  >
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         );
+      }
       case "parenthetical":
         return renderActionRow(
           <div className="max-w-100 mx-auto text-center italic text-zinc-400">
             {block.content.startsWith('(') ? block.content : `(${block.content})`}
           </div>
         );
-      case "dialogue":
+      case "dialogue": {
+        const speakerName = block.character_name;
+        const speaker = speakerName ? findCharacter(speakerName) : null;
+        const speakerTheme = speaker ? characterTheme(speaker) : null;
+        const speakerTags = speaker ? characterTags(speaker) : [];
         return renderActionRow(
           <div className="max-w-87.5 mx-auto mb-2 text-left">
-            {block.character_name && (
-              <h4 className="text-center text-zinc-100 font-bold uppercase w-50 mx-auto mb-1">{block.character_name}</h4>
+            {speakerName && (
+              <h4
+                className="text-center text-zinc-100 font-bold uppercase w-50 mx-auto mb-1"
+                style={speakerTheme ? { color: speakerTheme.accent } : undefined}
+                title={speakerTags.length > 0 ? `Tags: ${speakerTags.join(', ')}` : undefined}
+              >
+                {speakerName}
+              </h4>
             )}
             {block.parenthetical && (
                <div className="text-center italic text-zinc-400 mb-1 w-50 mx-auto font-mono">
@@ -830,6 +895,7 @@ export function ScriptEditor({ projectId }: ScriptProps) {
             <p className="text-center md:px-12 text-zinc-200">{block.content}</p>
           </div>
         );
+      }
       case "transition":
         return renderActionRow(
           <p className="text-right uppercase font-bold text-zinc-400 mt-3 mb-3 px-16">
