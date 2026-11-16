@@ -217,7 +217,7 @@ def _apply_action_frame_cap(
 
 
 def _match_name_patterns(name: str) -> list[str]:
-    cleaned = re.sub(r"\s+", " ", str(name or "")).strip()
+    cleaned = re.sub(r"\s+", " ", name or "").strip()
     if not cleaned:
         return []
     patterns = [cleaned]
@@ -250,7 +250,7 @@ def _character_aliases(character: dict[str, Any]) -> list[str]:
 
 
 def _name_appears(text: str, name: str) -> bool:
-    haystack = f" {str(text or '').lower()} "
+    haystack = f" {(text or '').lower()} "
     for pattern in _match_name_patterns(name):
         if re.search(rf"(?<![a-z0-9]){re.escape(pattern.lower())}(?![a-z0-9])", haystack):
             return True
@@ -271,7 +271,7 @@ def _match_characters(text: str, characters: list[dict[str, Any]] | None) -> lis
 
 def _match_character_by_label(label: str, characters: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     """Resolve a screenplay speaker label (name, tag, or first name) to characters."""
-    target = " ".join(str(label or "").split())
+    target = " ".join((label or "").split())
     if not target:
         return []
     folded = target.casefold()
