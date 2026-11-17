@@ -3,22 +3,29 @@
 // Every studio project starts by picking ONE video type. The type decides the
 // production pipeline:
 //   • Narrative types (Feature Film, Short Film) → Idea → Outline → Script
-//   • Non-narrative types (Music Video, Documentary, Advertisement)
-//     → Brief → Script (no movie outline / three-act structure)
+//   • Non-narrative types (Music Video, Documentary, Advertisement, Explainer,
+//     Educational) → Brief → Script (no movie outline / three-act structure)
+//
+// The ids match the `project_types` table of the Universal Script Engine, which
+// decides each type's script format, unit types and block types.
 
 export type StudioVideoTypeId =
   | 'feature_film'
   | 'short_film'
   | 'music_video'
   | 'documentary'
-  | 'advertisement';
+  | 'advertisement'
+  | 'explainer'
+  | 'educational';
 
 export type StudioVideoIcon =
   | 'film'
   | 'clapperboard'
   | 'music'
   | 'bookopen'
-  | 'megaphone';
+  | 'megaphone'
+  | 'lightbulb'
+  | 'graduationcap';
 
 export interface StudioVideoTypeConfig {
   id: StudioVideoTypeId;
@@ -124,6 +131,34 @@ export const STUDIO_VIDEO_TYPES: StudioVideoTypeConfig[] = [
     requiresOutline: false,
     primaryAction: 'Generate Script',
   },
+  {
+    id: 'explainer',
+    label: 'Explainer',
+    description: 'Video fupi inayoeleza bidhaa, wazo au mchakato.',
+    examples: ['Product explainer', 'How it works'],
+    duration: 'Dakika 1–3',
+    defaultDuration: '90 sec',
+    defaultGenres: ['Product explainer'],
+    formatOptions: [],
+    icon: 'lightbulb',
+    gradient: 'from-cyan-900/40 via-sky-950/30 to-blue-950/20',
+    requiresOutline: false,
+    primaryAction: 'Generate Script',
+  },
+  {
+    id: 'educational',
+    label: 'Educational',
+    description: 'Video ya kufundisha kwa masomo na hatua.',
+    examples: ['Lesson', 'Tutorial', 'Course'],
+    duration: 'Dakika 5–20',
+    defaultDuration: '10 min',
+    defaultGenres: ['Lesson'],
+    formatOptions: [],
+    icon: 'graduationcap',
+    gradient: 'from-lime-900/40 via-green-950/30 to-emerald-950/20',
+    requiresOutline: false,
+    primaryAction: 'Generate Script',
+  },
 ];
 
 const VIDEO_TYPE_IDS = new Set<string>(STUDIO_VIDEO_TYPES.map((type) => type.id));
@@ -143,6 +178,12 @@ const LEGACY_ALIASES: Record<string, StudioVideoTypeId> = {
   advertisement: 'advertisement',
   ad: 'advertisement',
   commercial: 'advertisement',
+  explainer: 'explainer',
+  explainervideo: 'explainer',
+  educational: 'educational',
+  education: 'educational',
+  lesson: 'educational',
+  tutorial: 'educational',
 };
 
 /** Returns the config for a video type id (falls back to Feature Film). */

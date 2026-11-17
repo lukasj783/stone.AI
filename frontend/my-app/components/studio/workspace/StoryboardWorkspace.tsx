@@ -110,11 +110,18 @@ export function StoryboardWorkspace({
     const fetchScenes = async () => {
       const { data } = await supabase
         .from('scenes')
-        .select('id, slugline_raw, sort_order')
+        .select('id, slugline_raw, title, sort_order')
         .eq('project_id', projectId)
+        // Storyboards are made per leaf unit (scene, section, segment), never per act or chapter.
+        .eq('is_leaf', true)
         .order('sort_order', { ascending: true });
       if (data && data.length > 0) {
-        setAllScenes(data as SceneRecord[]);
+        setAllScenes(
+          (data as (SceneRecord & { title?: string | null })[]).map((row) => ({
+            ...row,
+            slugline_raw: row.slugline_raw || row.title || 'Untitled',
+          }))
+        );
         if (!activeSceneId) {
           setActiveSceneId(data[0].id);
         }
@@ -142,13 +149,16 @@ export function StoryboardWorkspace({
       setIsLoading(true);
       setError(null);
       try {
-        const { data: sceneData, error: sceneError } = await supabase
+        const { data: sceneRow, error: sceneError } = await supabase
           .from('scenes')
-          .select('id, slugline_raw, sort_order')
+          .select('id, slugline_raw, title, sort_order')
           .eq('id', activeSceneId)
           .eq('project_id', projectId)
           .single();
         if (sceneError) throw sceneError;
+        const sceneData = sceneRow
+          ? { ...sceneRow, slugline_raw: sceneRow.slugline_raw || sceneRow.title || 'Untitled' }
+          : sceneRow;
 
         const { data: shotsData, error: shotsError } = await supabase
           .from('shots')

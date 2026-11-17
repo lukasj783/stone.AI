@@ -13,7 +13,8 @@ class CharacterSchema(BaseModel):
 
 class ExtractedCharacterSchema(BaseModel):
     name: str
-    character_type: Literal["main", "supporting"] = "supporting"
+    # Any key from the character_types table (main, supporting, presenter, interviewee...).
+    character_type: str = "supporting"
     role: str | None = None
     age: int | None = Field(default=None, ge=0)
     gender: str | None = None

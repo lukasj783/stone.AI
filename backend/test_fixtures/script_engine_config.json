@@ -1,0 +1,1137 @@
+{
+ "character_types": [
+  {
+   "description": "Background person.",
+   "key": "extra",
+   "label": "Extra",
+   "sort_order": 3
+  },
+  {
+   "description": "Brand representative in an advert.",
+   "key": "spokesperson",
+   "label": "Spokesperson",
+   "sort_order": 9
+  },
+  {
+   "description": "Lead character.",
+   "key": "main",
+   "label": "Main",
+   "sort_order": 1
+  },
+  {
+   "description": "Off-camera narrating voice.",
+   "key": "narrator",
+   "label": "Narrator",
+   "sort_order": 6
+  },
+  {
+   "description": "On-camera presenter.",
+   "key": "presenter",
+   "label": "Presenter",
+   "sort_order": 4
+  },
+  {
+   "description": "Person asking interview questions.",
+   "key": "interviewer",
+   "label": "Interviewer",
+   "sort_order": 8
+  },
+  {
+   "description": "Person interviewed in a documentary.",
+   "key": "interviewee",
+   "label": "Interviewee",
+   "sort_order": 7
+  },
+  {
+   "description": "Show or programme host.",
+   "key": "host",
+   "label": "Host",
+   "sort_order": 5
+  },
+  {
+   "description": "Supporting character.",
+   "key": "supporting",
+   "label": "Supporting",
+   "sort_order": 2
+  },
+  {
+   "description": "Teacher in an educational video.",
+   "key": "instructor",
+   "label": "Instructor",
+   "sort_order": 10
+  }
+ ],
+ "project_type_block_types": [
+  {
+   "block_type": "action",
+   "project_type": "advertisement",
+   "sort_order": 11
+  },
+  {
+   "block_type": "action",
+   "project_type": "documentary",
+   "sort_order": 12
+  },
+  {
+   "block_type": "action",
+   "project_type": "feature_film",
+   "sort_order": 2
+  },
+  {
+   "block_type": "action",
+   "project_type": "short_film",
+   "sort_order": 2
+  },
+  {
+   "block_type": "archival",
+   "project_type": "documentary",
+   "sort_order": 4
+  },
+  {
+   "block_type": "b_roll",
+   "project_type": "documentary",
+   "sort_order": 3
+  },
+  {
+   "block_type": "b_roll",
+   "project_type": "music_video",
+   "sort_order": 4
+  },
+  {
+   "block_type": "call_to_action",
+   "project_type": "advertisement",
+   "sort_order": 8
+  },
+  {
+   "block_type": "call_to_action",
+   "project_type": "explainer",
+   "sort_order": 10
+  },
+  {
+   "block_type": "demonstration",
+   "project_type": "educational",
+   "sort_order": 3
+  },
+  {
+   "block_type": "demonstration",
+   "project_type": "explainer",
+   "sort_order": 4
+  },
+  {
+   "block_type": "dialogue",
+   "project_type": "advertisement",
+   "sort_order": 4
+  },
+  {
+   "block_type": "dialogue",
+   "project_type": "documentary",
+   "sort_order": 13
+  },
+  {
+   "block_type": "dialogue",
+   "project_type": "feature_film",
+   "sort_order": 3
+  },
+  {
+   "block_type": "dialogue",
+   "project_type": "short_film",
+   "sort_order": 3
+  },
+  {
+   "block_type": "disclaimer",
+   "project_type": "advertisement",
+   "sort_order": 9
+  },
+  {
+   "block_type": "graphic",
+   "project_type": "documentary",
+   "sort_order": 5
+  },
+  {
+   "block_type": "graphic",
+   "project_type": "educational",
+   "sort_order": 5
+  },
+  {
+   "block_type": "graphic",
+   "project_type": "explainer",
+   "sort_order": 3
+  },
+  {
+   "block_type": "instruction",
+   "project_type": "educational",
+   "sort_order": 2
+  },
+  {
+   "block_type": "interview",
+   "project_type": "documentary",
+   "sort_order": 2
+  },
+  {
+   "block_type": "key_point",
+   "project_type": "educational",
+   "sort_order": 7
+  },
+  {
+   "block_type": "key_point",
+   "project_type": "explainer",
+   "sort_order": 6
+  },
+  {
+   "block_type": "lower_third",
+   "project_type": "documentary",
+   "sort_order": 6
+  },
+  {
+   "block_type": "lyric",
+   "project_type": "music_video",
+   "sort_order": 3
+  },
+  {
+   "block_type": "montage",
+   "project_type": "feature_film",
+   "sort_order": 8
+  },
+  {
+   "block_type": "montage",
+   "project_type": "short_film",
+   "sort_order": 8
+  },
+  {
+   "block_type": "music",
+   "project_type": "advertisement",
+   "sort_order": 7
+  },
+  {
+   "block_type": "music",
+   "project_type": "documentary",
+   "sort_order": 8
+  },
+  {
+   "block_type": "music",
+   "project_type": "educational",
+   "sort_order": 10
+  },
+  {
+   "block_type": "music",
+   "project_type": "explainer",
+   "sort_order": 9
+  },
+  {
+   "block_type": "music",
+   "project_type": "music_video",
+   "sort_order": 6
+  },
+  {
+   "block_type": "narration",
+   "project_type": "documentary",
+   "sort_order": 1
+  },
+  {
+   "block_type": "narration",
+   "project_type": "educational",
+   "sort_order": 1
+  },
+  {
+   "block_type": "narration",
+   "project_type": "explainer",
+   "sort_order": 1
+  },
+  {
+   "block_type": "narrative_visual",
+   "project_type": "music_video",
+   "sort_order": 2
+  },
+  {
+   "block_type": "natural_sound",
+   "project_type": "documentary",
+   "sort_order": 7
+  },
+  {
+   "block_type": "on_screen_text",
+   "project_type": "advertisement",
+   "sort_order": 5
+  },
+  {
+   "block_type": "on_screen_text",
+   "project_type": "documentary",
+   "sort_order": 10
+  },
+  {
+   "block_type": "on_screen_text",
+   "project_type": "educational",
+   "sort_order": 6
+  },
+  {
+   "block_type": "on_screen_text",
+   "project_type": "explainer",
+   "sort_order": 5
+  },
+  {
+   "block_type": "on_screen_text",
+   "project_type": "music_video",
+   "sort_order": 5
+  },
+  {
+   "block_type": "parenthetical",
+   "project_type": "feature_film",
+   "sort_order": 4
+  },
+  {
+   "block_type": "parenthetical",
+   "project_type": "short_film",
+   "sort_order": 4
+  },
+  {
+   "block_type": "performance",
+   "project_type": "music_video",
+   "sort_order": 1
+  },
+  {
+   "block_type": "product_shot",
+   "project_type": "advertisement",
+   "sort_order": 2
+  },
+  {
+   "block_type": "quiz",
+   "project_type": "educational",
+   "sort_order": 8
+  },
+  {
+   "block_type": "scene_heading",
+   "project_type": "feature_film",
+   "sort_order": 1
+  },
+  {
+   "block_type": "scene_heading",
+   "project_type": "short_film",
+   "sort_order": 1
+  },
+  {
+   "block_type": "sfx",
+   "project_type": "advertisement",
+   "sort_order": 6
+  },
+  {
+   "block_type": "sfx",
+   "project_type": "documentary",
+   "sort_order": 9
+  },
+  {
+   "block_type": "sfx",
+   "project_type": "explainer",
+   "sort_order": 8
+  },
+  {
+   "block_type": "shot",
+   "project_type": "feature_film",
+   "sort_order": 6
+  },
+  {
+   "block_type": "shot",
+   "project_type": "short_film",
+   "sort_order": 6
+  },
+  {
+   "block_type": "title",
+   "project_type": "advertisement",
+   "sort_order": 10
+  },
+  {
+   "block_type": "title",
+   "project_type": "documentary",
+   "sort_order": 11
+  },
+  {
+   "block_type": "title",
+   "project_type": "educational",
+   "sort_order": 9
+  },
+  {
+   "block_type": "title",
+   "project_type": "explainer",
+   "sort_order": 11
+  },
+  {
+   "block_type": "title",
+   "project_type": "feature_film",
+   "sort_order": 7
+  },
+  {
+   "block_type": "title",
+   "project_type": "music_video",
+   "sort_order": 8
+  },
+  {
+   "block_type": "title",
+   "project_type": "short_film",
+   "sort_order": 7
+  },
+  {
+   "block_type": "transition",
+   "project_type": "advertisement",
+   "sort_order": 12
+  },
+  {
+   "block_type": "transition",
+   "project_type": "documentary",
+   "sort_order": 14
+  },
+  {
+   "block_type": "transition",
+   "project_type": "feature_film",
+   "sort_order": 5
+  },
+  {
+   "block_type": "transition",
+   "project_type": "music_video",
+   "sort_order": 7
+  },
+  {
+   "block_type": "transition",
+   "project_type": "short_film",
+   "sort_order": 5
+  },
+  {
+   "block_type": "visual",
+   "project_type": "advertisement",
+   "sort_order": 1
+  },
+  {
+   "block_type": "visual",
+   "project_type": "educational",
+   "sort_order": 4
+  },
+  {
+   "block_type": "visual",
+   "project_type": "explainer",
+   "sort_order": 2
+  },
+  {
+   "block_type": "voice_over",
+   "project_type": "advertisement",
+   "sort_order": 3
+  },
+  {
+   "block_type": "voice_over",
+   "project_type": "explainer",
+   "sort_order": 7
+  }
+ ],
+ "project_type_formats": [
+  {
+   "is_default": false,
+   "project_type": "advertisement",
+   "script_format": "screenplay"
+  },
+  {
+   "is_default": false,
+   "project_type": "documentary",
+   "script_format": "screenplay"
+  },
+  {
+   "is_default": false,
+   "project_type": "educational",
+   "script_format": "av_two_column"
+  },
+  {
+   "is_default": false,
+   "project_type": "explainer",
+   "script_format": "instructional"
+  },
+  {
+   "is_default": false,
+   "project_type": "music_video",
+   "script_format": "av_two_column"
+  },
+  {
+   "is_default": true,
+   "project_type": "advertisement",
+   "script_format": "av_two_column"
+  },
+  {
+   "is_default": true,
+   "project_type": "documentary",
+   "script_format": "av_two_column"
+  },
+  {
+   "is_default": true,
+   "project_type": "educational",
+   "script_format": "instructional"
+  },
+  {
+   "is_default": true,
+   "project_type": "explainer",
+   "script_format": "av_two_column"
+  },
+  {
+   "is_default": true,
+   "project_type": "feature_film",
+   "script_format": "screenplay"
+  },
+  {
+   "is_default": true,
+   "project_type": "music_video",
+   "script_format": "treatment"
+  },
+  {
+   "is_default": true,
+   "project_type": "short_film",
+   "script_format": "screenplay"
+  }
+ ],
+ "project_type_unit_types": [
+  {
+   "is_leaf": false,
+   "level": 1,
+   "project_type": "advertisement",
+   "unit_type": "segment"
+  },
+  {
+   "is_leaf": false,
+   "level": 1,
+   "project_type": "documentary",
+   "unit_type": "chapter"
+  },
+  {
+   "is_leaf": false,
+   "level": 1,
+   "project_type": "educational",
+   "unit_type": "module"
+  },
+  {
+   "is_leaf": false,
+   "level": 1,
+   "project_type": "explainer",
+   "unit_type": "segment"
+  },
+  {
+   "is_leaf": false,
+   "level": 1,
+   "project_type": "feature_film",
+   "unit_type": "act"
+  },
+  {
+   "is_leaf": false,
+   "level": 1,
+   "project_type": "music_video",
+   "unit_type": "sequence"
+  },
+  {
+   "is_leaf": false,
+   "level": 1,
+   "project_type": "short_film",
+   "unit_type": "act"
+  },
+  {
+   "is_leaf": false,
+   "level": 2,
+   "project_type": "documentary",
+   "unit_type": "sequence"
+  },
+  {
+   "is_leaf": false,
+   "level": 2,
+   "project_type": "educational",
+   "unit_type": "lesson"
+  },
+  {
+   "is_leaf": false,
+   "level": 2,
+   "project_type": "feature_film",
+   "unit_type": "sequence"
+  },
+  {
+   "is_leaf": false,
+   "level": 2,
+   "project_type": "short_film",
+   "unit_type": "sequence"
+  },
+  {
+   "is_leaf": true,
+   "level": 2,
+   "project_type": "advertisement",
+   "unit_type": "scene"
+  },
+  {
+   "is_leaf": true,
+   "level": 2,
+   "project_type": "explainer",
+   "unit_type": "scene"
+  },
+  {
+   "is_leaf": true,
+   "level": 2,
+   "project_type": "music_video",
+   "unit_type": "segment"
+  },
+  {
+   "is_leaf": true,
+   "level": 3,
+   "project_type": "documentary",
+   "unit_type": "scene"
+  },
+  {
+   "is_leaf": true,
+   "level": 3,
+   "project_type": "educational",
+   "unit_type": "section"
+  },
+  {
+   "is_leaf": true,
+   "level": 3,
+   "project_type": "feature_film",
+   "unit_type": "scene"
+  },
+  {
+   "is_leaf": true,
+   "level": 3,
+   "project_type": "short_film",
+   "unit_type": "scene"
+  }
+ ],
+ "project_types": [
+  {
+   "description": "Commercial promoting a product or service.",
+   "is_narrative": false,
+   "key": "advertisement",
+   "label": "Advertisement",
+   "requires_outline": false,
+   "sort_order": 5
+  },
+  {
+   "description": "Explores or explains real events, people or places.",
+   "is_narrative": false,
+   "key": "documentary",
+   "label": "Documentary",
+   "requires_outline": false,
+   "sort_order": 4
+  },
+  {
+   "description": "Full-length narrative film.",
+   "is_narrative": true,
+   "key": "feature_film",
+   "label": "Feature Film",
+   "requires_outline": true,
+   "sort_order": 1
+  },
+  {
+   "description": "Lesson-based teaching video.",
+   "is_narrative": false,
+   "key": "educational",
+   "label": "Educational",
+   "requires_outline": false,
+   "sort_order": 7
+  },
+  {
+   "description": "Short narrative film with a complete story.",
+   "is_narrative": true,
+   "key": "short_film",
+   "label": "Short Film",
+   "requires_outline": true,
+   "sort_order": 2
+  },
+  {
+   "description": "Short video explaining a product, idea or process.",
+   "is_narrative": false,
+   "key": "explainer",
+   "label": "Explainer",
+   "requires_outline": false,
+   "sort_order": 6
+  },
+  {
+   "description": "Visuals cut to a song.",
+   "is_narrative": false,
+   "key": "music_video",
+   "label": "Music Video",
+   "requires_outline": false,
+   "sort_order": 3
+  }
+ ],
+ "script_block_types": [
+  {
+   "description": "Ambient / location sound.",
+   "is_visual": false,
+   "key": "natural_sound",
+   "label": "Natural Sound",
+   "lane": "audio",
+   "metadata_schema": null,
+   "sort_order": 17,
+   "speaker_role": "none"
+  },
+  {
+   "description": "Archive footage or photos.",
+   "is_visual": true,
+   "key": "archival",
+   "label": "Archival",
+   "lane": "video",
+   "metadata_schema": {
+    "properties": {
+     "rights": {
+      "type": "string"
+     },
+     "source": {
+      "type": "string"
+     },
+     "year": {
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "sort_order": 14,
+   "speaker_role": "none"
+  },
+  {
+   "description": "Artist performing.",
+   "is_visual": true,
+   "key": "performance",
+   "label": "Performance",
+   "lane": "video",
+   "metadata_schema": null,
+   "sort_order": 51,
+   "speaker_role": "none"
+  },
+  {
+   "description": "CUT TO:, DISSOLVE TO:.",
+   "is_visual": false,
+   "key": "transition",
+   "label": "Transition",
+   "lane": "structure",
+   "metadata_schema": null,
+   "sort_order": 5,
+   "speaker_role": "none"
+  },
+  {
+   "description": "Direction for how a line is delivered.",
+   "is_visual": false,
+   "key": "parenthetical",
+   "label": "Parenthetical",
+   "lane": "audio",
+   "metadata_schema": null,
+   "sort_order": 4,
+   "speaker_role": "optional"
+  },
+  {
+   "description": "End card / closing ask.",
+   "is_visual": true,
+   "key": "call_to_action",
+   "label": "Call to Action",
+   "lane": "both",
+   "metadata_schema": null,
+   "sort_order": 33,
+   "speaker_role": "optional"
+  },
+  {
+   "description": "Explicit camera shot.",
+   "is_visual": true,
+   "key": "shot",
+   "label": "Shot",
+   "lane": "video",
+   "metadata_schema": {
+    "properties": {
+     "camera_angle": {
+      "type": "string"
+     },
+     "camera_motion": {
+      "type": "string"
+     },
+     "shot_size": {
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "sort_order": 6,
+   "speaker_role": "none"
+  },
+  {
+   "description": "Full-screen title or caption card.",
+   "is_visual": true,
+   "key": "title",
+   "label": "Title Card",
+   "lane": "video",
+   "metadata_schema": null,
+   "sort_order": 7,
+   "speaker_role": "none"
+  },
+  {
+   "description": "Hero shot of the product.",
+   "is_visual": true,
+   "key": "product_shot",
+   "label": "Product Shot",
+   "lane": "video",
+   "metadata_schema": {
+    "properties": {
+     "prop_id": {
+      "format": "uuid",
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "sort_order": 31,
+   "speaker_role": "none"
+  },
+  {
+   "description": "INT./EXT. LOCATION - TIME.",
+   "is_visual": false,
+   "key": "scene_heading",
+   "label": "Scene Heading",
+   "lane": "structure",
+   "metadata_schema": null,
+   "sort_order": 1,
+   "speaker_role": "none"
+  },
+  {
+   "description": "Instructor explains a step.",
+   "is_visual": false,
+   "key": "instruction",
+   "label": "Instruction",
+   "lane": "audio",
+   "metadata_schema": null,
+   "sort_order": 40,
+   "speaker_role": "optional"
+  },
+  {
+   "description": "Interview answer (and optionally the question).",
+   "is_visual": false,
+   "key": "interview",
+   "label": "Interview",
+   "lane": "audio",
+   "metadata_schema": {
+    "properties": {
+     "interviewer_id": {
+      "format": "uuid",
+      "type": "string"
+     },
+     "interviewer_name": {
+      "type": "string"
+     },
+     "location": {
+      "type": "string"
+     },
+     "lower_third": {
+      "type": "string"
+     },
+     "question": {
+      "type": "string"
+     },
+     "timestamp": {
+      "pattern": "^[0-9]{1,2}:[0-9]{2}(:[0-9]{2})?$",
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "sort_order": 12,
+   "speaker_role": "required"
+  },
+  {
+   "description": "Knowledge check.",
+   "is_visual": false,
+   "key": "quiz",
+   "label": "Quiz",
+   "lane": "video",
+   "metadata_schema": {
+    "properties": {
+     "answer": {
+      "type": "string"
+     },
+     "options": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "question": {
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "sort_order": 42,
+   "speaker_role": "none"
+  },
+  {
+   "description": "Legal text.",
+   "is_visual": false,
+   "key": "disclaimer",
+   "label": "Disclaimer",
+   "lane": "video",
+   "metadata_schema": null,
+   "sort_order": 34,
+   "speaker_role": "none"
+  },
+  {
+   "description": "Lyric line.",
+   "is_visual": false,
+   "key": "lyric",
+   "label": "Lyric",
+   "lane": "audio",
+   "metadata_schema": {
+    "properties": {
+     "timestamp": {
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "sort_order": 50,
+   "speaker_role": "none"
+  },
+  {
+   "description": "Motion graphic, map, chart or animation.",
+   "is_visual": true,
+   "key": "graphic",
+   "label": "Graphic / Animation",
+   "lane": "video",
+   "metadata_schema": null,
+   "sort_order": 15,
+   "speaker_role": "none"
+  },
+  {
+   "description": "Music cue.",
+   "is_visual": false,
+   "key": "music",
+   "label": "Music",
+   "lane": "audio",
+   "metadata_schema": {
+    "properties": {
+     "mood": {
+      "type": "string"
+     },
+     "timestamp": {
+      "type": "string"
+     },
+     "track": {
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "sort_order": 18,
+   "speaker_role": "none"
+  },
+  {
+   "description": "Name/title caption overlay.",
+   "is_visual": false,
+   "key": "lower_third",
+   "label": "Lower Third",
+   "lane": "video",
+   "metadata_schema": null,
+   "sort_order": 16,
+   "speaker_role": "none"
+  },
+  {
+   "description": "Narrator voice.",
+   "is_visual": false,
+   "key": "narration",
+   "label": "Narration",
+   "lane": "audio",
+   "metadata_schema": null,
+   "sort_order": 10,
+   "speaker_role": "optional"
+  },
+  {
+   "description": "Off-screen voice, e.g. an announcer.",
+   "is_visual": false,
+   "key": "voice_over",
+   "label": "Voice-Over",
+   "lane": "audio",
+   "metadata_schema": null,
+   "sort_order": 11,
+   "speaker_role": "optional"
+  },
+  {
+   "description": "Series of quick images.",
+   "is_visual": true,
+   "key": "montage",
+   "label": "Montage",
+   "lane": "video",
+   "metadata_schema": null,
+   "sort_order": 8,
+   "speaker_role": "none"
+  },
+  {
+   "description": "Showing how something is done or used.",
+   "is_visual": true,
+   "key": "demonstration",
+   "label": "Demonstration",
+   "lane": "video",
+   "metadata_schema": null,
+   "sort_order": 32,
+   "speaker_role": "none"
+  },
+  {
+   "description": "Sound effect cue.",
+   "is_visual": false,
+   "key": "sfx",
+   "label": "Sound Effect",
+   "lane": "audio",
+   "metadata_schema": null,
+   "sort_order": 19,
+   "speaker_role": "none"
+  },
+  {
+   "description": "Spoken line by a character.",
+   "is_visual": false,
+   "key": "dialogue",
+   "label": "Dialogue",
+   "lane": "audio",
+   "metadata_schema": {
+    "properties": {
+     "delivery": {
+      "type": "string"
+     },
+     "emotion": {
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "sort_order": 3,
+   "speaker_role": "required"
+  },
+  {
+   "description": "Story footage between performance.",
+   "is_visual": true,
+   "key": "narrative_visual",
+   "label": "Story Visual",
+   "lane": "video",
+   "metadata_schema": null,
+   "sort_order": 52,
+   "speaker_role": "none"
+  },
+  {
+   "description": "Summary point shown on screen.",
+   "is_visual": false,
+   "key": "key_point",
+   "label": "Key Point",
+   "lane": "video",
+   "metadata_schema": null,
+   "sort_order": 41,
+   "speaker_role": "none"
+  },
+  {
+   "description": "Supporting footage.",
+   "is_visual": true,
+   "key": "b_roll",
+   "label": "B-Roll",
+   "lane": "video",
+   "metadata_schema": null,
+   "sort_order": 13,
+   "speaker_role": "none"
+  },
+  {
+   "description": "Text overlay (super).",
+   "is_visual": false,
+   "key": "on_screen_text",
+   "label": "On-Screen Text",
+   "lane": "video",
+   "metadata_schema": null,
+   "sort_order": 20,
+   "speaker_role": "none"
+  },
+  {
+   "description": "What is seen on screen.",
+   "is_visual": true,
+   "key": "action",
+   "label": "Action",
+   "lane": "video",
+   "metadata_schema": null,
+   "sort_order": 2,
+   "speaker_role": "none"
+  },
+  {
+   "description": "What is seen on screen.",
+   "is_visual": true,
+   "key": "visual",
+   "label": "Visual",
+   "lane": "video",
+   "metadata_schema": {
+    "properties": {
+     "duration_seconds": {
+      "minimum": 0,
+      "type": "number"
+     }
+    },
+    "type": "object"
+   },
+   "sort_order": 30,
+   "speaker_role": "none"
+  }
+ ],
+ "script_formats": [
+  {
+   "description": "Industry screenplay: scene headings, action, dialogue.",
+   "key": "screenplay",
+   "label": "Screenplay",
+   "renderer": "screenplay",
+   "sort_order": 1
+  },
+  {
+   "description": "Lesson script: narration, demonstrations, on-screen key points and checks.",
+   "key": "instructional",
+   "label": "Instructional Script",
+   "renderer": "instructional",
+   "sort_order": 4
+  },
+  {
+   "description": "Prose description of visuals cut to music or lyrics.",
+   "key": "treatment",
+   "label": "Treatment",
+   "renderer": "treatment",
+   "sort_order": 3
+  },
+  {
+   "description": "Video on the left, audio on the right. Used for documentaries, ads and explainers.",
+   "key": "av_two_column",
+   "label": "Two-Column (AV) Script",
+   "renderer": "two_column",
+   "sort_order": 2
+  }
+ ],
+ "script_unit_types": [
+  {
+   "description": "Continuous action in one place and time.",
+   "key": "scene",
+   "label": "Scene"
+  },
+  {
+   "description": "Group of lessons in a course.",
+   "key": "module",
+   "label": "Module"
+  },
+  {
+   "description": "Group of units forming one continuous movement.",
+   "key": "sequence",
+   "label": "Sequence"
+  },
+  {
+   "description": "Major dramatic movement of a narrative.",
+   "key": "act",
+   "label": "Act"
+  },
+  {
+   "description": "Major thematic part of a documentary.",
+   "key": "chapter",
+   "label": "Chapter"
+  },
+  {
+   "description": "One teaching session.",
+   "key": "lesson",
+   "label": "Lesson"
+  },
+  {
+   "description": "Part of a lesson covering one point.",
+   "key": "section",
+   "label": "Section"
+  },
+  {
+   "description": "Timed section of an ad, explainer or music video.",
+   "key": "segment",
+   "label": "Segment"
+  }
+ ]
+}

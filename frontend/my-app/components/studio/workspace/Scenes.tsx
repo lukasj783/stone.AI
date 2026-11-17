@@ -40,6 +40,8 @@ export function Scenes({ projectId, onNavigateToScript, onConvertToStoryboard }:
           .from("scenes")
           .select("*")
           .eq("project_id", projectId)
+          // Only units that hold script content; acts, chapters and modules just group them.
+          .eq("is_leaf", true)
           .order("sort_order", { ascending: true });
 
         if (scenesError) throw scenesError;
@@ -64,7 +66,7 @@ export function Scenes({ projectId, onNavigateToScript, onConvertToStoryboard }:
 
           const mapped: SceneRow[] = (scenesData as Record<string, unknown>[]).map((s) => ({
             id: s.id as string,
-            slugline_raw: s.slugline_raw as string,
+            slugline_raw: ((s.slugline_raw || s.title) as string | null) ?? "Untitled",
             location_type: s.location_type as string | undefined,
             location: s.location as string | undefined,
             time_of_day: s.time_of_day as string | undefined,

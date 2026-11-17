@@ -5,6 +5,17 @@ import { Bot, Play, RefreshCw, Trash2, Edit2, Check, X, Eye, BookOpen } from 'lu
 import { supabase } from "@/lib/supabaseClient";
 import { characterMatchesLabel, characterTags, characterTheme } from '@/lib/characterTheme';
 import AlertModal from '@/components/ui/AlertModal';
+import {
+  blockConfig,
+  buildTwoColumnRows,
+  defaultBlockContent,
+  defaultSpeaker,
+  fetchProjectScriptConfig,
+  leafUnitLabel,
+  metadataKeys,
+  unitLabel,
+  type ProjectScriptConfig,
+} from '@/lib/scriptEngine';
 
 interface ScriptProps {
   projectId: string | null;
@@ -13,23 +24,67 @@ interface ScriptProps {
 interface ScriptScene {
   id: string;
   slugline_raw: string;
+  title?: string;
+  unit_type?: string;
+  parent_id?: string | null;
   location_type?: string;
   location?: string;
   time_of_day?: string;
+  duration_seconds?: number | null;
   summary?: string;
   status: string;
   scene_order: number;
 }
 
+interface ScriptContainer {
+  id: string;
+  title: string;
+  unit_type: string;
+  parent_id: string | null;
+}
+
+/**
+ * Block types come from the project's script configuration (action, narration,
+ * interview, b_roll...). "character" is an editor-only shortcut on screenplays
+ * that inserts a dialogue line with a speaker name.
+ */
 interface ScriptBlock {
   id: string;
   scene_id: string;
-  block_type: "scene_heading" | "action" | "character" | "parenthetical" | "dialogue" | "transition";
+  block_type: string;
   content: string;
   character_name?: string;
   parenthetical?: string;
+  metadata?: Record<string, unknown> | null;
   block_order: number;
 }
+
+const unitName = (unit: ScriptScene) => unit.slugline_raw || unit.title || 'Untitled';
+
+const SCREENPLAY_TOOLBAR = ['scene_heading', 'action', 'character', 'parenthetical', 'dialogue', 'transition'];
+
+const BLOCK_ICONS: Record<string, string> = {
+  scene_heading: '🎬',
+  action: '📝',
+  character: '👤',
+  parenthetical: '🎭',
+  dialogue: '💬',
+  transition: '🏁',
+  narration: '🎙️',
+  voice_over: '🎙️',
+  interview: '🗣️',
+  instruction: '🧑‍🏫',
+  lyric: '🎵',
+  music: '🎶',
+  b_roll: '🎥',
+  archival: '🗄️',
+  product_shot: '📦',
+  call_to_action: '📣',
+  key_point: '📌',
+  quiz: '❓',
+  on_screen_text: '🔤',
+  lower_third: '🏷️',
+};
 
 interface ScriptCharacter {
   id: string;
@@ -40,6 +95,8 @@ interface ScriptCharacter {
 
 export function ScriptEditor({ projectId }: ScriptProps) {
   const [scenes, setScenes] = useState<ScriptScene[]>([]);
+  const [containers, setContainers] = useState<ScriptContainer[]>([]);
+  const [engine, setEngine] = useState<ProjectScriptConfig | null>(null);
   const [blocks, setBlocks] = useState<ScriptBlock[]>([]);
   const [characters, setCharacters] = useState<ScriptCharacter[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -119,14 +176,46 @@ export function ScriptEditor({ projectId }: ScriptProps) {
     });
   };
 
+  // Script configuration for this project's type and format.
+  const typeConfig = engine?.config ?? null;
+  const renderer = engine?.renderer ?? 'screenplay';
+  const isScreenplay = renderer === 'screenplay';
+  const isTwoColumn = renderer === 'two_column' || renderer === 'instructional';
+  const leafLabel = leafUnitLabel(typeConfig);
+  const allowedBlockTypes = typeConfig?.block_types ?? [];
+  const primaryVisualType =
+    ['action', 'visual', 'b_roll', 'performance', 'demonstration'].find((key) => blockConfig(typeConfig, key)) ??
+    allowedBlockTypes.find((block) => block.is_visual)?.key ??
+    'action';
+
+  // Insert buttons and draft options: the project's block types (plus the Character shortcut on screenplays).
+  const toolbarBlockTypes: string[] = typeConfig
+    ? allowedBlockTypes.flatMap((block) =>
+        isScreenplay && block.key === 'action' ? [block.key, 'character'] : [block.key]
+      )
+    : SCREENPLAY_TOOLBAR;
+
+  // The speaker of the most recent spoken line in a unit, so new lines can continue it.
+  const inheritSpeaker = (unitBlocks: ScriptBlock[], blockType: string) => {
+    const lastSpoken = [...unitBlocks].reverse().find((block) => block.character_name);
+    return (lastSpoken?.character_name || defaultSpeaker(blockType)).toUpperCase();
+  };
+
   // Quick drafting states & handlers
   const [draftContent, setDraftContent] = useState("");
-  const [draftType, setDraftType] = useState<"action" | "dialogue" | "character" | "parenthetical">("action");
+  const [draftType, setDraftType] = useState<string>("action");
   const [isAppendingDraft, setIsAppendingDraft] = useState(false);
 
-  const handleAppendDraft = async (overrideType?: "action" | "dialogue" | "character" | "parenthetical") => {
+  // Keep the draft type valid for the project's block vocabulary.
+  useEffect(() => {
+    if (!typeConfig) return;
+    const valid = draftType === 'character' ? isScreenplay : Boolean(blockConfig(typeConfig, draftType));
+    if (!valid) setDraftType(primaryVisualType);
+  }, [typeConfig, draftType, isScreenplay, primaryVisualType]);
+
+  const handleAppendDraft = async (overrideType?: string) => {
     if (!projectId || !activeSceneId) {
-      showAlert("Scene Required", "Please select an active scene from the sidebar first.", "warning");
+      showAlert(`${leafLabel} Required`, `Please select an active ${leafLabel.toLowerCase()} from the sidebar first.`, "warning");
       return;
     }
 
@@ -138,6 +227,7 @@ export function ScriptEditor({ projectId }: ScriptProps) {
       const activeSceneBlocks = blocksByScene[activeSceneId] || [];
       const nextSortOrder = activeSceneBlocks.length;
       const typeToUse = overrideType || draftType;
+      const cfg = blockConfig(typeConfig, typeToUse);
 
       let content = trimmed;
       let characterName: string | null = null;
@@ -146,12 +236,10 @@ export function ScriptEditor({ projectId }: ScriptProps) {
       if (typeToUse === 'character') {
         content = "";
         characterName = trimmed.toUpperCase();
-      } else if (typeToUse === 'dialogue') {
-        const lastBlock = activeSceneBlocks[activeSceneBlocks.length - 1];
-        const inheritedName = lastBlock?.character_name || (lastBlock?.block_type === 'character' ? lastBlock?.content : undefined) || "SPEAKER";
-        characterName = inheritedName.toUpperCase();
       } else if (typeToUse === 'parenthetical') {
         content = trimmed.startsWith('(') && trimmed.endsWith(')') ? trimmed : `(${trimmed})`;
+      } else if (cfg && cfg.speaker_role !== 'none') {
+        characterName = inheritSpeaker(activeSceneBlocks, typeToUse);
       }
 
       const { data, error: insertError } = await supabase
@@ -174,10 +262,11 @@ export function ScriptEditor({ projectId }: ScriptProps) {
         const newBlock: ScriptBlock = {
           id: data.id as string,
           scene_id: data.scene_id as string,
-          block_type: data.block_type as "scene_heading" | "action" | "character" | "parenthetical" | "dialogue" | "transition",
+          block_type: data.block_type as string,
           content: data.content as string,
           character_name: data.character_name as string | undefined,
           parenthetical: data.parenthetical as string | undefined,
+          metadata: (data.metadata as Record<string, unknown> | null) ?? null,
           block_order: (data.sort_order ?? 0) as number
         };
 
@@ -198,42 +287,25 @@ export function ScriptEditor({ projectId }: ScriptProps) {
     }
   };
 
-  const handleAddBlock = async (type: "scene_heading" | "action" | "character" | "parenthetical" | "dialogue" | "transition") => {
+  const handleAddBlock = async (type: string) => {
     if (!projectId || !activeSceneId) {
-      showAlert("Scene Required", "Please select an active scene from the left panel first.", "warning");
+      showAlert(`${leafLabel} Required`, `Please select an active ${leafLabel.toLowerCase()} from the left panel first.`, "warning");
       return;
     }
 
     try {
       const activeSceneBlocks = blocksByScene[activeSceneId] || [];
       const nextSortOrder = activeSceneBlocks.length;
+      const cfg = blockConfig(typeConfig, type);
 
-      let defaultContent = "";
+      let defaultContent = type === "character" ? "CHARACTER NAME" : defaultBlockContent(cfg, type);
       let defaultCharName = "";
       const defaultParenthetical = "";
 
-      switch(type) {
-        case "scene_heading":
-          defaultContent = "INT. NEW LOCATION - DAY";
-          break;
-        case "action":
-          defaultContent = "Insert action description here describing what is happening...";
-          break;
-        case "character":
-          defaultContent = "CHARACTER NAME";
-          break;
-        case "parenthetical":
-          defaultContent = "(whispering)";
-          break;
-        case "dialogue":
-          const lastBlock = activeSceneBlocks[activeSceneBlocks.length - 1];
-          const inheritedName = lastBlock?.character_name || (lastBlock?.block_type === 'character' ? lastBlock?.content : undefined) || "SPEAKER";
-          defaultContent = "Insert dialogue text...";
-          defaultCharName = inheritedName.toUpperCase();
-          break;
-        case "transition":
-          defaultContent = "FADE OUT.";
-          break;
+      if (type === "transition") {
+        defaultContent = "FADE OUT.";
+      } else if (type !== "character" && type !== "parenthetical" && cfg && cfg.speaker_role !== "none") {
+        defaultCharName = inheritSpeaker(activeSceneBlocks, type);
       }
 
       const { data, error: insertError } = await supabase
@@ -256,15 +328,16 @@ export function ScriptEditor({ projectId }: ScriptProps) {
         const newBlock: ScriptBlock = {
           id: data.id as string,
           scene_id: data.scene_id as string,
-          block_type: data.block_type as "scene_heading" | "action" | "character" | "parenthetical" | "dialogue" | "transition",
+          block_type: data.block_type as string,
           content: data.content as string,
           character_name: data.character_name as string | undefined,
           parenthetical: data.parenthetical as string | undefined,
+          metadata: (data.metadata as Record<string, unknown> | null) ?? null,
           block_order: (data.sort_order ?? 0) as number
         };
 
         setBlocks((prev) => [...prev, newBlock]);
-        
+
         // Focus the editor immediately
         setEditingBlockId(newBlock.id);
         setEditingBlockContent(newBlock.content || newBlock.character_name || "");
@@ -398,7 +471,7 @@ export function ScriptEditor({ projectId }: ScriptProps) {
         // These can only be edited manually or by using "AI Rewrite" since it has no content blocks yet.
         showAlert(
           "Unwritten Scene",
-          "This scene is currently unwritten. Click the purple \"AI Rewrite\" button to automatically generate content blocks for it.",
+          `This ${leafLabel.toLowerCase()} is currently unwritten. Click the purple "AI Rewrite" button to automatically generate content blocks for it.`,
           "info"
         );
         return;
@@ -439,7 +512,7 @@ export function ScriptEditor({ projectId }: ScriptProps) {
         issues.push({
           blockId: scene.id,
           type: 'warning',
-          message: `Scene "${scene.slugline_raw}" has no screenplay content blocks.`,
+          message: `${leafLabel} "${unitName(scene)}" has no script content blocks.`,
           rule: 'Empty Scene',
           isSceneId: true
         });
@@ -452,7 +525,7 @@ export function ScriptEditor({ projectId }: ScriptProps) {
           issues.push({
             blockId: block.id,
             type: 'warning',
-            message: `Empty ${block.block_type} block in scene "${scene.slugline_raw}".`,
+            message: `Empty ${block.block_type} block in ${leafLabel.toLowerCase()} "${unitName(scene)}".`,
             rule: 'No Empty Elements'
           });
         }
@@ -470,20 +543,20 @@ export function ScriptEditor({ projectId }: ScriptProps) {
           }
         }
 
-        // 3. Dialogue speaker checks
-        if (block.block_type === 'dialogue') {
+        // 3. Speaker checks for blocks that must name who is speaking (dialogue, interview...)
+        if (blockConfig(typeConfig, block.block_type)?.speaker_role === 'required' || (!typeConfig && block.block_type === 'dialogue')) {
           if (!block.character_name || block.character_name.trim() === '') {
             issues.push({
               blockId: block.id,
               type: 'error',
-              message: `Dialogue element is missing character name in scene "${scene.slugline_raw}".`,
+              message: `${blockConfig(typeConfig, block.block_type)?.label ?? 'Dialogue'} element is missing a speaker name in ${leafLabel.toLowerCase()} "${unitName(scene)}".`,
               rule: 'Orphaned Dialogue'
             });
           } else if (block.character_name !== block.character_name.toUpperCase()) {
             issues.push({
               blockId: block.id,
               type: 'warning',
-              message: `Character name "${block.character_name}" in scene "${scene.slugline_raw}" should be in ALL CAPS.`,
+              message: `Character name "${block.character_name}" in ${leafLabel.toLowerCase()} "${unitName(scene)}" should be in ALL CAPS.`,
               rule: 'Capitalization'
             });
           }
@@ -495,7 +568,7 @@ export function ScriptEditor({ projectId }: ScriptProps) {
             issues.push({
               blockId: block.id,
               type: 'warning',
-              message: `Parenthetical text "${block.content}" in scene "${scene.slugline_raw}" should be wrapped in parentheses.`,
+              message: `Parenthetical text "${block.content}" in ${leafLabel.toLowerCase()} "${unitName(scene)}" should be wrapped in parentheses.`,
               rule: 'Parenthetical Brackets'
             });
           }
@@ -555,18 +628,30 @@ export function ScriptEditor({ projectId }: ScriptProps) {
         if (scenesError) throw scenesError;
 
         if (scenesData) {
-          const fetchedScenes = (scenesData as Record<string, unknown>[]).map((s) => ({
+          const unitRows = scenesData as Record<string, unknown>[];
+          // Container units (acts, chapters, modules...) only group the units that hold blocks.
+          setContainers(unitRows.filter((s) => s.is_leaf === false).map((s) => ({
+            id: s.id as string,
+            title: ((s.title ?? s.slugline_raw) as string | null) ?? "",
+            unit_type: (s.unit_type as string) ?? "",
+            parent_id: (s.parent_id as string | null) ?? null,
+          })));
+          const fetchedScenes = unitRows.filter((s) => s.is_leaf !== false).map((s) => ({
             ...s,
             id: s.id as string,
-            slugline_raw: s.slugline_raw as string,
+            slugline_raw: (s.slugline_raw as string | null) ?? "",
+            title: (s.title as string | null) ?? undefined,
+            unit_type: (s.unit_type as string | null) ?? undefined,
+            parent_id: (s.parent_id as string | null) ?? null,
             location_type: s.location_type as string | undefined,
             location: s.location as string | undefined,
             time_of_day: s.time_of_day as string | undefined,
+            duration_seconds: (s.duration_seconds as number | null) ?? null,
             summary: s.summary as string | undefined,
             status: s.status as string,
             scene_order: (s.sort_order ?? s.scene_order ?? 0) as number
           })) as ScriptScene[];
-          
+
           setScenes(fetchedScenes);
           
           if (fetchedScenes.length > 0 && !activeSceneIdRef.current) {
@@ -591,10 +676,11 @@ export function ScriptEditor({ projectId }: ScriptProps) {
                 ...b,
                 id: b.id as string,
                 scene_id: b.scene_id as string,
-                block_type: b.block_type as "scene_heading" | "action" | "character" | "parenthetical" | "dialogue" | "transition",
+                block_type: b.block_type as string,
                 content: b.content as string,
                 character_name: b.character_name as string | undefined,
                 parenthetical: b.parenthetical as string | undefined,
+                metadata: (b.metadata as Record<string, unknown> | null) ?? null,
                 block_order: (b.sort_order ?? b.block_order ?? 0) as number
               })) as ScriptBlock[];
               
@@ -626,7 +712,16 @@ export function ScriptEditor({ projectId }: ScriptProps) {
     };
 
     fetchScript(false);
-    
+
+    fetchProjectScriptConfig(projectId)
+      .then((config) => {
+        if (isMounted) setEngine(config);
+      })
+      .catch((configError) => {
+        // The editor still works as a screenplay editor without the config.
+        console.error("Failed to load script configuration:", configError);
+      });
+
     // Setup polling to watch progressive generation updates in background
     const pollInterval = setInterval(() => {
       fetchScript(true);
@@ -824,6 +919,11 @@ export function ScriptEditor({ projectId }: ScriptProps) {
       );
     };
 
+    // Non-screenplay formats (AV, treatment, instructional) use one labelled layout for every block.
+    if (!isScreenplay) {
+      return renderActionRow(renderGenericBlock(block));
+    }
+
     switch (block.block_type) {
       case "scene_heading":
         return renderActionRow(
@@ -903,8 +1003,92 @@ export function ScriptEditor({ projectId }: ScriptProps) {
           </p>
         );
       default:
-        return renderActionRow(<p className="mb-2">{block.content}</p>);
+        return renderActionRow(renderGenericBlock(block));
     }
+  };
+
+  // Labelled block: type chip (coloured by lane), speaker, text and metadata such as timestamps.
+  function renderGenericBlock(block: ScriptBlock) {
+    const cfg = blockConfig(typeConfig, block.block_type);
+    const speaker = block.character_name ? findCharacter(block.character_name) : null;
+    const theme = speaker ? characterTheme(speaker) : null;
+    const meta = metadataKeys(cfg)
+      .map((key) => [key, block.metadata?.[key]] as const)
+      .filter(([, value]) => value !== undefined && value !== null && value !== "");
+    const laneClass =
+      cfg?.lane === 'audio'
+        ? 'text-sky-300 border-sky-500/30 bg-sky-500/10'
+        : cfg?.lane === 'structure'
+          ? 'text-zinc-400 border-zinc-600/40 bg-zinc-800/40'
+          : cfg?.lane === 'both'
+            ? 'text-fuchsia-300 border-fuchsia-500/30 bg-fuchsia-500/10'
+            : 'text-amber-300 border-amber-500/30 bg-amber-500/10';
+    return (
+      <div className="mb-1 text-left">
+        <div className="flex flex-wrap items-center gap-2 mb-0.5 font-sans">
+          <span className={`rounded border px-1.5 py-px text-[9px] font-bold uppercase tracking-wider ${laneClass}`}>
+            {cfg?.label ?? block.block_type.replace(/_/g, ' ')}
+          </span>
+          {block.character_name && (
+            <span className="text-xs font-bold uppercase text-zinc-100" style={theme ? { color: theme.accent } : undefined}>
+              {block.character_name}
+            </span>
+          )}
+          {block.parenthetical && (
+            <span className="text-xs italic text-zinc-500">({block.parenthetical.replace(/^\(|\)$/g, '')})</span>
+          )}
+        </div>
+        <p className={cfg?.lane === 'audio' ? 'text-zinc-200' : 'text-zinc-300'}>{block.content}</p>
+        {meta.length > 0 && (
+          <div className="mt-1 flex flex-wrap gap-1 font-sans">
+            {meta.map(([key, value]) => (
+              <span key={key} className="rounded border border-zinc-800 bg-zinc-950 px-1.5 text-[10px] text-zinc-500">
+                {key.replace(/_/g, ' ')}: {Array.isArray(value) ? value.join(', ') : String(value)}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // A unit's blocks: a continuous column, or VIDEO | AUDIO rows for two-column formats.
+  const renderUnitBlocks = (unitBlocks: ScriptBlock[]) => {
+    if (!isTwoColumn) return unitBlocks.map(renderBlock);
+    const rows = buildTwoColumnRows(unitBlocks, typeConfig);
+    return (
+      <div className="border border-zinc-800 rounded-lg overflow-hidden">
+        <div className="grid grid-cols-2 bg-zinc-950 text-[10px] font-sans font-bold uppercase tracking-widest text-zinc-500 border-b border-zinc-800">
+          <div className="px-3 py-2 border-r border-zinc-800">Video</div>
+          <div className="px-3 py-2">Audio</div>
+        </div>
+        {rows.map((row, index) =>
+          row.span ? (
+            <div key={row.span.id} className="border-b border-zinc-800/70 bg-zinc-950/40">
+              {renderBlock(row.span)}
+            </div>
+          ) : (
+            <div key={`row-${index}`} className="grid grid-cols-2 border-b border-zinc-800/70 last:border-b-0">
+              <div className="border-r border-zinc-800/70 py-1 min-w-0">{row.video.map(renderBlock)}</div>
+              <div className="py-1 min-w-0">{row.audio.map(renderBlock)}</div>
+            </div>
+          )
+        )}
+      </div>
+    );
+  };
+
+  // Sidebar entries: leaf units, with a heading whenever the enclosing container changes.
+  const containersById = new Map(containers.map((container) => [container.id, container]));
+  const containerPath = (unit: ScriptScene): ScriptContainer[] => {
+    const path: ScriptContainer[] = [];
+    let parentId = unit.parent_id ?? null;
+    while (parentId && containersById.has(parentId) && path.length < 5) {
+      const parent = containersById.get(parentId)!;
+      path.unshift(parent);
+      parentId = parent.parent_id;
+    }
+    return path;
   };
 
   return (
@@ -912,28 +1096,49 @@ export function ScriptEditor({ projectId }: ScriptProps) {
       {/* Scene List */}
       <div className="w-64 border-r border-zinc-800 bg-zinc-950 flex flex-col shrink-0">
         <div className="p-4 border-b border-zinc-800 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-zinc-100">Scenes</h2>
-          <button title="New Scene" className="text-xs text-violet-400 hover:text-violet-300 font-medium">
+          <div className="min-w-0">
+            <h2 className="text-sm font-semibold text-zinc-100">{leafLabel}s</h2>
+            {engine && (
+              <p className="text-[10px] text-zinc-500 truncate">
+                {engine.config.label} • {engine.config.formats.find((f) => f.key === engine.script_format)?.label}
+              </p>
+            )}
+          </div>
+          <button title={`New ${leafLabel}`} className="text-xs text-violet-400 hover:text-violet-300 font-medium">
             + New
           </button>
         </div>
         <div className="flex-1 overflow-auto p-2 space-y-1">
           {scenes.length === 0 && !isLoading && (
-            <div className="text-zinc-500 text-xs text-center p-4">No scenes generated yet.</div>
+            <div className="text-zinc-500 text-xs text-center p-4">No {leafLabel.toLowerCase()}s generated yet.</div>
           )}
-          {scenes.map((scene, i) => (
-            <button 
-              key={scene.id}
+          {scenes.map((scene, i) => {
+            const path = containerPath(scene);
+            const previousPath = i > 0 ? containerPath(scenes[i - 1]) : [];
+            const newHeadings = path.filter((container, depth) => previousPath[depth]?.id !== container.id);
+            return (
+            <React.Fragment key={scene.id}>
+            {newHeadings.map((container) => (
+              <div
+                key={`heading-${container.id}`}
+                className="px-2 pt-3 pb-1 text-[10px] font-bold uppercase tracking-wider text-zinc-500 truncate"
+                style={{ paddingLeft: `${0.5 + path.indexOf(container) * 0.6}rem` }}
+                title={container.title}
+              >
+                {unitLabel(typeConfig, container.unit_type)}: {container.title || 'Untitled'}
+              </div>
+            ))}
+            <button
               onClick={() => setActiveSceneId(scene.id)}
               className={`w-full text-left px-3 py-2 rounded-lg text-xs transition-colors flex items-center justify-between ${
-                activeSceneId === scene.id 
-                  ? 'bg-zinc-800 text-zinc-100' 
+                activeSceneId === scene.id
+                  ? 'bg-zinc-800 text-zinc-100'
                   : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
               }`}
             >
               <div className="truncate flex-1">
                 <span className="font-mono text-[10px] text-zinc-500 mr-2">{i + 1}</span>
-                <span className="font-medium truncate">{scene.slugline_raw}</span>
+                <span className="font-medium truncate">{unitName(scene)}</span>
               </div>
               {scene.status === 'in_progress' && (
                 <RefreshCw className="h-3 w-3 animate-spin text-violet-400 shrink-0 ml-2" />
@@ -942,7 +1147,9 @@ export function ScriptEditor({ projectId }: ScriptProps) {
                 <div className="w-1.5 h-1.5 rounded-full bg-zinc-600 shrink-0 ml-2"></div>
               )}
             </button>
-          ))}
+            </React.Fragment>
+            );
+          })}
         </div>
       </div>
 
@@ -952,54 +1159,21 @@ export function ScriptEditor({ projectId }: ScriptProps) {
         <div className="min-h-12 py-2 border-b border-zinc-800 flex flex-wrap items-center justify-between px-4 gap-3 bg-zinc-900/40 select-none">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs font-semibold text-zinc-500 uppercase tracking-wider select-none shrink-0 mr-1">Insert Block:</span>
-            <button 
-              type="button"
-              onClick={() => handleAddBlock('scene_heading')}
-              className="px-2 py-1 bg-zinc-950 border border-zinc-800 rounded-md hover:border-violet-500 hover:text-white transition-all text-xs font-semibold text-zinc-400 shrink-0"
-              title="Insert Scene Heading (Slugline)"
-            >
-              🎬 Heading
-            </button>
-            <button 
-              type="button"
-              onClick={() => handleAddBlock('action')}
-              className="px-2 py-1 bg-zinc-950 border border-zinc-800 rounded-md hover:border-violet-500 hover:text-white transition-all text-xs font-semibold text-zinc-400 shrink-0"
-              title="Insert Action physical description"
-            >
-              📝 Action
-            </button>
-            <button 
-              type="button"
-              onClick={() => handleAddBlock('character')}
-              className="px-2 py-1 bg-zinc-950 border border-zinc-800 rounded-md hover:border-violet-500 hover:text-white transition-all text-xs font-semibold text-zinc-400 shrink-0"
-              title="Insert Character Speaker bubble"
-            >
-              👤 Character
-            </button>
-            <button 
-              type="button"
-              onClick={() => handleAddBlock('parenthetical')}
-              className="px-2 py-1 bg-zinc-950 border border-zinc-800 rounded-md hover:border-violet-500 hover:text-white transition-all text-xs font-semibold text-zinc-400 shrink-0"
-              title="Insert Parenthetical modifier instruction"
-            >
-              🎭 Parenthetic
-            </button>
-            <button 
-              type="button"
-              onClick={() => handleAddBlock('dialogue')}
-              className="px-2 py-1 bg-zinc-950 border border-zinc-800 rounded-md hover:border-violet-500 hover:text-white transition-all text-xs font-semibold text-zinc-400 shrink-0"
-              title="Insert Dialog speech block"
-            >
-              💬 Dialogue
-            </button>
-            <button 
-              type="button"
-              onClick={() => handleAddBlock('transition')}
-              className="px-2 py-1 bg-zinc-950 border border-zinc-800 rounded-md hover:border-violet-500 hover:text-white transition-all text-xs font-semibold text-zinc-400 shrink-0"
-              title="Insert Transition (eg FADE OUT.)"
-            >
-              🏁 Transition
-            </button>
+            {toolbarBlockTypes.map((type) => {
+              const cfg = blockConfig(typeConfig, type);
+              const label = type === 'character' ? 'Character' : cfg?.label ?? type.replace(/_/g, ' ');
+              return (
+                <button
+                  key={type}
+                  type="button"
+                  onClick={() => handleAddBlock(type)}
+                  className="px-2 py-1 bg-zinc-950 border border-zinc-800 rounded-md hover:border-violet-500 hover:text-white transition-all text-xs font-semibold text-zinc-400 shrink-0"
+                  title={type === 'character' ? 'Insert a dialogue line with a speaker name' : cfg?.description ?? `Insert ${label}`}
+                >
+                  {BLOCK_ICONS[type] ?? (cfg?.lane === 'audio' ? '🔊' : '🎞️')} {label}
+                </button>
+              );
+            })}
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -1100,9 +1274,9 @@ export function ScriptEditor({ projectId }: ScriptProps) {
               <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-1.5">
                 <span className="flex items-center gap-2 text-violet-400">
                   <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                  Generating Screenplay...
+                  Generating {engine?.config.label ?? 'Screenplay'} Script...
                 </span>
-                <span className="font-mono text-zinc-300">{progressPercent}% ({completedScenes}/{totalScenes} Scenes)</span>
+                <span className="font-mono text-zinc-300">{progressPercent}% ({completedScenes}/{totalScenes} {leafLabel}s)</span>
               </div>
               <div className="w-full bg-zinc-800/80 h-2 rounded-full overflow-hidden">
                 <div 
@@ -1112,7 +1286,7 @@ export function ScriptEditor({ projectId }: ScriptProps) {
               </div>
               {inProgressScene && (
                 <p className="mt-1 text-[11px] text-zinc-500 truncate italic">
-                  Currently writing: <span className="text-zinc-400 font-mono not-italic">{inProgressScene.slugline_raw}</span>
+                  Currently writing: <span className="text-zinc-400 font-mono not-italic">{unitName(inProgressScene)}</span>
                 </p>
               )}
             </div>
@@ -1129,7 +1303,7 @@ export function ScriptEditor({ projectId }: ScriptProps) {
                 return (
                   <div 
                     key={scene.id} 
-                    title={`${index + 1}. ${scene.slugline_raw} (${scene.status})`}
+                    title={`${index + 1}. ${unitName(scene)} (${scene.status})`}
                     className={`w-6 h-6 rounded-full border text-[10px] font-medium flex items-center justify-center transition-all cursor-help ${dotClass}`}
                   >
                     {index + 1}
@@ -1151,7 +1325,7 @@ export function ScriptEditor({ projectId }: ScriptProps) {
                 <div className="flex items-center gap-2">
                   <span className={`w-2 h-2 rounded-full ${formatIssues.length > 0 ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`} />
                   <h3 className="text-xs font-bold text-zinc-300 uppercase tracking-widest font-sans">
-                    Format check report — {formatIssues.length > 0 ? `${formatIssues.length} issues found` : 'Screenplay formatted perfectly!'}
+                    Format check report — {formatIssues.length > 0 ? `${formatIssues.length} issues found` : 'Script formatted perfectly!'}
                   </h3>
                 </div>
                 <div className="flex items-center gap-3">
@@ -1202,7 +1376,7 @@ export function ScriptEditor({ projectId }: ScriptProps) {
                 </div>
               ) : (
                 <p className="text-xs text-zinc-400 italic">
-                  All characters names are capitalized, parentheticals have wrapping brackets, and all headings follow Hollywood standard rules. Superb formatting!
+                  Every spoken line names its speaker in capitals, parentheticals are bracketed, and headings follow the format&apos;s rules. Superb formatting!
                 </p>
               )}
             </div>
@@ -1221,12 +1395,14 @@ export function ScriptEditor({ projectId }: ScriptProps) {
                     <div className="mb-8 pb-4 border-b border-zinc-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                       <div className="min-w-0 flex-1">
                         <span className="font-sans text-xs font-semibold uppercase tracking-wider text-violet-400">
-                          Scene {scenes.indexOf(activeScene) + 1} of {scenes.length}
+                          {leafLabel} {scenes.indexOf(activeScene) + 1} of {scenes.length}
                         </span>
-                        <h2 className="text-lg font-bold text-zinc-100 font-mono mt-0.5 wrap-break-word">{activeScene.slugline_raw}</h2>
+                        <h2 className="text-lg font-bold text-zinc-100 font-mono mt-0.5 wrap-break-word">{unitName(activeScene)}</h2>
                       </div>
                       <span className="font-mono text-xs text-zinc-400 bg-zinc-950 px-2.5 py-1 rounded border border-zinc-800 shrink-0 select-none self-start sm:self-auto">
-                        {activeScene.location_type || 'INT/EXT'} • {activeScene.time_of_day || 'DAY'}
+                        {isScreenplay
+                          ? `${activeScene.location_type || 'INT/EXT'} • ${activeScene.time_of_day || 'DAY'}`
+                          : [activeScene.location, activeScene.duration_seconds ? `${Math.round(activeScene.duration_seconds)}s` : null].filter(Boolean).join(' • ') || unitLabel(typeConfig, activeScene.unit_type)}
                       </span>
                     </div>
                   )}
@@ -1235,16 +1411,16 @@ export function ScriptEditor({ projectId }: ScriptProps) {
                     activeScene ? (
                       <div key={activeScene.id} className="mb-10">
                         {(blocksByScene[activeScene.id] || []).length > 0 ? (
-                          (blocksByScene[activeScene.id] || []).map(renderBlock)
+                          renderUnitBlocks(blocksByScene[activeScene.id] || [])
                         ) : (
                           <div className="text-zinc-500 text-xs italic text-center p-8 border border-dashed border-zinc-800 rounded-lg">
-                            This scene has no content blocks yet. Click &quot;AI Rewrite&quot; or type in the editor below.
+                            This {leafLabel.toLowerCase()} has no content blocks yet. Click &quot;AI Rewrite&quot; or type in the editor below.
                           </div>
                         )}
                       </div>
                     ) : (
                       <div className="text-zinc-500 text-sm text-center p-12">
-                        No active scene selected. Click a scene from the sidebar.
+                        No active {leafLabel.toLowerCase()} selected. Click one from the sidebar.
                       </div>
                     )
                   ) : (
@@ -1263,17 +1439,17 @@ export function ScriptEditor({ projectId }: ScriptProps) {
                         >
                           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4 border-b border-zinc-850 pb-2 select-none">
                             <span className={`font-sans text-xs font-bold uppercase tracking-wider min-w-0 flex-1 wrap-break-word ${isActive ? 'text-violet-400' : 'text-zinc-500'}`}>
-                              Scene {idx + 1} • {scene.slugline_raw}
+                              {leafLabel} {idx + 1} • {unitName(scene)}
                             </span>
                             <span className="font-mono text-[10px] text-zinc-500 bg-zinc-950 px-2 py-0.5 rounded border border-zinc-800 truncate max-w-40 shrink-0 self-start sm:self-auto">
-                              {scene.location_type || 'INT'}
+                              {isScreenplay ? scene.location_type || 'INT' : scene.location || unitLabel(typeConfig, scene.unit_type)}
                             </span>
                           </div>
                           {(blocksByScene[scene.id] || []).length > 0 ? (
-                            (blocksByScene[scene.id] || []).map(renderBlock)
+                            renderUnitBlocks(blocksByScene[scene.id] || [])
                           ) : (
                             <div className="text-zinc-500 text-xs italic text-center p-8 border border-dashed border-zinc-800 rounded-lg">
-                              This scene is empty.
+                              This {leafLabel.toLowerCase()} is empty.
                             </div>
                           )}
                         </div>
@@ -1289,13 +1465,16 @@ export function ScriptEditor({ projectId }: ScriptProps) {
                           value={draftType}
                           title="Screenplay element draft type"
                           aria-label="Screenplay element draft type"
-                          onChange={(e) => setDraftType(e.target.value as "action" | "dialogue" | "character" | "parenthetical")}
+                          onChange={(e) => setDraftType(e.target.value)}
                           className="bg-zinc-900 border border-zinc-800 text-zinc-200 rounded px-2 py-0.5 ml-1 focus:outline-none focus:border-violet-500 font-medium cursor-pointer"
                         >
-                          <option value="action">📝 Action Block</option>
-                          <option value="dialogue">💬 Dialogue Line</option>
-                          <option value="character">👤 Character Name</option>
-                          <option value="parenthetical">🎭 Parenthetical Direction</option>
+                          {toolbarBlockTypes
+                            .filter((type) => blockConfig(typeConfig, type)?.lane !== 'structure' || !typeConfig)
+                            .map((type) => (
+                              <option key={type} value={type}>
+                                {BLOCK_ICONS[type] ?? '•'} {type === 'character' ? 'Character Name' : blockConfig(typeConfig, type)?.label ?? type.replace(/_/g, ' ')}
+                              </option>
+                            ))}
                         </select>
                       </span>
                       <span className="hidden sm:inline select-none text-[11px] text-zinc-500">
@@ -1311,7 +1490,7 @@ export function ScriptEditor({ projectId }: ScriptProps) {
                       rows={3}
                       placeholder={
                         viewMode === 'single'
-                          ? `Draft next line for "${activeScene?.slugline_raw || 'active scene'}"...`
+                          ? `Draft next line for "${activeScene ? unitName(activeScene) : `active ${leafLabel.toLowerCase()}`}"...`
                           : "Draft next line for the highlighted active scene..."
                       }
                       disabled={isAppendingDraft}
@@ -1323,6 +1502,9 @@ export function ScriptEditor({ projectId }: ScriptProps) {
                         {draftType === 'character' && "💡 Type a character name. Will be fully capitalized automatically."}
                         {draftType === 'action' && "💡 Describe physical events, character actions, landscapes, or sounds."}
                         {draftType === 'parenthetical' && "💡 Modifiers like (whispering) or (pointing) wrapped automatically."}
+                        {!['dialogue', 'character', 'action', 'parenthetical'].includes(draftType) && blockConfig(typeConfig, draftType) && (
+                          <>💡 {blockConfig(typeConfig, draftType)?.description}{blockConfig(typeConfig, draftType)?.speaker_role !== 'none' ? ' The speaker continues from the previous spoken line.' : ''}</>
+                        )}
                       </p>
                       
                       <button
@@ -1344,7 +1526,7 @@ export function ScriptEditor({ projectId }: ScriptProps) {
                 </div>
             ) : (
                 <div className="text-center pt-20 text-zinc-650">
-                   Generate a script from the Outline tab first.
+                   Generate a script from the Outline or Brief tab first.
                 </div>
             )}
           </div>

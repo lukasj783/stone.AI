@@ -7,6 +7,8 @@ import {
   Clapperboard,
   Clock3,
   Film,
+  GraduationCap,
+  Lightbulb,
   List,
   Megaphone,
   Music,
@@ -34,6 +36,8 @@ const ICONS: Record<StudioVideoIcon, React.ComponentType<{ size?: number; classN
   music: Music,
   bookopen: BookOpen,
   megaphone: Megaphone,
+  lightbulb: Lightbulb,
+  graduationcap: GraduationCap,
 };
 
 export function VideoTypeBadge({

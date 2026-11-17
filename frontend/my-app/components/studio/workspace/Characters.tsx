@@ -30,7 +30,8 @@ interface ViewAsset { assetId: string; imageUrl: string; view: CharacterView; }
 interface StudioCharacter {
   id: string;
   name: string;
-  characterType: 'main' | 'supporting';
+  /** A character_types key: main, supporting, presenter, narrator, interviewee... */
+  characterType: string;
   role: string | null;
   age: number | null;
   gender: string | null;
@@ -172,7 +173,7 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
           return imageUrl && VIEWS.includes(view) ? [{ assetId: link.asset_id as string, imageUrl, view }] : [];
         });
         return {
-          id: row.id as string, name: row.name as string, characterType: row.character_type === 'main' ? 'main' : 'supporting',
+          id: row.id as string, name: row.name as string, characterType: (row.character_type as string | null) || 'supporting',
           role: effective('role', row.role as string | null), age: effective('age', row.age as number | null), gender: effective('gender', row.gender as string | null),
           race: effective('race', row.race as string | null), appearance: effective('appearance', row.appearance as string | null), personality: effective('personality', row.personality as string | null),
           tags: (row.tags as string[] | null) ?? [], metadata, primaryImageUrl: primaryUrls.get(row.primary_asset_id as string) ?? null, latestGenerationJobId, manualOverrideFields, views,

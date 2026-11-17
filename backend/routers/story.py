@@ -41,6 +41,17 @@ from schemas.image_generation import (
 )
 from services.storyboard_generation import generate_scene_storyboard, regenerate_single_shot_frame
 from services.character_views import EDITABLE_CHARACTER_FIELDS, effective_character_profile
+from services.gemini_client import run_gemini
+from services.script_config import load_project_script_context
+from services.script_generation import (
+    blocks_context,
+    build_block_prompt,
+    build_plan_prompt,
+    normalize_blocks,
+    normalize_unit_plan,
+    parse_model_json,
+)
+from routers.script_engine import compile_project_script, save_compiled_script
 
 router = APIRouter(prefix="/api/story", tags=["story"])
 
@@ -80,20 +91,15 @@ def _run_gemini(
 ) -> str:
     """Run the configured Gemini model on Replicate and return the response text.
 
-    Gemini 3.x streams its answer (output schema is `string[]`), so the client
-    returns either a plain string or an iterator of chunks that must be joined.
+    `client` is kept for existing callers but unused: the call goes over HTTP because
+    replicate-python 1.0.x cannot parse predictions for official models.
     """
-    settings = get_settings()
-    output = client.run(
-        settings.gemini_model,
-        input=_gemini_input(
-            prompt,
-            system_instruction=system_instruction,
-            thinking_level=thinking_level,
-            temperature=temperature,
-        ),
+    return run_gemini(
+        prompt,
+        system_instruction=system_instruction,
+        thinking_level=thinking_level,
+        temperature=temperature,
     )
-    return output if isinstance(output, str) else "".join(output)
 
 
 def _parse_json_object(value: str) -> object:
@@ -180,7 +186,7 @@ def _load_script_character_for_profile(supabase: Client, project_id: str, charac
 def _find_character_first_appearance(supabase: Client, project_id: str, character: dict) -> tuple[dict, dict, dict | None]:
     scenes_result = supabase.table("scenes").select("id, slugline_raw, sort_order").eq(
         "project_id", project_id
-    ).order("sort_order").execute()
+    ).eq("is_leaf", True).order("sort_order").execute()
     scenes_by_id = {str(scene["id"]): scene for scene in as_records(scenes_result.data) if scene.get("id")}
     blocks_result = supabase.table("script_blocks").select(
         "id, scene_id, character_id, character_name, sort_order, metadata"
@@ -409,7 +415,10 @@ def _persist_script_objects(supabase: Client, project_id: str, objects: list[Ext
             supabase.table("props").insert({"project_id": project_id, "name": extracted.name, "description": extracted.description, "tags": extracted.tags, **values}).execute()
 
 
-def _normalize_extracted_character(raw_character: dict) -> dict:
+DEFAULT_CHARACTER_TYPES = ("main", "supporting")
+
+
+def _normalize_extracted_character(raw_character: dict, allowed_types: tuple[str, ...] = DEFAULT_CHARACTER_TYPES) -> dict:
     normalized = dict(raw_character)
     age = normalized.get("age")
     if isinstance(age, str):
@@ -417,21 +426,27 @@ def _normalize_extracted_character(raw_character: dict) -> dict:
         normalized["age"] = int(age) if age.isdigit() else None
     elif isinstance(age, bool) or not isinstance(age, int):
         normalized["age"] = None
-    if normalized.get("character_type") not in {"main", "supporting"}:
-        normalized["character_type"] = "supporting"
+    character_type = str(normalized.get("character_type") or "").strip().lower()
+    normalized["character_type"] = character_type if character_type in allowed_types else "supporting"
     return normalized
 
 
-def _extract_script_characters(client: replicate.Client, screenplay: dict) -> list[ExtractedCharacterSchema]:
-    prompt = f"""You extract only explicitly supported character facts from a screenplay.
+def _extract_script_characters(
+    client: replicate.Client,
+    screenplay: dict,
+    allowed_types: tuple[str, ...] = DEFAULT_CHARACTER_TYPES,
+) -> list[ExtractedCharacterSchema]:
+    allowed_types = tuple(allowed_types) or DEFAULT_CHARACTER_TYPES
+    type_choices = " | ".join(f'"{t}"' for t in allowed_types)
+    prompt = f"""You extract only explicitly supported character and people facts from a script.
 
-Screenplay JSON:
+Script JSON:
 {json.dumps(screenplay)}
 
 Return ONLY valid JSON in this shape:
-{{"characters":[{{"name":"", "character_type":"main" | "supporting", "role":null, "age":null, "gender":null, "race":null, "appearance":null, "personality":null, "tags":[], "image_prompt":""}}]}}
+{{"characters":[{{"name":"", "character_type":{type_choices}, "role":null, "age":null, "gender":null, "race":null, "appearance":null, "personality":null, "tags":[], "image_prompt":""}}]}}
 
-Include every named speaking or explicitly named character. Set `character_type` to `main` only for characters central to the screenplay's main plot; set it to `supporting` for all other named characters. Do not infer, guess, or stereotype age, gender, race, visual traits, role, or personality. `age` must be an exact whole number or null; do not use ranges or labels such as "40s". Use null when the screenplay does not explicitly establish a fact. `image_prompt` must be a concise visual description composed only from explicit screenplay facts; use an empty string when no visual facts are present."""
+Include every named speaking person or explicitly named character, including narrators, presenters, interviewees and spokespeople. Set `character_type` to `main` only for characters central to a story's main plot; use `presenter`, `host`, `narrator`, `interviewee`, `interviewer`, `spokesperson` or `instructor` when the script shows that function and the type is allowed; otherwise use `supporting`. Do not infer, guess, or stereotype age, gender, race, visual traits, role, or personality. `age` must be an exact whole number or null; do not use ranges or labels such as "40s". Use null when the screenplay does not explicitly establish a fact. `image_prompt` must be a concise visual description composed only from explicit screenplay facts; use an empty string when no visual facts are present."""
     parsed = _parse_json_object(_run_gemini(client, prompt, thinking_level="low"))
     raw_characters = parsed.get("characters", []) if isinstance(parsed, dict) else parsed
     if not isinstance(raw_characters, list):
@@ -442,7 +457,7 @@ Include every named speaking or explicitly named character. Set `character_type`
     for raw_character in raw_characters:
         if not isinstance(raw_character, dict):
             continue
-        character = ExtractedCharacterSchema.model_validate(_normalize_extracted_character(raw_character))
+        character = ExtractedCharacterSchema.model_validate(_normalize_extracted_character(raw_character, allowed_types))
         normalized_name = _normalize_character_name(character.name)
         if not normalized_name or normalized_name in seen_names:
             continue
@@ -508,9 +523,9 @@ async def extract_characters_from_existing_script(
     supabase = require_supabase_client()
 
     scenes = as_records(
-        supabase.table("scenes").select("id, slugline_raw, sort_order").eq(
+        supabase.table("scenes").select("id, slugline_raw, title, sort_order").eq(
             "project_id", payload.project_id
-        ).order("sort_order").execute().data
+        ).eq("is_leaf", True).order("sort_order").execute().data
     )
     blocks_by_scene: dict[str, list[dict]] = {}
     for block in as_records(
@@ -524,18 +539,21 @@ async def extract_characters_from_existing_script(
 
     screenplay_scenes: list[dict[str, Any]] = [
         {
-            "slugline_raw": scene.get("slugline_raw", ""),
+            "slugline_raw": scene.get("slugline_raw") or scene.get("title") or "",
             "blocks": blocks_by_scene.get(str(scene["id"]), []),
         }
         for scene in scenes
     ]
     if not any(scene_payload["blocks"] for scene_payload in screenplay_scenes):
-        raise HTTPException(status_code=400, detail="No screenplay blocks were found for this project")
+        raise HTTPException(status_code=400, detail="No script blocks were found for this project")
     screenplay: dict[str, Any] = {"scenes": screenplay_scenes}
 
     try:
+        context = await asyncio.to_thread(load_project_script_context, payload.project_id)
         client = replicate.Client(api_token=settings.replicate_api_token)
-        characters = await asyncio.to_thread(_extract_script_characters, client, screenplay)
+        characters = await asyncio.to_thread(
+            _extract_script_characters, client, screenplay, context.type_config.character_types
+        )
         await asyncio.to_thread(_persist_script_characters, supabase, payload.project_id, characters)
         return ExtractScriptCharactersResponse(count=len(characters))
     except HTTPException:
@@ -712,7 +730,7 @@ async def extract_environments_from_existing_script(
     try:
         result = supabase.table("scenes").select(
             "id, slugline_raw, location_type, location, time_of_day, sort_order"
-        ).eq("project_id", payload.project_id).order("sort_order").execute()
+        ).eq("project_id", payload.project_id).eq("is_leaf", True).order("sort_order").execute()
         environments = _extract_script_environments(as_records(result.data))
         _persist_script_environments(supabase, payload.project_id, environments)
         return ExtractScriptEnvironmentsResponse(count=len(environments))
@@ -732,9 +750,9 @@ async def extract_objects_from_existing_script(
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase client not configured")
     try:
-        scenes_result = supabase.table("scenes").select("id, slugline_raw, sort_order").eq(
+        scenes_result = supabase.table("scenes").select("id, slugline_raw, title, sort_order").eq(
             "project_id", payload.project_id
-        ).order("sort_order").execute()
+        ).eq("is_leaf", True).order("sort_order").execute()
         scenes = as_records(scenes_result.data)
         blocks_result = supabase.table("script_blocks").select(
             "scene_id, block_type, content, character_name, parenthetical, sort_order"
@@ -748,7 +766,7 @@ async def extract_objects_from_existing_script(
             "scenes": [
                 {
                     "scene_index": index,
-                    "slugline_raw": scene.get("slugline_raw", ""),
+                    "slugline_raw": scene.get("slugline_raw") or scene.get("title") or "",
                     "blocks": blocks_by_scene.get(str(scene["id"]), []),
                 }
                 for index, scene in enumerate(scenes)
@@ -944,9 +962,7 @@ async def generate_script(payload: GenerateScriptPayload, background_tasks: Back
             [f"- {c.name}: {c.archetype or c.role}" for c in payload.characters]
         ) if payload.characters else "- Elements inferred from the source material"
 
-        video_type = (payload.video_type or "").strip() or None
         outline_text = payload.outline.strip()
-        narrative_types = {"feature_film", "short_film"}
 
         brief = payload.brief
         brief_lines: list[str] = []
@@ -965,32 +981,17 @@ async def generate_script(payload: GenerateScriptPayload, background_tasks: Back
                 brief_lines.append(f"- Duration: {brief.duration.strip()}")
         brief_text = "\n".join(brief_lines)
 
-        # Feature/short films keep a three-act narrative structure; music videos,
-        # documentaries and adverts get a visual beat plan built from the brief.
-        # Legacy callers that only send an outline stay on the narrative track.
-        is_narrative = (video_type in narrative_types) or (
-            video_type is None and bool(outline_text) and not brief_text
-        )
+        # The project type (not the request) decides the structure: which unit types
+        # the plan may use and which format the script is written in.
+        context = await asyncio.to_thread(load_project_script_context, payload.project_id)
+        type_config = context.type_config
 
-        if is_narrative:
-            structure_note = (
-                "Break the outline down into an ordered sequence of screenplay scenes "
-                "following a three-act narrative structure."
-            )
-        else:
-            structure_note = (
-                "This is a NON-NARRATIVE production (music video / documentary / advertisement). "
-                "Do NOT force a three-act story structure or fictional characters. Sequence the "
-                "scenes as a visual beat plan that realises the brief: a strong hook, the listed key "
-                "moments in order, and a memorable closing beat, matching the requested duration."
-            )
-
-        if outline_text:
-            source_label = "Here is the screenplay outline:"
+        if outline_text and (type_config.requires_outline or not brief_text):
+            source_label = "Here is the outline:"
             source_body = outline_text
         else:
             source_label = "Here is the creative brief:"
-            source_body = brief_text
+            source_body = brief_text or outline_text
 
         if not source_body:
             raise HTTPException(
@@ -998,115 +999,48 @@ async def generate_script(payload: GenerateScriptPayload, background_tasks: Back
                 detail="Either an outline or a creative brief is required to generate a script.",
             )
 
-        plan_prompt = f"""
-You are an expert Hollywood screenwriter and story planner.
-Analyze the provided source material and break it down into a sequence of structured screenplay scenes.
-Do not write the screenplay content yet. Just outline and define the sequence of scenes.
-
-{structure_note}
-
-{source_label}
-{source_body}
-
-Characters:
-{characters_text}
-
-Output ONLY valid JSON matching this schema:
-{{
-  "scenes": [
-    {{
-      "slugline_raw": "INT. OR EXT. LOCATION - TIME",
-      "location_type": "INT." or "EXT." or "INT./EXT.",
-      "location": "LOCATION",
-      "time_of_day": "TIME",
-      "summary": "Detailed but brief prompt/summary of what happens in this scene, character actions, narrative context, and what dialogue goals must be met."
-    }}
-  ]
-}}
-
-Format rules:
-- Extract all scenes from the source material. Provide the list of scenes.
-- Ensure strict JSON formatting. No markdown code blocks around the response, just the raw JSON object.
-"""
-
+        duration = (brief.duration.strip() if brief and brief.duration else "") or (
+            payload.basics.duration if payload.basics else ""
+        )
+        plan_prompt = build_plan_prompt(
+            type_config, context.format, source_label, source_body, characters_text, duration
+        )
         client = replicate.Client(api_token=api_token)
-
-        # Gemini streams its answer (string[] output), _run_gemini joins it for us.
-        beats_text = _run_gemini(client, plan_prompt)
-        
-        # Clean up possible markdown wrappers from LLM response
-        cleaned_beats = beats_text.strip()
-        if cleaned_beats.startswith("```"):
-            lines = cleaned_beats.splitlines()
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            cleaned_beats = "\n".join(lines).strip()
-            
+        plan_text = await asyncio.to_thread(_run_gemini, client, plan_prompt)
         try:
-            parsed_beats = json.loads(cleaned_beats)
+            plan = normalize_unit_plan(parse_model_json(plan_text), type_config)
         except json.JSONDecodeError as je:
-            print(f"Failed to parse beats JSON directly. Attempting custom cleaning.")
-            start_obj = cleaned_beats.find('{')
-            end_obj = cleaned_beats.rfind('}')
-            start_arr = cleaned_beats.find('[')
-            end_arr = cleaned_beats.rfind(']')
-            
-            start_idx = -1
-            end_idx = -1
-            if start_obj != -1 and (start_arr == -1 or start_obj < start_arr):
-                start_idx = start_obj
-                end_idx = end_obj
-            elif start_arr != -1:
-                start_idx = start_arr
-                end_idx = end_arr
-                
-            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-                try:
-                    parsed_beats = json.loads(cleaned_beats[start_idx:end_idx+1])
-                except Exception:
-                    raise HTTPException(status_code=500, detail=f"Invalid layout JSON returned by LLM: {je}")
-            else:
-                raise HTTPException(status_code=500, detail=f"Invalid layout JSON returned by LLM: {je}")
+            raise HTTPException(status_code=500, detail=f"Invalid plan JSON returned by the model: {je}") from je
+        if not plan:
+            raise HTTPException(status_code=500, detail="The model returned an empty script plan")
 
-        if isinstance(parsed_beats, list):
-            beats_list = parsed_beats
-        elif isinstance(parsed_beats, dict):
-            beats_list = parsed_beats.get("scenes", [])
-        else:
-            beats_list = []
+        # Replace any previous script for the project.
+        supabase.table("scenes").delete().eq("project_id", payload.project_id).execute()
+        supabase.table("project_documents").delete().eq("project_id", payload.project_id).eq("type", "script").execute()
 
         scenes_inserted: list[dict] = []
-        scene_order = 0
-        
-        # Clean up existing scenes and blocks for the project first
-        try:
-            supabase.table("scenes").delete().eq("project_id", payload.project_id).execute()
-            supabase.table("project_documents").delete().eq("project_id", payload.project_id).eq("type", "script").execute()
-        except Exception as delete_err:
-            print(f"Error purging old screenplay objects: {delete_err}")
+        sort_counter = 0
 
-        # Insert scenes as pending placeholders
-        for idx, scene in enumerate(beats_list):
-            try:
-                scene_res = supabase.table("scenes").insert({
-                    "project_id": payload.project_id,
-                    "slugline_raw": scene.get("slugline_raw", ""),
-                    "location_type": scene.get("location_type", "INT."),
-                    "location": scene.get("location", ""),
-                    "time_of_day": scene.get("time_of_day", "DAY"),
-                    "summary": scene.get("summary", ""),
-                    "status": "pending",
-                    "sort_order": idx
-                }).execute()
-                
-                if scene_res and scene_res.data:
-                    inserted_scenes = as_records(scene_res.data)
-                    if inserted_scenes:
-                        scenes_inserted.append(inserted_scenes[0])
-            except Exception as scene_err:
-                print(f"Failed to insert placeholder scene {idx}: {scene_err}")
+        def insert_units(units: list, parent: dict | None) -> None:
+            nonlocal sort_counter
+            for unit in units:
+                row = {"project_id": payload.project_id, **unit.row(), "sort_order": sort_counter}
+                sort_counter += 1
+                if parent:
+                    row["parent_id"] = parent["id"]
+                inserted = as_records(supabase.table("scenes").insert(row).execute().data)
+                if not inserted:
+                    raise RuntimeError(f"Failed to save {unit.unit_type} '{unit.title}'")
+                record = inserted[0]
+                if unit.is_leaf:
+                    record["parent_title"] = parent.get("title") if parent else None
+                    scenes_inserted.append(record)
+                else:
+                    insert_units(unit.children, record)
+
+        await asyncio.to_thread(insert_units, plan, None)
+
+        basics_dict = payload.basics.dict() if payload.basics else {}
 
         # Launch the progressive backdrop generator
         background_tasks.add_task(
@@ -1114,24 +1048,24 @@ Format rules:
             payload.project_id,
             scenes_inserted,
             characters_text,
-            payload.basics.dict() if payload.basics else {}
+            basics_dict,
         )
 
-        # To maintain compatibility with matching GenerateScriptResponse (which expects scenes and blocks),
-        # we can structure a response that tells the front-end that progressive processing is occurring,
-        # or we return the scenes without blocks initially.
-        response_scenes = []
-        for s in scenes_inserted:
-            response_scenes.append({
-                "slugline_raw": s.get("slugline_raw", ""),
+        # Blocks are written in the background; the response lists the leaf units.
+        response_scenes = [
+            {
+                "slugline_raw": s.get("slugline_raw") or s.get("title") or "",
                 "location_type": s.get("location_type"),
                 "location": s.get("location"),
                 "time_of_day": s.get("time_of_day"),
-                "blocks": []
-            })
-            
+                "blocks": [],
+            }
+            for s in scenes_inserted
+        ]
         return GenerateScriptResponse(scenes=response_scenes)
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error in prepare script pipeline: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1147,11 +1081,15 @@ async def rewrite_incomplete(payload: RewriteIncompletePayload, background_tasks
     try:
         supabase = require_supabase_client()
         
-        # 1. Fetch all scenes for the project
-        all_scenes = as_records(
+        # 1. Fetch the units that hold script content (scenes, sections, segments...)
+        units = as_records(
             supabase.table("scenes").select("*").eq("project_id", payload.project_id).order("sort_order", desc=False).execute().data
         )
-        
+        titles_by_id = {u.get("id"): u.get("title") for u in units}
+        all_scenes = [u for u in units if u.get("is_leaf", True)]
+        for unit in all_scenes:
+            unit["parent_title"] = titles_by_id.get(unit.get("parent_id"))
+
         if not all_scenes:
             raise HTTPException(status_code=400, detail="No scenes found for this project. Please generate the screenplay layout first.")
 
@@ -1192,14 +1130,8 @@ async def rewrite_incomplete(payload: RewriteIncompletePayload, background_tasks
             [f"- {c.get('name')}: {c.get('role') or c.get('archetype', 'Character')}" for c in char_list]
         ) if char_list else "- Elements inferred from outline"
 
-        # 5. Fetch project detail to supply basic configuration
-        proj_data = as_records(
-            supabase.table("projects").select("*").eq("id", payload.project_id).execute().data
-        )
-        basics_dict = {
-            "projectType": (proj_data[0].get("description") if proj_data else None) or "Feature Film",
-            "genres": [],
-        }
+        # 5. The worker reads the project type and format itself.
+        basics_dict: dict[str, Any] = {"genres": []}
 
         # 6. Launch the progressive backdrop generator
         background_tasks.add_task(
@@ -1212,13 +1144,31 @@ async def rewrite_incomplete(payload: RewriteIncompletePayload, background_tasks
 
         return {
             "message": f"Successfully launched background writing worker for {len(incomplete_scenes)} incomplete scenes.",
-            "incomplete_scenes": [s.get("slugline_raw") for s in incomplete_scenes],
+            "incomplete_scenes": [s.get("slugline_raw") or s.get("title") for s in incomplete_scenes],
             "rewritten_count": len(incomplete_scenes)
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error in rewrite incomplete pipeline: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _insert_script_block(supabase: Client, row: dict[str, Any]) -> bool:
+    """Insert one block; if only its metadata is rejected, keep the block without it."""
+    try:
+        supabase.table("script_blocks").insert(row).execute()
+        return True
+    except Exception as error:
+        if row.get("metadata"):
+            try:
+                supabase.table("script_blocks").insert({**row, "metadata": {}}).execute()
+                return True
+            except Exception:
+                pass
+        print(f"Failed to insert script block ({row.get('block_type')}): {error}")
+        return False
 
 
 async def progressive_generation_worker(
@@ -1227,187 +1177,84 @@ async def progressive_generation_worker(
     characters_text: str,
     basics_dict: dict
 ) -> None:
-    # Assigned before the try block so the error handler below can still persist
-    # whatever was generated when a scene fails mid-way.
-    consolidated_screenplay: dict[str, Any] = {"scenes": []}
+    """Write every leaf unit's blocks with the project type's block vocabulary."""
+    consolidated_script: dict[str, Any] = {"scenes": []}
+    supabase = None
     try:
         settings = get_settings()
-        api_token = settings.replicate_api_token
         supabase = require_supabase_client()
-        client = replicate.Client(api_token=api_token)
+        client = replicate.Client(api_token=settings.replicate_api_token)
+        context = await asyncio.to_thread(load_project_script_context, project_id)
+        type_config = context.type_config
+        leaf_label = type_config.leaf_unit.label.lower()
+        previous_context = f"This is the first {leaf_label}."
 
-        previous_scene_context = "This is the first scene of the screenplay."
-
-        for i, scene in enumerate(scenes):
+        for scene in scenes:
             scene_id = scene.get("id")
-            slugline = scene.get("slugline_raw", "")
-            summary = scene.get("summary", "")
-
-            # Set status to in_progress
             try:
                 supabase.table("scenes").update({"status": "in_progress"}).eq("id", scene_id).execute()
             except Exception as update_err:
-                print(f"Error updating scene status to in_progress: {update_err}")
+                print(f"Error updating unit status to in_progress: {update_err}")
 
-            draft_prompt = f"""
-You are an expert Hollywood screenwriter and script formatter.
-You are writing a formatted scene for a screenplay. Do not write the entire movie script, only generate formatting for this single active scene.
-
-Here is the details of the scene you are writing:
-Slugline: {slugline}
-Beat description: {summary}
-
----
-Global Movie Metadata:
-Type: {basics_dict.get("projectType", "Feature Film")}
-Genres: {", ".join(basics_dict.get("genres", []))}
-
-Characters:
-{characters_text}
-
----
-Important Context - END OF PREVIOUS SCENE:
-{previous_scene_context}
----
-
-Write out the standard Action, Dialogue, and Character blocks for this scene.
-
-Output ONLY valid JSON matching this schema for the blocks:
-{{
-  "blocks": [
-    {{
-      "block_type": "scene_heading" | "action" | "character" | "parenthetical" | "dialogue" | "transition",
-      "content": "Text content of the block. If character, just the name. If dialogue, just the words.",
-      "character_name": "Used only if block is dialogue or parenthetical",
-      "parenthetical": "Used only if block is dialogue and there is a parenthetical"
-    }}
-  ]
-}}
-
-Format rules:
-- Ensure strict JSON formatting. No markdown code blocks around the response, just the raw JSON object.
-"""
-
-            blocks_text = _run_gemini(client, draft_prompt)
-            
-            cleaned_blocks = blocks_text.strip()
-            if cleaned_blocks.startswith("```"):
-                lines = cleaned_blocks.splitlines()
-                if lines[0].startswith("```"):
-                    lines = lines[1:]
-                if lines and lines[-1].strip() == "```":
-                    lines = lines[:-1]
-                cleaned_blocks = "\n".join(lines).strip()
-                
+            prompt = build_block_prompt(
+                type_config,
+                context.format,
+                scene,
+                characters_text,
+                previous_context,
+                genres=basics_dict.get("genres") or [],
+            )
+            status = "complete"
+            rows = []
             try:
-                parsed_blocks = json.loads(cleaned_blocks)
-            except json.JSONDecodeError:
-                start_obj = cleaned_blocks.find('{')
-                end_obj = cleaned_blocks.rfind('}')
-                start_arr = cleaned_blocks.find('[')
-                end_arr = cleaned_blocks.rfind(']')
-                
-                start_idx = -1
-                end_idx = -1
-                if start_obj != -1 and (start_arr == -1 or start_obj < start_arr):
-                    start_idx = start_obj
-                    end_idx = end_obj
-                elif start_arr != -1:
-                    start_idx = start_arr
-                    end_idx = end_arr
-                    
-                if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-                    try:
-                        parsed_blocks = json.loads(cleaned_blocks[start_idx:end_idx+1])
-                    except Exception:
-                        parsed_blocks = []
-                else:
-                    parsed_blocks = []
+                reply = await asyncio.to_thread(_run_gemini, client, prompt)
+                rows = normalize_blocks(parse_model_json(reply), type_config)
+            except Exception as gen_err:
+                print(f"Block generation failed for unit {scene_id}: {gen_err}")
+            if not rows:
+                status = "failed"
 
-            if isinstance(parsed_blocks, list):
-                blocks = parsed_blocks
-            elif isinstance(parsed_blocks, dict):
-                blocks = parsed_blocks.get("blocks", [])
-            else:
-                blocks = []
-            
-            # Save the blocks
-            for idx, block in enumerate(blocks):
-                try:
-                    block_type = block.get("block_type", "action")
-                    if block_type not in ["scene_heading", "action", "dialogue", "transition", "shot", "title", "montage"]:
-                        if block_type in ["character", "parenthetical"]:
-                            block_type = "dialogue"
-                        else:
-                            block_type = "action"
+            saved = 0
+            for idx, row in enumerate(rows):
+                if await asyncio.to_thread(_insert_script_block, supabase, {
+                    "project_id": project_id,
+                    "scene_id": scene_id,
+                    "sort_order": idx,
+                    **row.row(),
+                }):
+                    saved += 1
+            if rows and not saved:
+                status = "failed"
 
-                    supabase.table("script_blocks").insert({
-                        "project_id": project_id,
-                        "scene_id": scene_id,
-                        "block_type": block_type,
-                        "content": block.get("content", ""),
-                        "character_name": block.get("character_name"),
-                        "parenthetical": block.get("parenthetical"),
-                        "sort_order": idx
-                    }).execute()
-                except Exception as b_err:
-                    print(f"Failed to insert background script block: {b_err}")
-            
-            # Mark scene as complete
             try:
-                supabase.table("scenes").update({"status": "complete"}).eq("id", scene_id).execute()
-            except Exception as e:
-                pass
-            
-            # Store in unified object
-            scene_copy = dict(scene)
-            scene_copy["blocks"] = blocks
-            consolidated_screenplay["scenes"].append(scene_copy)
-            
-            # Extract last 10 lines to pass as context to the next scene so dialogue/plot flows smoothly.
-            if blocks and len(blocks) > 0:
-                last_blocks = blocks[-10:] if len(blocks) > 10 else blocks
-                previous_scene_context = "\n".join(
-                    [f"[{b.get('block_type', '').upper()}] {b.get('character_name', '')}: {b.get('content', '')}" if b.get('block_type') == 'dialogue' else f"[{b.get('block_type', '').upper()}] {b.get('content', '')}" for b in last_blocks]
-                )
-            else:
-                previous_scene_context = f"End of scene: {slugline}"
-            
-            # Add small sleep to prevent replicate API rate limit violations.
+                supabase.table("scenes").update({"status": status}).eq("id", scene_id).execute()
+            except Exception as status_err:
+                print(f"Error updating unit status to {status}: {status_err}")
+
+            consolidated_script["scenes"].append({
+                "slugline_raw": scene.get("slugline_raw") or scene.get("title") or "",
+                "blocks": [row.row() for row in rows],
+            })
+            previous_context = blocks_context(rows) or f"End of {leaf_label}: {scene.get('title') or scene.get('slugline_raw') or ''}"
+
+            # Small pause to stay under Replicate rate limits.
             await asyncio.sleep(2)
 
         try:
-            extracted_characters = _extract_script_characters(client, consolidated_screenplay)
-            _persist_script_characters(supabase, project_id, extracted_characters)
+            extracted_characters = await asyncio.to_thread(
+                _extract_script_characters, client, consolidated_script, type_config.character_types
+            )
+            await asyncio.to_thread(_persist_script_characters, supabase, project_id, extracted_characters)
         except Exception as extraction_error:
             print(f"Character extraction failed: {extraction_error}")
-            
-        # Optional: Render out the full json string and save to project_documents.
-        try:
-            full_script_str = json.dumps(consolidated_screenplay)
-            supabase.table("project_documents").insert({
-                "project_id": project_id,
-                "type": "script",
-                "title": "Generated Script",
-                "content": full_script_str,
-                "metadata": {"source": f"{get_settings().gemini_model}-progressive"}
-            }).execute()
-        except:
-            pass
-            
+
     except Exception as worker_err:
         print(f"Background worker failed: {worker_err}")
 
-        # Finally, save consolidated full file to project_documents
-        try:
-            fallback_client = get_supabase_client()
-            if fallback_client is not None:
-                fallback_client.table("project_documents").insert({
-                    "project_id": project_id,
-                    "type": "script",
-                    "title": "Generated Screenplay",
-                    "content": json.dumps(consolidated_screenplay),
-                    "metadata": {"source": f"{get_settings().gemini_model}-progressive"}
-                }).execute()
-        except Exception as block_save_err:
-            print(f"Failed consolidating complete screenplay: {block_save_err}")
+    # Store the compiled script (screenplay, two-column, treatment or instructional)
+    # as the project's script document, whatever happened above.
+    try:
+        compiled = await asyncio.to_thread(compile_project_script, project_id)
+        await asyncio.to_thread(save_compiled_script, compiled)
+    except Exception as save_err:
+        print(f"Failed to save compiled script document: {save_err}")

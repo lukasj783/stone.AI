@@ -1,8 +1,10 @@
 import concurrent.futures
+import logging
 import os
 import re
 import uuid
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -16,13 +18,22 @@ from schemas.image_generation import (
 )
 from services.image_generation_service import generate_provider_images
 from services.project_visual_style import ProjectVisualStyle, apply_visual_style, load_project_visual_style
+from services.script_config import ProjectTypeConfig, load_project_script_context
+from services.storyboard_shot_planner import ShotPlanningError, plan_scene_shots
 
+
+logger = logging.getLogger(__name__)
 
 STORYBOARD_MODEL = "nanobanana"
 
-# One screenplay action line maps to exactly one storyboard frame. These knobs only
-# bound cost and reference payloads; they never change that 1:1 mapping.
+# Screenplay lines are first broken into a shot list, then every shot renders one frame.
+# A language model plans the shots (STORYBOARD_SHOT_PLANNER, on by default); when it is
+# off or fails, each line falls back to exactly one shot. These knobs bound cost and
+# reference payloads.
 DEFAULT_MAX_ACTION_FRAMES = 24
+DEFAULT_MAX_SHOTS = 36
+SHOT_PLANNER_LLM = "llm"
+SHOT_PLANNER_DETERMINISTIC = "deterministic"
 DEFAULT_CHARACTER_VIEW_ORDER = ("front", "left_three_quarter")
 DEFAULT_MAX_REFERENCE_IMAGES = 6
 
@@ -145,17 +156,56 @@ def _block_text(block: dict[str, Any]) -> str:
     return str(block.get("content") or "").strip()
 
 
-def _action_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [block for block in blocks if _block_type(block) == ACTION_BLOCK_TYPE and _block_text(block)]
+@dataclass(frozen=True)
+class StoryboardVocabulary:
+    """Which block types become storyboard beats for a project type.
+
+    visual_types:   blocks that describe what is seen (action, b_roll, product_shot...)
+    speaker_types:  spoken blocks that get an on-camera speaker frame when no visual
+                    covers them (dialogue, interview)
+    fallback_types: spoken blocks used as visual beats only when a unit has no
+                    visual blocks at all (narration-only explainer sections)
+    """
+
+    visual_types: frozenset[str] = frozenset({ACTION_BLOCK_TYPE})
+    speaker_types: frozenset[str] = frozenset({DIALOGUE_BLOCK_TYPE})
+    fallback_types: frozenset[str] = frozenset()
+    labels: tuple[tuple[str, str], ...] = ()
+    production: str = "Film"
+
+    def label(self, block_type: str) -> str:
+        return dict(self.labels).get(block_type) or block_type.replace("_", " ").title()
 
 
-def _has_adjacent_action(blocks: list[dict[str, Any]], index: int) -> bool:
-    """True when the dialogue block at *index* sits inside a run of action beats."""
+SCREENPLAY_VOCABULARY = StoryboardVocabulary()
+
+
+def storyboard_vocabulary(type_config: ProjectTypeConfig) -> StoryboardVocabulary:
+    spoken = [block for block in type_config.block_types if block.is_spoken]
+    return StoryboardVocabulary(
+        visual_types=type_config.visual_block_keys,
+        speaker_types=frozenset(block.key for block in spoken if block.speaker_role == "required"),
+        fallback_types=frozenset(block.key for block in spoken if block.speaker_role != "required"),
+        labels=tuple((block.key, block.label) for block in type_config.block_types),
+        production=type_config.label,
+    )
+
+
+def _action_blocks(
+    blocks: list[dict[str, Any]], vocabulary: StoryboardVocabulary = SCREENPLAY_VOCABULARY
+) -> list[dict[str, Any]]:
+    return [block for block in blocks if _block_type(block) in vocabulary.visual_types and _block_text(block)]
+
+
+def _has_adjacent_action(
+    blocks: list[dict[str, Any]], index: int, visual_types: frozenset[str] = frozenset({ACTION_BLOCK_TYPE})
+) -> bool:
+    """True when the spoken block at *index* sits inside a run of visual beats."""
     for step in (-1, 1):
         cursor = index + step
         while 0 <= cursor < len(blocks):
             neighbour_type = _block_type(blocks[cursor])
-            if neighbour_type == ACTION_BLOCK_TYPE:
+            if neighbour_type in visual_types:
                 if _block_text(blocks[cursor]):
                     return True
             elif neighbour_type in BEAT_BOUNDARY_BLOCK_TYPES:
@@ -167,35 +217,61 @@ def _has_adjacent_action(blocks: list[dict[str, Any]], index: int) -> bool:
 def _build_scene_beats(
     blocks: list[dict[str, Any]],
     include_speaker_frames: bool = True,
+    vocabulary: StoryboardVocabulary = SCREENPLAY_VOCABULARY,
 ) -> list[dict[str, Any]]:
-    """Map screenplay blocks to storyboard beats: one action line -> exactly one beat.
+    """Map script blocks to storyboard beats: one visual block -> exactly one beat.
 
-    Dialogue never renders a frame on its own image content. It only adds a
-    speaker-presence beat when no action line covers that beat visually, which keeps
-    dialogue-only scenes storyboarded without leaking dialogue text into prompts.
+    Spoken blocks never render their words. Dialogue and interview answers only add a
+    speaker-presence beat when no visual block covers that moment, which keeps
+    talking-head scenes storyboarded without leaking speech into prompts. Units with
+    no visual blocks at all (a narration-only section) fall back to one beat per
+    narration line, illustrating what it describes.
     """
     beats: list[dict[str, Any]] = []
     for index, block in enumerate(blocks):
         block_type = _block_type(block)
-        if block_type == ACTION_BLOCK_TYPE:
+        if block_type in vocabulary.visual_types:
             text = _block_text(block)
             if not text:
                 continue
-            beats.append({"kind": "action", "block": block, "text": text, "speaker": ""})
+            beats.append({
+                "kind": "action", "block": block, "text": text, "speaker": "",
+                "block_type": block_type, "label": vocabulary.label(block_type),
+            })
             continue
 
-        if block_type != DIALOGUE_BLOCK_TYPE or not include_speaker_frames:
+        if block_type not in vocabulary.speaker_types or not include_speaker_frames:
             continue
         if str(block.get("dialogue_mode") or "normal").strip().lower() != "normal":
             continue
-        if _has_adjacent_action(blocks, index):
+        if _has_adjacent_action(blocks, index, vocabulary.visual_types):
             continue
         speaker = str(block.get("character_name") or "").strip()
         if not speaker:
             continue
         if beats and beats[-1]["kind"] == "speaker" and beats[-1]["speaker"].casefold() == speaker.casefold():
             continue
-        beats.append({"kind": "speaker", "block": block, "text": f"{speaker} speaks", "speaker": speaker})
+        beats.append({
+            "kind": "speaker",
+            "block": block,
+            "text": f"{speaker} {'answers on camera' if block_type == 'interview' else 'speaks'}",
+            "speaker": speaker,
+            "block_type": block_type,
+            "label": vocabulary.label(block_type),
+        })
+
+    if not any(beat["kind"] == "action" for beat in beats) and vocabulary.fallback_types:
+        fallback = [
+            {
+                "kind": "action", "block": block, "text": _block_text(block), "speaker": "",
+                "block_type": _block_type(block),
+                "label": f"Visual illustrating this {vocabulary.label(_block_type(block)).lower()} (show it, do not write it)",
+            }
+            for block in blocks
+            if _block_type(block) in vocabulary.fallback_types and _block_text(block)
+        ]
+        if fallback:
+            return fallback
     return beats
 
 
@@ -372,40 +448,181 @@ FRAME_PROMPT_GUARDRAIL = (
 )
 
 
-def _build_frames_from_action_lines(
+def _deterministic_shot_plan(beat: dict[str, Any], is_first_action: bool) -> dict[str, Any]:
+    """One shot for one beat, with no language model involved."""
+    if beat["kind"] == "action":
+        return {
+            "beats": [beat],
+            "description": beat["text"],
+            "camera_angle": "wide establishing shot" if is_first_action else "medium shot",
+            "beat_line": f"{str(beat.get('label') or 'Action').upper()}: {beat['text']}",
+            "speaker": None,
+            "character_labels": [],
+            "prop_labels": [],
+            "planner": SHOT_PLANNER_DETERMINISTIC,
+        }
+    speaker = beat["speaker"]
+    return {
+        "beats": [beat],
+        "description": beat["text"],
+        "camera_angle": SPEAKER_FRAME_CAMERA_ANGLE,
+        "beat_line": (
+            f"BEAT: {speaker} answers an interview question, seated, looking just off camera "
+            "towards an unseen interviewer, mouth open mid-sentence."
+            if beat.get("block_type") == "interview"
+            else f"BEAT: {speaker} is speaking, mouth open, mid-sentence, "
+            "facing the camera or their scene partner."
+        ),
+        "speaker": speaker,
+        "character_labels": [speaker],
+        "prop_labels": [],
+        "planner": SHOT_PLANNER_DETERMINISTIC,
+    }
+
+
+def _deterministic_shot_plans(beats: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    plans: list[dict[str, Any]] = []
+    seen_action = False
+    for beat in beats:
+        plans.append(_deterministic_shot_plan(beat, is_first_action=beat["kind"] == "action" and not seen_action))
+        seen_action = seen_action or beat["kind"] == "action"
+    return plans
+
+
+def _planner_script_lines(
+    blocks: list[dict[str, Any]], beats: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Render the scene for the planner: beats are numbered, everything else is context."""
+    number_by_block = {id(beat["block"]): index + 1 for index, beat in enumerate(beats)}
+    lines: list[dict[str, Any]] = []
+    for block in blocks:
+        text = _block_text(block)
+        number = number_by_block.get(id(block))
+        if not text and not number:
+            continue
+        label = _block_type(block).replace("_", " ").upper()
+        speaker = str(block.get("character_name") or "").strip()
+        if speaker:
+            label = f"{label} ({speaker})"
+        lines.append({"number": number, "label": label, "text": text})
+    return lines
+
+
+def _trim_shot_plans(plans: list[dict[str, Any]], max_shots: int) -> list[dict[str, Any]]:
+    """Drop surplus shots from the end, never leaving a script line without a shot."""
+    trimmed = list(plans)
+    index = len(trimmed) - 1
+    while len(trimmed) > max_shots and index >= 0:
+        others = {
+            id(beat)
+            for position, plan in enumerate(trimmed)
+            if position != index
+            for beat in plan["beats"]
+        }
+        if all(id(beat) in others for beat in trimmed[index]["beats"]):
+            trimmed.pop(index)
+        index -= 1
+    return trimmed
+
+
+def _plan_scene_shots(
     beats: list[dict[str, Any]],
+    scene: dict[str, Any],
+    blocks: list[dict[str, Any]],
+    characters: list[dict[str, Any]] | None,
+    objects: list[dict[str, Any]] | None,
+    production: str = "Film",
+) -> tuple[list[dict[str, Any]], str, str | None]:
+    """Turn script beats into an ordered shot list.
+
+    Returns ``(plans, planner, planner_error)``. Every beat is covered by at least one
+    shot whichever planner ran: lines the language model skipped get a deterministic
+    shot, and a failed planner call falls back to one shot per line.
+    """
+    if not _env_flag("STORYBOARD_SHOT_PLANNER", True):
+        return _deterministic_shot_plans(beats), SHOT_PLANNER_DETERMINISTIC, None
+
+    # The cap never drops below the line count, so each line always keeps a shot.
+    max_shots = max(_env_int("STORYBOARD_MAX_SHOTS", DEFAULT_MAX_SHOTS), len(beats))
+    try:
+        raw_plans = plan_scene_shots(
+            scene_heading=str(
+                scene.get("slugline_raw") or scene.get("title") or scene.get("location") or "Untitled scene"
+            ),
+            production=production,
+            script_lines=_planner_script_lines(blocks, beats),
+            character_names=[str(c["name"]) for c in characters or [] if c.get("name")],
+            prop_names=[str(o["name"]) for o in objects or [] if o.get("name")],
+            max_shots=max_shots,
+        )
+    except ShotPlanningError as error:
+        logger.warning("Storyboard shot planner failed; using one shot per line: %s", error)
+        return _deterministic_shot_plans(beats), SHOT_PLANNER_DETERMINISTIC, str(error)
+
+    plans: list[dict[str, Any]] = []
+    covered: set[int] = set()
+    for raw in raw_plans:
+        covered.update(raw["lines"])
+        plans.append({
+            "beats": [beats[number - 1] for number in raw["lines"]],
+            "first_line": raw["lines"][0],
+            "description": raw["description"],
+            "camera_angle": f"{raw['shot_size']}, {raw['camera_angle']}",
+            "beat_line": f"SHOT: {raw['description']}",
+            "speaker": None,
+            "character_labels": raw["characters"],
+            "prop_labels": raw["props"],
+            "planner": SHOT_PLANNER_LLM,
+        })
+    for index, beat in enumerate(beats):
+        if index + 1 not in covered:
+            plans.append({
+                **_deterministic_shot_plan(beat, is_first_action=False),
+                "first_line": index + 1,
+            })
+    plans.sort(key=lambda plan: plan["first_line"])
+    return _trim_shot_plans(plans, max_shots), SHOT_PLANNER_LLM, None
+
+
+def _shot_characters(plan: dict[str, Any], characters: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Resolve who is visible: the planner's cast list, then names in the shot text."""
+    matched: list[dict[str, Any]] = []
+
+    def add(found: list[dict[str, Any]]) -> None:
+        for character in found:
+            if not any(character is existing for existing in matched):
+                matched.append(character)
+
+    for label in plan["character_labels"]:
+        add(_match_character_by_label(label, characters))
+    add(_match_characters(plan["description"], characters))
+    if not matched:
+        add(_match_characters(" ".join(beat["text"] for beat in plan["beats"]), characters))
+    return matched
+
+
+def _build_frames_from_shot_plans(
+    plans: list[dict[str, Any]],
     scene: dict[str, Any],
     characters: list[dict[str, Any]] | None = None,
     environment: dict[str, Any] | None = None,
     objects: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Build deterministic frame specs so every action line yields exactly one frame."""
+    """Build one frame spec per planned shot. Prompt wording is assembled here, not by a model."""
     view_order = _env_csv("STORYBOARD_CHARACTER_VIEWS", DEFAULT_CHARACTER_VIEW_ORDER)
     max_references = max(0, _env_int("STORYBOARD_MAX_REFERENCE_IMAGES", DEFAULT_MAX_REFERENCE_IMAGES))
     location_text = _describe_location(scene, environment)
 
     frames: list[dict[str, Any]] = []
-    action_index = 0
-    for beat in beats:
-        block = beat["block"]
-        if beat["kind"] == "action":
-            matched_characters = _match_characters(beat["text"], characters)
-            camera_angle = "wide establishing shot" if action_index == 0 else "medium shot"
-            action_index += 1
-            description = beat["text"]
-            beat_line = f"ACTION: {beat['text']}"
-            speaker = None
-        else:
-            speaker = beat["speaker"]
-            matched_characters = _match_character_by_label(speaker, characters)
-            camera_angle = SPEAKER_FRAME_CAMERA_ANGLE
-            description = beat["text"]
-            beat_line = (
-                f"BEAT: {speaker} is speaking, mouth open, mid-sentence, "
-                "facing the camera or their scene partner."
-            )
-
-        matched_objects = _match_objects(beat["text"], objects)
+    for plan in plans:
+        source_blocks = [beat["block"] for beat in plan["beats"]]
+        block = source_blocks[0]
+        speaker = plan["speaker"]
+        camera_angle = plan["camera_angle"]
+        description = plan["description"]
+        beat_line = plan["beat_line"]
+        matched_characters = _shot_characters(plan, characters)
+        matched_objects = _match_objects(" ".join([description, *plan["prop_labels"]]), objects)
 
         reference_urls: list[str] = []
         for character in matched_characters:
@@ -441,8 +658,10 @@ def _build_frames_from_action_lines(
             "prompt": "\n".join(prompt_parts),
             "image_references": reference_urls,
             "source_block_id": block.get("id"),
+            "source_block_ids": [b.get("id") for b in source_blocks if b.get("id")],
             "source_block_type": _block_type(block),
-            "source_text": _block_text(block),
+            "source_text": " ".join(text for text in (_block_text(b) for b in source_blocks) if text),
+            "planner": plan["planner"],
             "character_ids": [character["id"] for character in matched_characters if character.get("id")],
             "characters": [
                 _character_labels(character)
@@ -454,21 +673,47 @@ def _build_frames_from_action_lines(
 
 
 def _storyboard_matches_script(shots: list[dict[str, Any]], beats: list[dict[str, Any]]) -> bool:
-    """Reuse only when every stored shot maps 1:1 onto the current storyboard beats."""
-    if not shots or len(shots) != len(beats):
+    """Reuse only when the stored shots cover exactly the current beats, in script order.
+
+    A beat may be covered by several shots and a shot may cover several beats, so this
+    compares coverage rather than counts. Any beat edited after its shot was created
+    makes the storyboard stale.
+    """
+    if not shots or not beats:
         return False
-    stored_ids = [(shot.get("metadata") or {}).get("source_block_id") for shot in shots]
     expected_ids = [beat["block"].get("id") for beat in beats]
-    if any(not block_id for block_id in stored_ids) or any(not block_id for block_id in expected_ids):
+    if any(not block_id for block_id in expected_ids):
         return False
-    if stored_ids != expected_ids:
-        return False
-    for shot, beat in zip(shots, beats):
-        block_updated = _parse_timestamp(beat["block"].get("updated_at"))
-        shot_created = _parse_timestamp(shot.get("created_at"))
-        if block_updated and shot_created and block_updated > shot_created:
+    position = {block_id: index for index, block_id in enumerate(expected_ids)}
+    updated_at = {beat["block"].get("id"): _parse_timestamp(beat["block"].get("updated_at")) for beat in beats}
+
+    covered: set[Any] = set()
+    previous_first = -1
+    for shot in shots:
+        block_ids = _shot_source_block_ids(shot)
+        if not block_ids or any(block_id not in position for block_id in block_ids):
             return False
-    return True
+        first = min(position[block_id] for block_id in block_ids)
+        if first < previous_first:
+            return False
+        previous_first = first
+        covered.update(block_ids)
+        shot_created = _parse_timestamp(shot.get("created_at"))
+        for block_id in block_ids:
+            block_updated = updated_at[block_id]
+            if block_updated and shot_created and block_updated > shot_created:
+                return False
+    return covered == set(expected_ids)
+
+
+def _shot_source_block_ids(shot: dict[str, Any]) -> list[Any]:
+    """Script blocks a stored shot was planned from (older shots stored a single id)."""
+    metadata = shot.get("metadata") or {}
+    block_ids = metadata.get("source_block_ids")
+    if isinstance(block_ids, list) and block_ids:
+        return [block_id for block_id in block_ids if block_id]
+    single = metadata.get("source_block_id")
+    return [single] if single else []
 
 
 def _rows(result: Any) -> list[dict[str, Any]]:
@@ -721,17 +966,27 @@ def generate_scene_storyboard(
 ) -> GenerateStoryboardResponse:
     """Build durable storyboard stills for one screenplay scene.
 
-    Every screenplay action line produces exactly one storyboard frame, in script order.
-    No language model decides the shot count or the prompt wording.
+    The scene's action lines are broken into a shot list, then each shot renders one
+    frame, in script order. A language model plans the shots; the image prompt wording
+    is still assembled deterministically from each shot.
     """
     supabase = require_supabase_client()
 
     scene_result = supabase.table("scenes").select(
-        "id, project_id, slugline_raw, location, time_of_day, summary"
+        "id, project_id, slugline_raw, title, unit_type, is_leaf, location, time_of_day, summary"
     ).eq("id", scene_id).eq("project_id", project_id).execute()
     if not _rows(scene_result):
         raise ValueError("Scene was not found in this project")
     scene = _rows(scene_result)[0]
+
+    type_config = load_project_script_context(project_id).type_config
+    if scene.get("is_leaf") is False:
+        raise ValueError(
+            f"Storyboards are made per {type_config.leaf_unit.label.lower()}; "
+            f"pick a {type_config.leaf_unit.label.lower()} instead of a {scene.get('unit_type')}"
+        )
+    vocabulary = storyboard_vocabulary(type_config)
+
     blocks_result = supabase.table("script_blocks").select(
         "id, block_type, content, character_id, character_name, parenthetical, dialogue_mode, sort_order, updated_at"
     ).eq("project_id", project_id).eq("scene_id", scene_id).order("sort_order").execute()
@@ -740,34 +995,40 @@ def generate_scene_storyboard(
     beats = _build_scene_beats(
         blocks,
         include_speaker_frames=_env_flag("STORYBOARD_SPEAKER_PRESENCE_FRAMES", True),
+        vocabulary=vocabulary,
     )
     if not beats:
-        raise ValueError("Scene has no action lines to storyboard")
+        raise ValueError(f"This {type_config.leaf_unit.label.lower()} has no visual lines to storyboard")
+
+    max_action_frames = _env_int("STORYBOARD_MAX_ACTION_FRAMES", DEFAULT_MAX_ACTION_FRAMES)
+    capped_beats, truncated = _apply_action_frame_cap(beats, max_action_frames)
 
     if not force_regenerate:
-        existing = _existing_storyboard(project_id, scene_id, beats)
+        existing = _existing_storyboard(project_id, scene_id, capped_beats)
         if existing:
             return existing
 
     visual_style = load_project_visual_style(project_id, supabase)
     characters, environment, objects = _gather_scene_linked_entities(project_id, scene_id, blocks)
 
-    max_action_frames = _env_int("STORYBOARD_MAX_ACTION_FRAMES", DEFAULT_MAX_ACTION_FRAMES)
-    capped_beats, truncated = _apply_action_frame_cap(beats, max_action_frames)
-    planned_frames = _build_frames_from_action_lines(capped_beats, scene, characters, environment, objects)
+    shot_plans, shot_planner, planner_error = _plan_scene_shots(
+        capped_beats, scene, blocks, characters, objects, production=vocabulary.production
+    )
+    planned_frames = _build_frames_from_shot_plans(shot_plans, scene, characters, environment, objects)
 
-    action_blocks = _action_blocks(blocks)
-    expected_action_frames = len(action_blocks)
-    if max_action_frames > 0:
-        expected_action_frames = min(expected_action_frames, max_action_frames)
-    planned_action_frames = sum(1 for frame in planned_frames if frame["source_block_type"] == ACTION_BLOCK_TYPE)
-    if planned_action_frames != expected_action_frames:
+    action_blocks = _action_blocks(blocks, vocabulary)
+    covered_block_ids = {block_id for frame in planned_frames for block_id in frame["source_block_ids"]}
+    missing_beats = [
+        beat for beat in capped_beats
+        if beat["block"].get("id") and beat["block"]["id"] not in covered_block_ids
+    ]
+    if missing_beats:
         raise RuntimeError(
-            "Storyboard mapping broke: every action line must produce exactly one frame "
-            f"(expected {expected_action_frames}, got {planned_action_frames})"
+            "Storyboard mapping broke: every script line must be covered by at least one shot "
+            f"({len(missing_beats)} of {len(capped_beats)} lines have none)"
         )
 
-    # Replacing the shots guarantees the stored storyboard maps 1:1 onto the current script.
+    # Replacing the shots guarantees the stored storyboard covers the current script.
     _clear_storyboard_shots(project_id, scene_id)
 
     shots_result = supabase.table("shots").insert([
@@ -783,8 +1044,10 @@ def generate_scene_storyboard(
             "sort_order": index,
             "metadata": {
                 "source_block_id": frame["source_block_id"],
+                "source_block_ids": frame["source_block_ids"],
                 "source_block_type": frame["source_block_type"],
                 "source_text": frame["source_text"],
+                "planner": frame["planner"],
                 "character_ids": frame["character_ids"],
                 "characters": frame["characters"],
                 "image_references": frame["image_references"],
@@ -807,6 +1070,8 @@ def generate_scene_storyboard(
             "action_block_count": len(action_blocks),
             "max_action_frames": max_action_frames,
             "truncated": truncated,
+            "shot_planner": shot_planner,
+            "shot_planner_error": planner_error,
             "prompts": [frame["prompt"] for frame in planned_frames],
         },
         "status": "running",
@@ -876,6 +1141,7 @@ def generate_scene_storyboard(
         scene_id=scene_id,
         generation_job_id=job_id,
         status="partial" if has_failure and any(frame.image_url for frame in response_frames) else status,
+        shot_planner=shot_planner,
         frames=response_frames,
     )
 

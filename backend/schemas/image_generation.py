@@ -139,6 +139,8 @@ class GenerateStoryboardResponse(BaseModel):
     generation_job_id: str | None = None
     status: str
     reused: bool = False
+    # "llm" when a language model planned the shot list, "deterministic" for one shot per line.
+    shot_planner: str | None = None
     frames: list[StoryboardFrame]
 
 
