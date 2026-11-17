@@ -282,5 +282,32 @@ class StoryboardVocabularyTests(unittest.TestCase):
         self.assertEqual(vocab.speaker_types, frozenset({"dialogue"}))
 
 
+class ScriptSchemaTests(unittest.TestCase):
+    def test_non_film_units_and_blocks_validate(self) -> None:
+        from schemas.script import CreativeBrief, GenerateScriptResponse
+
+        response = GenerateScriptResponse.model_validate({
+            "project_type": "documentary",
+            "script_format": "av_two_column",
+            "scenes": [{
+                "slugline_raw": "The farm",
+                "unit_type": "scene",
+                "title": "The farm",
+                "parent_title": "Roots",
+                "duration_seconds": 40,
+                "blocks": [
+                    {"block_type": "interview", "content": "Since I was ten.", "character_name": "AMINA",
+                     "metadata": {"timestamp": "00:02:15"}},
+                    {"block_type": "b_roll", "content": "Mist over the maize."},
+                ],
+            }],
+        })
+        self.assertEqual(response.scenes[0].blocks[0].metadata, {"timestamp": "00:02:15"})
+        self.assertEqual(response.scenes[0].parent_title, "Roots")
+        # A unit with no slugline (an ad or lesson section) is still valid.
+        self.assertEqual(GenerateScriptResponse.model_validate({"scenes": [{"title": "Hook"}]}).scenes[0].slugline_raw, "")
+        self.assertEqual(CreativeBrief.model_validate({"visualStyle": "Bright, clean"}).visualStyle, "Bright, clean")
+
+
 if __name__ == "__main__":
     unittest.main()

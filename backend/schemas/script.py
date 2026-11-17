@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -129,6 +129,8 @@ class ObjectProfileResponse(BaseModel):
 
 
 class MovieBasics(BaseModel):
+    """Basics from the idea form. endingType only matters for narrative (film) projects."""
+
     projectType: Literal["Feature Film", "Short", "Series"] | str = "Feature Film"
     duration: str = "120 min"
     genres: list[str] = Field(default_factory=list)
@@ -152,20 +154,24 @@ class GenerateOutlineResponse(BaseModel):
 
 
 class CreativeBrief(BaseModel):
-    """Brief used by non-narrative video types to drive script generation."""
+    """Brief used by non-narrative video types (music video, documentary,
+    advertisement, explainer, educational) to drive script generation."""
 
     concept: str = ""
     keyMoments: list[str] = Field(default_factory=list)
     targetAudience: str = ""
     references: str = ""
     duration: str = ""
+    visualStyle: str = ""
 
 
 class GenerateScriptPayload(BaseModel):
     project_id: str
-    # Narrative projects send a generated outline; non-narrative video types
-    # (music video, documentary, advertisement) send a creative brief instead.
+    # Narrative projects (feature/short film) send a generated outline; every other
+    # project type sends a creative brief instead.
     outline: str = ""
+    # Informational only: the project's stored project_type decides the script
+    # format, unit types and block types.
     video_type: str | None = None
     brief: CreativeBrief | None = None
     basics: MovieBasics | None = None
@@ -173,20 +179,40 @@ class GenerateScriptPayload(BaseModel):
 
 
 class ScriptBlockSchema(BaseModel):
-    block_type: Literal["scene_heading", "action", "character", "parenthetical", "dialogue", "transition"]
+    # Any key from script_blocks types allowed for the project's type: screenplay
+    # blocks (action, dialogue...), documentary (narration, interview, b_roll...),
+    # advertisement (visual, product_shot, voice_over...), educational (quiz...)...
+    # The database rejects types the project type does not allow.
+    block_type: str
     content: str
     character_name: str | None = None
     parenthetical: str | None = None
     dialogue_mode: str | None = None
+    # Type-specific data, e.g. an interview's timestamp or a quiz's options.
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ScriptSceneSchema(BaseModel):
-    slugline_raw: str
+    """One script unit that holds content: a film scene, a documentary or ad scene,
+    an educational section or a music video segment.
+
+    slugline_raw is the screenplay scene heading ("INT. KITCHEN - NIGHT"); units in
+    other formats have no slugline, so it carries their title instead.
+    """
+
+    slugline_raw: str = ""
+    unit_type: str = "scene"
+    title: str | None = None
+    parent_title: str | None = None
+    summary: str | None = None
     location_type: str | None = None
     location: str | None = None
     time_of_day: str | None = None
-    blocks: list[ScriptBlockSchema]
+    duration_seconds: float | None = None
+    blocks: list[ScriptBlockSchema] = Field(default_factory=list)
 
 
 class GenerateScriptResponse(BaseModel):
+    project_type: str | None = None
+    script_format: str | None = None
     scenes: list[ScriptSceneSchema]

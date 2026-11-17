@@ -979,6 +979,8 @@ async def generate_script(payload: GenerateScriptPayload, background_tasks: Back
                 brief_lines.append(f"- References: {brief.references.strip()}")
             if brief.duration.strip():
                 brief_lines.append(f"- Duration: {brief.duration.strip()}")
+            if brief.visualStyle.strip():
+                brief_lines.append(f"- Visual style: {brief.visualStyle.strip()}")
         brief_text = "\n".join(brief_lines)
 
         # The project type (not the request) decides the structure: which unit types
@@ -1055,14 +1057,23 @@ async def generate_script(payload: GenerateScriptPayload, background_tasks: Back
         response_scenes = [
             {
                 "slugline_raw": s.get("slugline_raw") or s.get("title") or "",
+                "unit_type": s.get("unit_type") or type_config.leaf_unit.key,
+                "title": s.get("title"),
+                "parent_title": s.get("parent_title"),
+                "summary": s.get("summary"),
                 "location_type": s.get("location_type"),
                 "location": s.get("location"),
                 "time_of_day": s.get("time_of_day"),
+                "duration_seconds": s.get("duration_seconds"),
                 "blocks": [],
             }
             for s in scenes_inserted
         ]
-        return GenerateScriptResponse(scenes=response_scenes)
+        return GenerateScriptResponse(
+            project_type=type_config.key,
+            script_format=context.format.key,
+            scenes=response_scenes,
+        )
 
     except HTTPException:
         raise
