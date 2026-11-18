@@ -16,6 +16,10 @@ import {
   SetCharacterStyleRequest,
   SetCharacterStyleResponse,
   StoryboardFrame,
+  EntityReference,
+  EntityReferencesResponse,
+  GenerateEntityReferencesResponse,
+  ReferenceEntityType,
 } from '@/lib/types/image-generation';
 
 
@@ -463,4 +467,60 @@ export async function generateEnvironmentImageFromUpload(
   }
 
   return response.json() as Promise<CreateImageResponse>;
+}
+
+async function entityReferenceRequest<T>(path: string, init: RequestInit, fallback: string): Promise<T> {
+  const response = await fetch(`${getApiBaseUrl()}/api/image/entity-references${path}`, init);
+  if (!response.ok) {
+    let message = `${fallback} (status ${response.status})`;
+    try {
+      const errorPayload = await response.json();
+      if (typeof errorPayload?.detail === 'string') message = errorPayload.detail;
+    } catch {
+      // Keep the status-based message.
+    }
+    throw new Error(message);
+  }
+  return (response.status === 204 ? undefined : await response.json()) as T;
+}
+
+/** List an environment's or object's reference images and the angles that can be generated. */
+export function listEntityReferences(projectId: string, entityType: ReferenceEntityType, entityId: string): Promise<EntityReferencesResponse> {
+  return entityReferenceRequest(`/${entityType}/${entityId}?project_id=${encodeURIComponent(projectId)}`, { method: 'GET' }, 'Failed to load reference images');
+}
+
+/** Add the user's own image to the gallery, optionally tagged with an angle. */
+export function uploadEntityReference(projectId: string, entityType: ReferenceEntityType, entityId: string, image: File, angle?: string): Promise<EntityReference> {
+  const form = new FormData();
+  form.append('image', image);
+  form.append('project_id', projectId);
+  form.append('entity_type', entityType);
+  form.append('entity_id', entityId);
+  if (angle) form.append('angle', angle);
+  return entityReferenceRequest('/upload', { method: 'POST', body: form }, 'Reference upload failed');
+}
+
+/** Generate new angles from the main image so they show the same place or object. */
+export function generateEntityReferences(projectId: string, entityType: ReferenceEntityType, entityId: string, angles: string[]): Promise<GenerateEntityReferencesResponse> {
+  return entityReferenceRequest('/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project_id: projectId, entity_type: entityType, entity_id: entityId, angles, model: 'nanobanana', provider: 'replicate' }),
+  }, 'Reference generation failed');
+}
+
+export function deleteEntityReference(projectId: string, entityType: ReferenceEntityType, entityId: string, assetId: string): Promise<void> {
+  return entityReferenceRequest('/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project_id: projectId, entity_type: entityType, entity_id: entityId, asset_id: assetId }),
+  }, 'Failed to remove reference');
+}
+
+export function setEntityPrimaryReference(projectId: string, entityType: ReferenceEntityType, entityId: string, assetId: string): Promise<void> {
+  return entityReferenceRequest('/primary', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project_id: projectId, entity_type: entityType, entity_id: entityId, asset_id: assetId }),
+  }, 'Failed to set main image');
 }

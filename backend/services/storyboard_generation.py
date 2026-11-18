@@ -19,6 +19,11 @@ from schemas.image_generation import (
 from services.image_generation_service import generate_provider_images
 from services.project_visual_style import ProjectVisualStyle, apply_visual_style, load_project_visual_style
 from services.script_config import ProjectTypeConfig, load_project_script_context
+from services.storyboard_references import (
+    FACE_CLOSEUP_VIEW,
+    build_frame_references,
+    describe_references,
+)
 from services.storyboard_shot_planner import ShotPlanningError, plan_scene_shots
 
 
@@ -34,8 +39,7 @@ DEFAULT_MAX_ACTION_FRAMES = 24
 DEFAULT_MAX_SHOTS = 36
 SHOT_PLANNER_LLM = "llm"
 SHOT_PLANNER_DETERMINISTIC = "deterministic"
-DEFAULT_CHARACTER_VIEW_ORDER = ("front", "left_three_quarter")
-DEFAULT_MAX_REFERENCE_IMAGES = 6
+DEFAULT_MAX_REFERENCE_IMAGES = 10
 
 ACTION_BLOCK_TYPE = "action"
 DIALOGUE_BLOCK_TYPE = "dialogue"
@@ -59,14 +63,6 @@ def _env_flag(name: str, default: bool) -> bool:
     if raw is None or not raw.strip():
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _env_csv(name: str, default: Sequence[str]) -> tuple[str, ...]:
-    raw = os.getenv(name)
-    if raw is None:
-        return tuple(default)
-    items = tuple(part.strip() for part in raw.split(",") if part.strip())
-    return items or tuple(default)
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -397,19 +393,6 @@ def _character_labels(character: dict[str, Any]) -> dict[str, Any]:
 
 
 
-def _character_reference_urls(character: dict[str, Any], view_order: Sequence[str]) -> list[str]:
-    views = character.get("views") or {}
-    ordered = [views[view] for view in view_order if views.get(view)]
-    ordered.extend(url for view, url in views.items() if view not in view_order and url)
-    if not ordered and character.get("image_url"):
-        ordered.append(str(character["image_url"]))
-    urls: list[str] = []
-    for url in ordered:
-        if url and url not in urls:
-            urls.append(str(url))
-    return urls
-
-
 def _describe_character(character: dict[str, Any], name_override: str | None = None) -> str:
     name = str(name_override or character.get("name") or "Unknown Character").strip()
     descriptors: list[str] = []
@@ -455,9 +438,11 @@ def _deterministic_shot_plan(beat: dict[str, Any], is_first_action: bool) -> dic
             "beats": [beat],
             "description": beat["text"],
             "camera_angle": "wide establishing shot" if is_first_action else "medium shot",
+            "shot_size": "wide shot" if is_first_action else "medium shot",
             "beat_line": f"{str(beat.get('label') or 'Action').upper()}: {beat['text']}",
             "speaker": None,
             "character_labels": [],
+            "character_facing": {},
             "prop_labels": [],
             "planner": SHOT_PLANNER_DETERMINISTIC,
         }
@@ -466,6 +451,7 @@ def _deterministic_shot_plan(beat: dict[str, Any], is_first_action: bool) -> dic
         "beats": [beat],
         "description": beat["text"],
         "camera_angle": SPEAKER_FRAME_CAMERA_ANGLE,
+        "shot_size": SPEAKER_FRAME_CAMERA_ANGLE,
         "beat_line": (
             f"BEAT: {speaker} answers an interview question, seated, looking just off camera "
             "towards an unseen interviewer, mouth open mid-sentence."
@@ -475,6 +461,7 @@ def _deterministic_shot_plan(beat: dict[str, Any], is_first_action: bool) -> dic
         ),
         "speaker": speaker,
         "character_labels": [speaker],
+        "character_facing": {},
         "prop_labels": [],
         "planner": SHOT_PLANNER_DETERMINISTIC,
     }
@@ -568,9 +555,11 @@ def _plan_scene_shots(
             "first_line": raw["lines"][0],
             "description": raw["description"],
             "camera_angle": f"{raw['shot_size']}, {raw['camera_angle']}",
+            "shot_size": raw["shot_size"],
             "beat_line": f"SHOT: {raw['description']}",
             "speaker": None,
             "character_labels": raw["characters"],
+            "character_facing": raw.get("character_facing") or {},
             "prop_labels": raw["props"],
             "planner": SHOT_PLANNER_LLM,
         })
@@ -601,6 +590,20 @@ def _shot_characters(plan: dict[str, Any], characters: list[dict[str, Any]] | No
     return matched
 
 
+def _shot_character_facing(
+    plan: dict[str, Any],
+    matched: list[dict[str, Any]],
+    characters: list[dict[str, Any]] | None,
+) -> dict[int, str | None]:
+    """Map each visible character (by identity) to the facing the planner gave them."""
+    facing_by_character: dict[int, str | None] = {}
+    for label, facing in (plan.get("character_facing") or {}).items():
+        for character in _match_character_by_label(label, characters):
+            if any(character is visible for visible in matched):
+                facing_by_character.setdefault(id(character), facing)
+    return facing_by_character
+
+
 def _build_frames_from_shot_plans(
     plans: list[dict[str, Any]],
     scene: dict[str, Any],
@@ -609,7 +612,6 @@ def _build_frames_from_shot_plans(
     objects: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Build one frame spec per planned shot. Prompt wording is assembled here, not by a model."""
-    view_order = _env_csv("STORYBOARD_CHARACTER_VIEWS", DEFAULT_CHARACTER_VIEW_ORDER)
     max_references = max(0, _env_int("STORYBOARD_MAX_REFERENCE_IMAGES", DEFAULT_MAX_REFERENCE_IMAGES))
     location_text = _describe_location(scene, environment)
 
@@ -624,20 +626,15 @@ def _build_frames_from_shot_plans(
         matched_characters = _shot_characters(plan, characters)
         matched_objects = _match_objects(" ".join([description, *plan["prop_labels"]]), objects)
 
-        reference_urls: list[str] = []
-        for character in matched_characters:
-            for url in _character_reference_urls(character, view_order):
-                if url not in reference_urls:
-                    reference_urls.append(url)
-        environment_url = (environment or {}).get("image_url")
-        if environment_url and str(environment_url) not in reference_urls:
-            reference_urls.append(str(environment_url))
-        for obj in matched_objects:
-            obj_url = obj.get("image_url")
-            if obj_url and str(obj_url) not in reference_urls:
-                reference_urls.append(str(obj_url))
-        if max_references:
-            reference_urls = reference_urls[:max_references]
+        references = build_frame_references(
+            matched_characters,
+            _shot_character_facing(plan, matched_characters, characters),
+            plan.get("shot_size") or camera_angle,
+            environment,
+            matched_objects,
+            max_references,
+        )
+        reference_urls = [reference.url for reference in references]
 
         prompt_parts = ["16:9 cinematic storyboard frame.", beat_line]
         if matched_characters:
@@ -648,6 +645,9 @@ def _build_frames_from_shot_plans(
         prompt_parts.append(f"LOCATION: {location_text}")
         if matched_objects:
             prompt_parts.append("PROPS: " + ", ".join(str(o.get("name")) for o in matched_objects))
+        reference_lines = describe_references(references)
+        if reference_lines:
+            prompt_parts.append(reference_lines)
         prompt_parts.append(f"CAMERA: {camera_angle}, {STATIC_CAMERA_MOTION}.")
         prompt_parts.append(FRAME_PROMPT_GUARDRAIL)
 
@@ -865,6 +865,73 @@ def _persist_frame_image(
     return image_url
 
 
+def _character_views_from_links(
+    links: list[dict[str, Any]],
+    asset_urls: dict[str, str],
+    latest_generation_job_id: object = None,
+) -> dict[str, str]:
+    """Map view name to URL for one character, preferring its latest turnaround.
+
+    ``links`` arrive oldest first, so later links overwrite earlier ones; links from the
+    character's latest generation are applied last so an older set never wins.
+    """
+    def is_latest(link: dict[str, Any]) -> bool:
+        metadata = link.get("metadata") or {}
+        return bool(latest_generation_job_id) and metadata.get("generation_job_id") == latest_generation_job_id
+
+    views: dict[str, str] = {}
+    for link in sorted(links, key=is_latest):
+        url = asset_urls.get(str(link.get("asset_id") or ""))
+        if not url:
+            continue
+        if link.get("role") == FACE_CLOSEUP_VIEW:
+            views[FACE_CLOSEUP_VIEW] = url
+        else:
+            views[(link.get("metadata") or {}).get("view") or "front"] = url
+    return views
+
+
+def _entity_galleries(
+    supabase: Any,
+    project_id: str,
+    target_type: str,
+    entities: list[dict[str, Any]],
+) -> dict[str, list[dict[str, str]]]:
+    """Reference images per environment or prop: main image first, then the gallery."""
+    ids = [entity["id"] for entity in entities if entity.get("id")]
+    if not ids:
+        return {}
+    links = _rows(supabase.table("asset_links").select("target_id, asset_id, metadata").eq(
+        "project_id", project_id
+    ).eq("target_type", target_type).eq("role", "reference").in_("target_id", ids).order("created_at").execute())
+    asset_ids = {str(link["asset_id"]) for link in links if link.get("asset_id")}
+    asset_ids.update(str(entity["primary_asset_id"]) for entity in entities if entity.get("primary_asset_id"))
+    urls: dict[str, str] = {}
+    if asset_ids:
+        urls = {
+            str(asset["id"]): str(asset["url"])
+            for asset in _rows(supabase.table("assets").select("id, url").in_("id", list(asset_ids)).execute())
+        }
+    return {entity["id"]: _entity_gallery(entity, links, urls) for entity in entities if entity.get("id")}
+
+
+def _entity_gallery(
+    entity: dict[str, Any],
+    links: list[dict[str, Any]],
+    urls: dict[str, str],
+) -> list[dict[str, str]]:
+    primary_id = str(entity.get("primary_asset_id") or "")
+    gallery: list[dict[str, str]] = []
+    if primary_id in urls:
+        gallery.append({"url": urls[primary_id], "angle": "primary"})
+    for link in links:
+        asset_id = str(link.get("asset_id") or "")
+        if link.get("target_id") != entity["id"] or asset_id == primary_id or asset_id not in urls:
+            continue
+        gallery.append({"url": urls[asset_id], "angle": str((link.get("metadata") or {}).get("angle") or "custom")})
+    return gallery
+
+
 def _gather_scene_linked_entities(
     project_id: str, scene_id: str, blocks: list[dict[str, Any]]
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None, list[dict[str, Any]]]:
@@ -885,9 +952,13 @@ def _gather_scene_linked_entities(
     project_characters = _rows(chars_res)
     if project_characters:
         char_ids = [c["id"] for c in project_characters]
-        links_res = supabase.table("asset_links").select("target_id, asset_id, metadata").eq(
+        # Only turnaround keyframes and the face close-up are references; a composed
+        # character sheet is for people and must never reach the image model.
+        links_res = supabase.table("asset_links").select("target_id, asset_id, role, metadata").eq(
             "project_id", project_id
-        ).eq("target_type", "character").eq("role", "keyframe").in_("target_id", char_ids).execute()
+        ).eq("target_type", "character").in_("role", ["keyframe", FACE_CLOSEUP_VIEW]).in_(
+            "target_id", char_ids
+        ).order("created_at").execute()
         links = _rows(links_res)
 
         asset_ids = [link["asset_id"] for link in links if link.get("asset_id")]
@@ -897,18 +968,15 @@ def _gather_scene_linked_entities(
             assets_res = supabase.table("assets").select("id, url").in_("id", asset_ids).execute()
             assets_dict = {a["id"]: a["url"] for a in _rows(assets_res)}
 
-        links_by_char: dict[str, dict[str, str]] = {}
-        for link in links:
-            c_id = link["target_id"]
-            view = (link.get("metadata") or {}).get("view") or "front"
-            url = assets_dict.get(link["asset_id"])
-            if url:
-                links_by_char.setdefault(c_id, {})[view] = url
-
         for c in project_characters:
+            metadata = c.get("metadata") if isinstance(c.get("metadata"), dict) else {}
             characters_out.append({
                 **c,
-                "views": links_by_char.get(c["id"], {}),
+                "views": _character_views_from_links(
+                    [link for link in links if link.get("target_id") == c["id"]],
+                    assets_dict,
+                    metadata.get("latest_generation_job_id"),
+                ),
                 "image_url": assets_dict.get(str(c.get("primary_asset_id") or "")),
             })
 
@@ -928,30 +996,26 @@ def _gather_scene_linked_entities(
             all_envs[0],
         )
         if matched_env:
-            env_url = None
-            if matched_env.get("primary_asset_id"):
-                env_url = _maybe_single_data(
-                    supabase.table("assets").select("url").eq("id", matched_env["primary_asset_id"]).maybe_single().execute()
-                ).get("url")
+            galleries = _entity_galleries(supabase, project_id, "environment", [matched_env])
+            gallery = galleries.get(matched_env["id"], [])
             environment_out = {
                 **matched_env,
-                "image_url": env_url,
+                "image_url": gallery[0]["url"] if gallery else None,
+                "references": gallery,
             }
 
     # 3. Objects / Props
     objects_out: list[dict[str, Any]] = []
-    objs_res = supabase.table("props").select(
+    props = _rows(supabase.table("props").select(
         "id, name, description, tags, primary_asset_id"
-    ).eq("project_id", project_id).execute()
-    for obj in _rows(objs_res):
-        obj_url = None
-        if obj.get("primary_asset_id"):
-            obj_url = _maybe_single_data(
-                supabase.table("assets").select("url").eq("id", obj["primary_asset_id"]).maybe_single().execute()
-            ).get("url")
+    ).eq("project_id", project_id).execute())
+    prop_galleries = _entity_galleries(supabase, project_id, "prop", props)
+    for obj in props:
+        gallery = prop_galleries.get(obj["id"], [])
         objects_out.append({
             **obj,
-            "image_url": obj_url,
+            "image_url": gallery[0]["url"] if gallery else None,
+            "references": gallery,
         })
 
     return characters_out, environment_out, objects_out

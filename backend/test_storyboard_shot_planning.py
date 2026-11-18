@@ -122,6 +122,7 @@ class ShotPlanningTests(unittest.TestCase):
             "shot_size": "medium shot",
             "camera_angle": "low angle",
             "characters": [],
+            "character_facing": {},
             "props": [],
         }])
 

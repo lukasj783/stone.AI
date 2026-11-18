@@ -187,3 +187,30 @@ export interface SetCharacterStyleResponse {
 }
 
 export type InpaintModel = 'wavespeed-ai/flux-fill-dev' | 'google/nano-banana-pro/edit';
+
+export type ReferenceEntityType = 'environment' | 'prop';
+
+/** One image in an environment's or object's reference gallery. */
+export interface EntityReference {
+  asset_id: string;
+  url: string;
+  angle: string;
+  label: string;
+  is_primary: boolean;
+}
+
+export interface EntityReferenceAngle {
+  angle: string;
+  label: string;
+}
+
+export interface EntityReferencesResponse {
+  references: EntityReference[];
+  available_angles: EntityReferenceAngle[];
+}
+
+export interface GenerateEntityReferencesResponse {
+  references: EntityReference[];
+  /** Angle key -> error message for angles that could not be generated. */
+  failed: Record<string, string>;
+}

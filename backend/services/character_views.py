@@ -438,6 +438,12 @@ def attach_generation_to_character(
     if not primary_asset_id:
         raise RuntimeError("Generated character is missing a front view")
 
+    # A face close-up was generated from the previous views; unlink it so storyboards never
+    # pair an old face with the new turnaround. The character sheet regenerates it.
+    supabase.table("asset_links").delete().eq("project_id", project_id).eq("target_type", "character").eq(
+        "target_id", character_id
+    ).eq("role", "face_closeup").execute()
+
     character_result = supabase.table("characters").select("metadata").eq("id", character_id).eq(
         "project_id", project_id
     ).single().execute()

@@ -10,6 +10,7 @@ import json
 from typing import Any
 
 from services.gemini_client import GeminiError, run_gemini
+from services.storyboard_references import FACINGS, normalize_facing
 
 
 PLANNER_DEADLINE_SECONDS = 120.0
@@ -89,6 +90,7 @@ Rules:
 - "shot_size" must be one of: {", ".join(SHOT_SIZES)}.
 - "camera_angle" must be one of: {", ".join(CAMERA_ANGLES)}.
 - "characters" lists the KNOWN CHARACTERS visible in the shot. "props" lists the KNOWN PROPS visible in the shot.
+- "character_facing" maps each listed character to the direction they face relative to the camera, one of: {", ".join(FACINGS)}. Screen left/right are as the audience sees the frame. In an over-the-shoulder shot the foreground character is "away from camera".
 
 Output ONLY valid JSON matching this schema, with no markdown fences:
 {{
@@ -99,6 +101,7 @@ Output ONLY valid JSON matching this schema, with no markdown fences:
       "shot_size": "wide shot",
       "camera_angle": "eye level",
       "characters": ["NAME"],
+      "character_facing": {{"NAME": "toward camera"}},
       "props": []
     }}
   ]
@@ -169,9 +172,23 @@ def normalize_shot_plans(parsed: object, valid_line_numbers: set[int]) -> list[d
             "shot_size": _pick(raw.get("shot_size"), SHOT_SIZES, DEFAULT_SHOT_SIZE),
             "camera_angle": _pick(raw.get("camera_angle"), CAMERA_ANGLES, DEFAULT_CAMERA_ANGLE),
             "characters": _string_list(raw.get("characters")),
+            "character_facing": _facing_map(raw.get("character_facing")),
             "props": _string_list(raw.get("props")),
         })
     return plans
+
+
+def _facing_map(value: Any) -> dict[str, str]:
+    """Keep only character names mapped to a known facing direction."""
+    if not isinstance(value, dict):
+        return {}
+    facing: dict[str, str] = {}
+    for name, direction in value.items():
+        label = " ".join(str(name or "").split())
+        normalized = normalize_facing(direction)
+        if label and normalized:
+            facing[label] = normalized
+    return facing
 
 
 def plan_scene_shots(
