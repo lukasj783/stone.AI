@@ -6,6 +6,8 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from schemas.image_generation import (
     CharacterKeyframe,
+    CharacterSheetResponse,
+    CreateCharacterSheetRequest,
     CharacterStylePropagation,
     CharacterView,
     CreateImageRequest,
@@ -33,6 +35,7 @@ from services.character_views import (
     persist_character_generation,
     replace_character_keyframe,
 )
+from services.character_sheet import create_character_sheet
 from services.environment_text_to_image import (
     build_script_environment_prompt,
     load_script_environment,
@@ -405,6 +408,27 @@ async def regenerate_character_keyframe(
         raise HTTPException(status_code=500, detail=str(error)) from error
     except Exception as error:
         raise HTTPException(status_code=500, detail=f"Character keyframe regeneration failed: {error}") from error
+
+
+@router.post("/character-sheet", response_model=CharacterSheetResponse)
+async def generate_character_sheet(payload: CreateCharacterSheetRequest) -> CharacterSheetResponse:
+    """Compose one sheet image: large face close-up, six-view turnaround, palette, and profile."""
+    try:
+        result = await asyncio.to_thread(
+            create_character_sheet,
+            payload.project_id,
+            payload.character_id,
+            payload.model,
+            payload.provider,
+            payload.regenerate_face,
+        )
+        return CharacterSheetResponse(**result)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except (ReplicateConfigurationError, WaveSpeedServiceError) as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Character sheet creation failed: {error}") from error
 
 
 @router.post("/character-finalize", response_model=FinalizeCharacterResponse)

@@ -887,7 +887,7 @@ def _gather_scene_linked_entities(
         char_ids = [c["id"] for c in project_characters]
         links_res = supabase.table("asset_links").select("target_id, asset_id, metadata").eq(
             "project_id", project_id
-        ).eq("target_type", "character").in_("target_id", char_ids).execute()
+        ).eq("target_type", "character").eq("role", "keyframe").in_("target_id", char_ids).execute()
         links = _rows(links_res)
 
         asset_ids = [link["asset_id"] for link in links if link.get("asset_id")]

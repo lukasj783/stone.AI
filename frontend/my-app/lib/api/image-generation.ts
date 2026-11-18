@@ -1,6 +1,8 @@
 import {
   CharacterKeyframe,
+  CharacterSheetResponse,
   CharacterView,
+  CreateCharacterSheetRequest,
   CreateImageRequest,
   CreateImageResponse,
   FinalizeCharacterRequest,
@@ -225,6 +227,28 @@ export async function generateScriptCharacterImages(
   }
 
   return response.json() as Promise<CreateImageResponse>;
+}
+
+/** Compose one sheet image (face close-up, turnaround, palette, profile) for a character. */
+export async function createCharacterSheet(payload: CreateCharacterSheetRequest): Promise<CharacterSheetResponse> {
+  const response = await fetch(`${getApiBaseUrl()}/api/image/character-sheet`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    let message = `Character sheet creation failed with status ${response.status}`;
+    try {
+      const errorPayload = await response.json();
+      if (typeof errorPayload?.detail === 'string') message = errorPayload.detail;
+    } catch {
+      // Keep the status-based message.
+    }
+    throw new Error(message);
+  }
+
+  return response.json() as Promise<CharacterSheetResponse>;
 }
 
 export async function generateScriptEnvironmentImage(

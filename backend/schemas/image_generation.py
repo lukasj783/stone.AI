@@ -158,6 +158,26 @@ class FinalizeCharacterResponse(BaseModel):
     primary_asset_id: str
 
 
+class CreateCharacterSheetRequest(BaseModel):
+    project_id: str = Field(min_length=1)
+    character_id: str = Field(min_length=1)
+    model: str = Field(default="nanobanana")
+    provider: str = Field(default="replicate")
+    regenerate_face: bool = False
+
+
+class CharacterSheetResponse(BaseModel):
+    character_id: str
+    sheet_asset_id: str
+    sheet_url: str
+    face_closeup_asset_id: str | None = None
+    face_closeup_url: str
+    width: int
+    height: int
+    palette: list[str] = Field(default_factory=list)
+    missing_views: list[str] = Field(default_factory=list)
+
+
 class SetCharacterStyleRequest(BaseModel):
     project_id: str = Field(min_length=1)
     character_id: str = Field(min_length=1)

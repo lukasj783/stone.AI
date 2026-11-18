@@ -136,6 +136,27 @@ export interface FinalizeCharacterResponse {
   primary_asset_id: string;
 }
 
+export interface CreateCharacterSheetRequest {
+  project_id: string;
+  character_id: string;
+  model?: string;
+  provider?: string;
+  /** Generate a new face close-up even when the stored one still matches the views. */
+  regenerate_face?: boolean;
+}
+
+export interface CharacterSheetResponse {
+  character_id: string;
+  sheet_asset_id: string;
+  sheet_url: string;
+  face_closeup_asset_id: string | null;
+  face_closeup_url: string;
+  width: number;
+  height: number;
+  palette: string[];
+  missing_views: string[];
+}
+
 export interface SetCharacterStyleRequest {
   project_id: string;
   character_id: string;
