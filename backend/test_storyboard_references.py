@@ -226,3 +226,15 @@ class TierCapTests(unittest.TestCase):
     def test_minor_prop_stays_at_one_image_in_close_up(self) -> None:
         refs = build_frame_references([], {}, "close-up", None, [{**PROP_GALLERY, "tier": "minor"}], 10)
         self.assertEqual(_views(refs), ["prop: Revolver, detail view"])
+
+
+class CharacterTierTests(unittest.TestCase):
+    def test_character_views_follow_tier(self) -> None:
+        lead = {**_character("VOSS", *ALL_VIEWS), "tier": "major"}
+        extra = {**_character("CLERK", *ALL_VIEWS), "tier": "minor"}
+        side = {**_character("MARA", *ALL_VIEWS), "tier": "medium"}
+        refs = build_frame_references([lead, side, extra], {}, "close-up", None, [], 10)
+        labels = _views(refs)
+        self.assertEqual(sum(label.startswith("VOSS") for label in labels), 3)
+        self.assertEqual(sum(label.startswith("MARA") for label in labels), 2)
+        self.assertEqual([label for label in labels if label.startswith("CLERK")], ["CLERK, face close-up"])

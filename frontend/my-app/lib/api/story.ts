@@ -63,6 +63,29 @@ export interface StudioObject {
 
 export type ObjectTier = 'major' | 'medium' | 'minor';
 
+/** How central a character is: scenes they appear in and lines they speak. */
+export interface CharacterRanking {
+  character_id: string;
+  rank: number;
+  tier: ObjectTier;
+  /** scene_score + dialogue_score, 0-4. */
+  score: number;
+  scene_score: number;
+  dialogue_score: number;
+  scene_count: number;
+  dialogue_lines: number;
+  /** Other characters met on screen; breaks ties. */
+  scene_partners: string[];
+  mentioned_by_others: number;
+}
+
+/** Characters ranked from the current script, most important first. */
+export async function rankCharacters(projectId: string): Promise<CharacterRanking[]> {
+  const response = await fetch(`${getApiBaseUrl()}/api/story/characters/ranking?project_id=${encodeURIComponent(projectId)}`);
+  if (!response.ok) return readApiError(response, 'Failed to rank characters');
+  return response.json() as Promise<CharacterRanking[]>;
+}
+
 /** How much a location matters: scenes set there and characters who appear there. */
 export interface EnvironmentRanking {
   environment_id: string;

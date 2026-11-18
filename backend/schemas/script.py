@@ -146,6 +146,20 @@ class ObjectRankingSchema(BaseModel):
 ObjectProfileResponse.model_rebuild()
 
 
+class CharacterRankingSchema(BaseModel):
+    """How central a character is, from the scenes they appear in and the lines they speak."""
+    character_id: str
+    rank: int
+    tier: str
+    score: int
+    scene_score: int
+    dialogue_score: int
+    scene_count: int
+    dialogue_lines: int
+    scene_partners: list[str] = Field(default_factory=list)
+    mentioned_by_others: int
+
+
 class EnvironmentRankingSchema(BaseModel):
     """How much a location matters, from the scenes set there and the characters who appear there."""
     environment_id: str

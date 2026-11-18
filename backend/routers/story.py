@@ -12,6 +12,7 @@ from core.supabase_client import get_supabase_client, require_supabase_client
 from core.supabase_records import as_records, maybe_single_record
 from core.config import get_settings
 from schemas.script import (
+    CharacterRankingSchema,
     EnvironmentRankingSchema,
     ObjectRankingSchema,
     CharacterProfileResponse,
@@ -44,6 +45,7 @@ from schemas.image_generation import (
 )
 from services.storyboard_generation import generate_scene_storyboard, regenerate_single_shot_frame
 from services.character_views import EDITABLE_CHARACTER_FIELDS, effective_character_profile
+from services.character_ranking import rank_characters_from_script
 from services.environment_ranking import rank_environments_from_script
 from services.object_ranking import ObjectRanking, rank_objects_from_script, rank_project_objects
 from services.gemini_client import run_gemini
@@ -793,6 +795,23 @@ async def extract_objects_from_existing_script(
         raise
     except Exception as error:
         raise HTTPException(status_code=500, detail=f"Object extraction failed: {error}") from error
+
+
+@router.get("/characters/ranking", response_model=list[CharacterRankingSchema])
+async def rank_characters(project_id: str) -> list[CharacterRankingSchema]:
+    """Characters ranked fresh from the current script, most important first."""
+    try:
+        rankings = await asyncio.to_thread(rank_characters_from_script, project_id)
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Failed to rank characters: {error}") from error
+    ordered = sorted(rankings.items(), key=lambda item: item[1].rank)
+    return [
+        CharacterRankingSchema(
+            character_id=character_id,
+            **{key: value for key, value in asdict(ranking).items() if key != "scene_ids"},
+        )
+        for character_id, ranking in ordered
+    ]
 
 
 @router.get("/environments/ranking", response_model=list[EnvironmentRankingSchema])

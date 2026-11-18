@@ -58,6 +58,8 @@ FRAMING_MEDIUM = "medium"
 FRAMING_WIDE = "wide"
 
 MAX_VIEWS_PER_CHARACTER = 3
+# Views per shot by the character's importance tier; untiered characters get the maximum.
+CHARACTER_TIER_VIEWS = {"major": 3, "medium": 2, "minor": 1}
 
 
 @dataclass(frozen=True)
@@ -225,7 +227,8 @@ def build_frame_references(
     for character in characters:
         name = str(character.get("name") or "Character").upper()
         views = select_character_views(
-            character, framing, facing_by_character.get(id(character)), MAX_VIEWS_PER_CHARACTER,
+            character, framing, facing_by_character.get(id(character)),
+            CHARACTER_TIER_VIEWS.get(str(character.get("tier")), MAX_VIEWS_PER_CHARACTER),
         )
         queues.append([ReferenceImage(url, f"{name}, {VIEW_LABELS.get(view, view.replace('_', ' '))}") for view, url in views])
     environment_images = select_entity_images(

@@ -19,6 +19,7 @@ from schemas.image_generation import (
 from services.image_generation_service import generate_provider_images
 from services.project_visual_style import ProjectVisualStyle, apply_visual_style, load_project_visual_style
 from services.script_config import ProjectTypeConfig, load_project_script_context
+from services.character_ranking import rank_characters_from_script
 from services.environment_ranking import rank_environments_from_script
 from services.object_ranking import rank_objects_from_script
 from services.storyboard_references import (
@@ -938,13 +939,19 @@ def _attach_importance_tiers(
     project_id: str,
     environment: dict[str, Any] | None,
     objects: list[dict[str, Any]],
+    characters: list[dict[str, Any]] | None = None,
 ) -> None:
-    """Tag the location and props with their major/medium/minor tier from the whole script.
+    """Tag characters, the location and props with their major/medium/minor tier from the whole script.
 
     The tier decides how many of their reference images a shot may use. Ranking is a
     refinement, so a failure leaves them untiered rather than stopping the storyboard.
     """
     try:
+        if characters:
+            character_rankings = rank_characters_from_script(project_id)
+            for character in characters:
+                ranking = character_rankings.get(str(character.get("id")))
+                character["tier"] = ranking.tier if ranking else None
         if objects:
             rankings = rank_objects_from_script(project_id, objects)
             for obj in objects:
@@ -1043,7 +1050,7 @@ def _gather_scene_linked_entities(
             "references": gallery,
         })
 
-    _attach_importance_tiers(project_id, environment_out, objects_out)
+    _attach_importance_tiers(project_id, environment_out, objects_out, characters_out)
     return characters_out, environment_out, objects_out
 
 
