@@ -57,6 +57,48 @@ export interface StudioObject {
   source_scene_ids: string[];
   source_sluglines: string[];
   primary_image_url: string | null;
+  /** Importance from the current script; null for objects the script never mentions. */
+  ranking: ObjectRanking | null;
+}
+
+export type ObjectTier = 'major' | 'medium' | 'minor';
+
+/** How much a location matters: scenes set there and characters who appear there. */
+export interface EnvironmentRanking {
+  environment_id: string;
+  rank: number;
+  tier: ObjectTier;
+  /** scene_score + character_score, 0-4. */
+  score: number;
+  scene_score: number;
+  character_score: number;
+  scene_count: number;
+  character_count: number;
+  characters: string[];
+  /** Script lines in the scenes set there; breaks ties. */
+  line_count: number;
+}
+
+/** Environments ranked from the current script, most important first. */
+export async function rankEnvironments(projectId: string): Promise<EnvironmentRanking[]> {
+  const response = await fetch(`${getApiBaseUrl()}/api/story/environments/ranking?project_id=${encodeURIComponent(projectId)}`);
+  if (!response.ok) return readApiError(response, 'Failed to rank environments');
+  return response.json() as Promise<EnvironmentRanking[]>;
+}
+
+/** How much an object matters: scenes it appears in and how often characters handle it. */
+export interface ObjectRanking {
+  rank: number;
+  tier: ObjectTier;
+  /** scene_score + interaction_score, 0-4. */
+  score: number;
+  scene_score: number;
+  interaction_score: number;
+  scene_count: number;
+  interaction_count: number;
+  mention_count: number;
+  dialogue_mentions: number;
+  interacting_characters: string[];
 }
 
 export interface ObjectProfileUpdate {

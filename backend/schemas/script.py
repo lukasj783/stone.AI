@@ -126,6 +126,38 @@ class ObjectProfileResponse(BaseModel):
     source_scene_ids: list[str] = Field(default_factory=list)
     source_sluglines: list[str] = Field(default_factory=list)
     primary_image_url: str | None = None
+    ranking: "ObjectRankingSchema | None" = None
+
+
+class ObjectRankingSchema(BaseModel):
+    """How much an object matters, from scene appearances and character interactions."""
+    rank: int
+    tier: str
+    score: int
+    scene_score: int
+    interaction_score: int
+    scene_count: int
+    interaction_count: int
+    mention_count: int
+    dialogue_mentions: int
+    interacting_characters: list[str] = Field(default_factory=list)
+
+
+ObjectProfileResponse.model_rebuild()
+
+
+class EnvironmentRankingSchema(BaseModel):
+    """How much a location matters, from the scenes set there and the characters who appear there."""
+    environment_id: str
+    rank: int
+    tier: str
+    score: int
+    scene_score: int
+    character_score: int
+    scene_count: int
+    character_count: int
+    characters: list[str] = Field(default_factory=list)
+    line_count: int
 
 
 class MovieBasics(BaseModel):

@@ -3,6 +3,7 @@ import replicate
 import uuid
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 import asyncio
+from dataclasses import asdict
 
 from supabase import Client
 from typing import Any
@@ -11,6 +12,8 @@ from core.supabase_client import get_supabase_client, require_supabase_client
 from core.supabase_records import as_records, maybe_single_record
 from core.config import get_settings
 from schemas.script import (
+    EnvironmentRankingSchema,
+    ObjectRankingSchema,
     CharacterProfileResponse,
     CharacterScriptSyncPreviewResponse,
     ConfirmCharacterScriptSyncPayload,
@@ -41,6 +44,8 @@ from schemas.image_generation import (
 )
 from services.storyboard_generation import generate_scene_storyboard, regenerate_single_shot_frame
 from services.character_views import EDITABLE_CHARACTER_FIELDS, effective_character_profile
+from services.environment_ranking import rank_environments_from_script
+from services.object_ranking import ObjectRanking, rank_objects_from_script, rank_project_objects
 from services.gemini_client import run_gemini
 from services.script_config import load_project_script_context
 from services.script_generation import (
@@ -242,7 +247,11 @@ def _normalize_object_tags(values: list[str]) -> list[str]:
     return normalized
 
 
-def _object_profile_response(prop: dict, primary_image_url: str | None = None) -> ObjectProfileResponse:
+def _object_profile_response(
+    prop: dict,
+    primary_image_url: str | None = None,
+    ranking: ObjectRanking | None = None,
+) -> ObjectProfileResponse:
     metadata = prop.get("metadata") if isinstance(prop.get("metadata"), dict) else {}
     sources = metadata.get("sources") if isinstance(metadata.get("sources"), list) else []
     overrides = metadata.get("manual_overrides") if isinstance(metadata.get("manual_overrides"), dict) else {}
@@ -256,6 +265,7 @@ def _object_profile_response(prop: dict, primary_image_url: str | None = None) -
         source_scene_ids=[value for value in metadata.get("source_scene_ids", []) if isinstance(value, str)],
         source_sluglines=[value for value in metadata.get("source_sluglines", []) if isinstance(value, str)],
         primary_image_url=primary_image_url,
+        ranking=ObjectRankingSchema(**asdict(ranking)) if ranking else None,
     )
 
 
@@ -777,11 +787,29 @@ async def extract_objects_from_existing_script(
         client = replicate.Client(api_token=settings.replicate_api_token)
         objects = await asyncio.to_thread(_extract_script_objects, client, screenplay)
         await asyncio.to_thread(_persist_script_objects, supabase, payload.project_id, objects, scenes)
+        await asyncio.to_thread(rank_project_objects, payload.project_id)
         return ExtractScriptObjectsResponse(count=len(objects))
     except HTTPException:
         raise
     except Exception as error:
         raise HTTPException(status_code=500, detail=f"Object extraction failed: {error}") from error
+
+
+@router.get("/environments/ranking", response_model=list[EnvironmentRankingSchema])
+async def rank_environments(project_id: str) -> list[EnvironmentRankingSchema]:
+    """Environments ranked fresh from the current script, most important first."""
+    try:
+        rankings = await asyncio.to_thread(rank_environments_from_script, project_id)
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Failed to rank environments: {error}") from error
+    ordered = sorted(rankings.items(), key=lambda item: item[1].rank)
+    return [
+        EnvironmentRankingSchema(
+            environment_id=environment_id,
+            **{key: value for key, value in asdict(ranking).items() if key != "scene_ids"},
+        )
+        for environment_id, ranking in ordered
+    ]
 
 
 @router.get("/objects", response_model=list[ObjectProfileResponse])
@@ -801,10 +829,14 @@ async def list_objects(project_id: str) -> list[ObjectProfileResponse]:
             else []
         )
         urls = {str(asset["id"]): str(asset["url"]) for asset in assets if isinstance(asset.get("url"), str)}
+        # Ranked fresh from the current script on every load, most important object first.
+        rankings = rank_objects_from_script(project_id, props)
+        props.sort(key=lambda prop: (rankings[str(prop["id"])].rank if str(prop["id"]) in rankings else 10**6))
         return [
             _object_profile_response(
                 prop,
                 urls.get(str(prop.get("primary_asset_id"))) if isinstance(prop.get("primary_asset_id"), str) else None,
+                rankings.get(str(prop["id"])),
             )
             for prop in props
         ]
