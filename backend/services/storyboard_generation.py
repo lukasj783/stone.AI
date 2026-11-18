@@ -22,6 +22,7 @@ from services.script_config import ProjectTypeConfig, load_project_script_contex
 from services.character_ranking import rank_characters_from_script
 from services.environment_ranking import rank_environments_from_script
 from services.object_ranking import rank_objects_from_script
+from services.storyboard_models import DEFAULT_STORYBOARD_MODEL, TEXT_ONLY_FALLBACK_MODEL, storyboard_model
 from services.storyboard_references import (
     FACE_CLOSEUP_VIEW,
     build_frame_references,
@@ -32,7 +33,8 @@ from services.storyboard_shot_planner import ShotPlanningError, plan_scene_shots
 
 logger = logging.getLogger(__name__)
 
-STORYBOARD_MODEL = "nanobanana"
+STORYBOARD_MODEL = DEFAULT_STORYBOARD_MODEL
+STORYBOARD_PROVIDER = "wavespeed"
 
 # Screenplay lines are first broken into a shot list, then every shot renders one frame.
 # A language model plans the shots (STORYBOARD_SHOT_PLANNER, on by default); when it is
@@ -1054,11 +1056,43 @@ def _gather_scene_linked_entities(
     return characters_out, environment_out, objects_out
 
 
+def _storyboard_image_request(
+    provider: str,
+    model: str,
+    prompt: str,
+    image_references: list[str],
+    project_id: str,
+) -> CreateImageRequest:
+    """Image request for one storyboard frame.
+
+    WaveSpeed storyboard models are edit endpoints that need at least one reference
+    image; a shot with none (no characters, location or props with images) is rendered
+    from text with ``TEXT_ONLY_FALLBACK_MODEL`` instead.
+    """
+    if provider == "wavespeed":
+        storyboard_model(model)  # raises ValueError for an unknown model
+        if not image_references:
+            model = TEXT_ONLY_FALLBACK_MODEL
+    return CreateImageRequest(
+        model=model,
+        provider=provider,
+        prompt=prompt,
+        aspect_ratio="16:9",
+        num_images=1,
+        resolution="1k",
+        image_search=False,
+        google_search=False,
+        output_format="jpg",
+        image_input=image_references or None,
+        project_id=project_id,
+    )
+
+
 def generate_scene_storyboard(
     project_id: str,
     scene_id: str,
     force_regenerate: bool = False,
-    provider: str = "replicate",
+    provider: str = STORYBOARD_PROVIDER,
     model: str = STORYBOARD_MODEL,
 ) -> GenerateStoryboardResponse:
     """Build durable storyboard stills for one screenplay scene.
@@ -1181,18 +1215,8 @@ def generate_scene_storyboard(
 
     def generate_image(shot: dict[str, Any], frame_meta: dict[str, Any]) -> str:
         image_inputs = frame_meta.get("image_references") or []
-        response = generate_provider_images(CreateImageRequest(
-            model=model,
-            provider=provider,
-            prompt=apply_visual_style(shot["prompt"], visual_style),
-            aspect_ratio="16:9",
-            num_images=1,
-            resolution="1k",
-            image_search=False,
-            google_search=False,
-            output_format="jpg",
-            image_input=image_inputs if image_inputs else None,
-            project_id=project_id,
+        response = generate_provider_images(_storyboard_image_request(
+            provider, model, apply_visual_style(shot["prompt"], visual_style), list(image_inputs), project_id,
         ))
         if not response.images:
             raise RuntimeError("Image model did not return a storyboard image")
@@ -1247,7 +1271,7 @@ def regenerate_single_shot_frame(
     project_id: str,
     shot_id: str,
     prompt_override: str | None = None,
-    provider: str = "replicate",
+    provider: str = STORYBOARD_PROVIDER,
     model: str = STORYBOARD_MODEL,
 ) -> StoryboardFrame:
     """Regenerate a single storyboard frame/shot."""
@@ -1289,18 +1313,8 @@ def regenerate_single_shot_frame(
     job_id = _rows(job_result)[0]["id"]
 
     try:
-        response = generate_provider_images(CreateImageRequest(
-            model=model,
-            provider=provider,
-            prompt=apply_visual_style(prompt, visual_style),
-            aspect_ratio="16:9",
-            num_images=1,
-            resolution="1k",
-            image_search=False,
-            google_search=False,
-            output_format="jpg",
-            image_input=image_references or None,
-            project_id=project_id,
+        response = generate_provider_images(_storyboard_image_request(
+            provider, model, apply_visual_style(prompt, visual_style), image_references, project_id,
         ))
         if not response.images:
             error_message = "Image model returned no image"

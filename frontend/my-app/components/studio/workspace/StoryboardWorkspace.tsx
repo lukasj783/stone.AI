@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import Image from 'next/image';
 import { 
@@ -11,6 +11,7 @@ import { supabase } from '@/lib/supabaseClient';
 import { characterTags, characterTheme } from '@/lib/characterTheme';
 import type { StoryboardCharacterLabel } from '@/lib/types/image-generation';
 import { generateSceneStoryboard, regenerateShotFrame } from '@/lib/api/image-generation';
+import { DEFAULT_STORYBOARD_MODEL, StoryboardModelPicker } from './StoryboardModelPicker';
 import {
   getShotVideoBatch,
   retryFailedShotVideos,
@@ -98,6 +99,20 @@ export function StoryboardWorkspace({
   const [editingShotId, setEditingShotId] = useState<string | null>(null);
   const [promptDraft, setPromptDraft] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
+  const [storyboardModel, setStoryboardModelState] = useState<string>(DEFAULT_STORYBOARD_MODEL);
+  // Remember the chosen model per project in this browser (a convenience; the server default still applies elsewhere).
+  useEffect(() => {
+    if (!projectId) return;
+    try {
+      const saved = window.localStorage.getItem(`storyboard-model:${projectId}`);
+      setStoryboardModelState(saved || DEFAULT_STORYBOARD_MODEL);
+    } catch { /* storage unavailable: keep the default */ }
+  }, [projectId]);
+  const setStoryboardModel = useCallback((modelId: string) => {
+    setStoryboardModelState(modelId);
+    if (!projectId) return;
+    try { window.localStorage.setItem(`storyboard-model:${projectId}`, modelId); } catch { /* storage unavailable */ }
+  }, [projectId]);
   const [videoBatch, setVideoBatch] = useState<ShotVideoBatchResponse | null>(null);
   const [isQueueingVideos, setIsQueueingVideos] = useState(false);
   const [videoDuration, setVideoDuration] = useState(5);
@@ -277,6 +292,8 @@ export function StoryboardWorkspace({
         project_id: projectId,
         scene_id: activeSceneId,
         force_regenerate: force,
+        provider: 'wavespeed',
+        model: storyboardModel,
       });
 
       clearInterval(progressInterval);
@@ -320,6 +337,8 @@ export function StoryboardWorkspace({
         project_id: projectId,
         shot_id: shot.id,
         prompt_override: promptDraft || shot.prompt || undefined,
+        provider: 'wavespeed',
+        model: storyboardModel,
       });
 
       if (res.image_url) {
@@ -437,6 +456,7 @@ export function StoryboardWorkspace({
 
             {/* Action Bar */}
             <div className="flex flex-col items-end gap-2">
+              <StoryboardModelPicker value={storyboardModel} onChange={setStoryboardModel} disabled={isGenerating || regeneratingShotId !== null} />
               <div className="flex items-center gap-3">
                 {shots.length > 0 && (
                   <button

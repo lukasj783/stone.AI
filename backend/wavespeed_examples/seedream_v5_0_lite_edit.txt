@@ -1,0 +1,133 @@
+WaveSpeed model: Seedream v5.0 Lite Edit
+Model ID:        bytedance/seedream-v5.0-lite/edit
+Model page:      https://wavespeed.ai/models/bytedance/seedream-v5.0-lite/edit
+Docs:            https://wavespeed.ai/docs/docs-api/bytedance/bytedance-seedream-v5.0-lite-edit
+REST submit:     POST https://api.wavespeed.ai/api/v3/bytedance/seedream-v5.0-lite/edit
+REST result:     GET  https://api.wavespeed.ai/api/v3/predictions/{task_id}/result
+
+Status: VERIFIED: model ID and prompt/images/output_format confirmed by WaveSpeed's own example (section 4, pasted by you). size confirmed from WaveSpeed's API docs via search results.
+
+------------------------------------------------------------------------------
+Parameters
+------------------------------------------------------------------------------
+prompt         string     required  Edit instruction / shot description.
+images         list[str]  required  Public image URLs of the reference images.
+output_format  string     optional  jpeg in WaveSpeed's example; this app also sends png.
+size           string     optional  width*height; 3,686,400-16,777,216 total pixels, ratio 1:16-16:1. Omit for automatic sizing.
+
+------------------------------------------------------------------------------
+1. Python SDK (pip install wavespeed)
+------------------------------------------------------------------------------
+import os
+import wavespeed
+
+client = wavespeed.Client(api_key=os.environ["WAVESPEED_API_KEY"])
+
+# Reference images must be public URLs. Upload local files first:
+reference_urls = [
+    client.upload("character_front.png"),
+    client.upload("location.png"),
+]
+prompt = "16:9 cinematic storyboard frame. VOSS kicks the warehouse door open."
+
+output = client.run(
+    "bytedance/seedream-v5.0-lite/edit",
+    {
+        "prompt": prompt,
+        "images": reference_urls,
+        "size": "2560*1440",               # optional, width*height (16:9)
+        "output_format": "jpeg",           # png | jpeg
+        "enable_sync_mode": False,
+        "enable_base64_output": False,
+    },
+    timeout=300,          # seconds to wait for the result (None = no limit)
+    poll_interval=1.0,    # seconds between status checks
+)
+print(output["outputs"][0])   # URL of the generated image
+
+# One-liner without a client object (reads WAVESPEED_API_KEY from the environment):
+# output = wavespeed.run("bytedance/seedream-v5.0-lite/edit", {"prompt": prompt, "images": reference_urls})
+
+------------------------------------------------------------------------------
+2. Plain REST with requests (what the SDK does under the hood)
+------------------------------------------------------------------------------
+import os
+import time
+import requests
+
+API = "https://api.wavespeed.ai/api/v3"
+HEADERS = {"Authorization": f"Bearer {os.environ['WAVESPEED_API_KEY']}", "Content-Type": "application/json"}
+
+submit = requests.post(f"{API}/bytedance/seedream-v5.0-lite/edit", headers=HEADERS, json={
+    "prompt": "A storyboard frame.",
+    "images": ["https://example.com/ref1.png"],
+    "size": "2560*1440",               # optional, width*height (16:9)
+    "output_format": "jpeg",           # png | jpeg
+    "enable_sync_mode": False,
+    "enable_base64_output": False,
+}, timeout=30)
+submit.raise_for_status()
+task_id = submit.json()["data"]["id"]
+
+while True:
+    result = requests.get(f"{API}/predictions/{task_id}/result", headers=HEADERS, timeout=30)
+    result.raise_for_status()
+    data = result.json()["data"]
+    if data["status"] == "completed":
+        print(data["outputs"][0])
+        break
+    if data["status"] in {"failed", "cancelled", "timeout", "deleted"}:
+        raise RuntimeError(data)
+    time.sleep(1)
+
+------------------------------------------------------------------------------
+3. How this app uses it
+------------------------------------------------------------------------------
+backend/services/storyboard_models.py builds this request body for storyboard frames
+(StoryboardModel.build_params) and backend/services/wavespeed_service.py sends it with
+client.run(). Extra reference images beyond the model's limit are dropped. A shot with no
+reference images is rendered with google/nano-banana-2/text-to-image instead, because edit
+models require at least one image.
+
+------------------------------------------------------------------------------
+4. Official example from the WaveSpeed model page (verbatim, as pasted)
+------------------------------------------------------------------------------
+import json
+import os
+import time
+from urllib.request import Request, urlopen
+
+api_key = os.environ["WAVESPEED_API_KEY"]
+headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+payload = {
+    "prompt": "Transform the entire scene into a miniature tilt-shift diorama. Make the subject look like a hand-painted figurine with visible brush strokes on the skin. Add a wooden display base beneath the scene. Shift the lighting to warm studio spotlights from above. Make all textures look like craft materials — felt, clay, and balsa wood.",
+    "images": [
+        "https://static.wavespeed.ai/examples/10471e7eeceda0fc8da73da394d7b274/1783683612805902901_LuoxGPZ8.webp"
+    ],
+    "output_format": "jpeg"
+}
+
+def request_json(url, data=None):
+    request = Request(url, data=data, headers=headers, method="POST" if data else "GET")
+    with urlopen(request) as response:
+        return json.load(response)
+
+# 1. Submit the prediction.
+submit_body = request_json("https://api.wavespeed.ai/api/v3/bytedance/seedream-v5.0-lite/edit", json.dumps(payload).encode())
+task = submit_body.get("data", submit_body)
+prediction_id = task.get("id")
+if not prediction_id:
+    raise RuntimeError("Submission response did not contain a prediction id")
+result_url = f"https://api.wavespeed.ai/api/v3/predictions/{prediction_id}/result"
+
+# 2. Poll until the prediction finishes.
+while True:
+    body = request_json(result_url)
+    result = body.get("data", body)
+    status = result.get("status")
+    if status == "completed":
+        print(result.get("outputs", []))
+        break
+    if status in {"failed", "cancelled", "timeout", "deleted"}:
+        raise RuntimeError(result)
+    time.sleep(2)

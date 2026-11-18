@@ -214,3 +214,17 @@ export interface GenerateEntityReferencesResponse {
   /** Angle key -> error message for angles that could not be generated. */
   failed: Record<string, string>;
 }
+
+/** A WaveSpeed image-edit model that can render storyboard frames. */
+export interface StoryboardModelOption {
+  id: string;
+  label: string;
+  family: string;
+  /** Reference images beyond this are dropped for this model. */
+  max_images: number;
+  /** False when the model's parameters were assumed from a sibling model, not confirmed. */
+  verified: boolean;
+  page_url: string;
+  notes: string;
+  is_default: boolean;
+}

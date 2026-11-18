@@ -20,6 +20,7 @@ import {
   EntityReferencesResponse,
   GenerateEntityReferencesResponse,
   ReferenceEntityType,
+  StoryboardModelOption,
 } from '@/lib/types/image-generation';
 
 
@@ -523,4 +524,11 @@ export function setEntityPrimaryReference(projectId: string, entityType: Referen
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ project_id: projectId, entity_type: entityType, entity_id: entityId, asset_id: assetId }),
   }, 'Failed to set main image');
+}
+
+/** WaveSpeed edit models available for storyboard frames, default first. */
+export async function listStoryboardModels(): Promise<StoryboardModelOption[]> {
+  const response = await fetch(`${getApiBaseUrl()}/api/story/storyboard/models`);
+  if (!response.ok) throw new Error(`Failed to load storyboard models (status ${response.status})`);
+  return response.json() as Promise<StoryboardModelOption[]>;
 }

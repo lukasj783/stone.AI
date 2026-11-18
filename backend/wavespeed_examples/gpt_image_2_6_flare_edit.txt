@@ -1,0 +1,150 @@
+WaveSpeed model: GPT Image 2.6 Flare Edit
+Model ID:        openai/gpt-image-2.6-flare/edit
+Model page:      https://wavespeed.ai/models/openai/gpt-image-2.6-flare/edit
+Docs:            https://wavespeed.ai/models/openai/gpt-image-2.6-flare/edit
+REST submit:     POST https://api.wavespeed.ai/api/v3/openai/gpt-image-2.6-flare/edit
+REST result:     GET  https://api.wavespeed.ai/api/v3/predictions/{task_id}/result
+
+Status: VERIFIED: model ID and parameter names confirmed by WaveSpeed's own example (section 4, pasted by you). Same parameters as GPT Image 2.6 Sunburst Edit. The 16-image limit and allowed values beyond the example are assumed.
+
+------------------------------------------------------------------------------
+Parameters
+------------------------------------------------------------------------------
+prompt             string     required  Edit instruction / shot description.
+images             list[str]  required  Public image URLs; up to 16 assumed, as GPT Image 2.5.
+aspect_ratio       string     optional  1:1 in WaveSpeed's example; this app sends 16:9.
+resolution         string     optional  1k in WaveSpeed's example; 2k/4k assumed.
+quality            string     optional  medium in the example; low/high/xhigh/max assumed, as 2.6 Sunburst.
+complexity         string     optional  high in the example; low/medium assumed, as 2.6 Sunburst.
+output_format      string     optional  png in the example.
+frame_count        int        optional  9 in the example. Looks like an animated multi-frame result; NOT sent by the storyboard.
+frame_duration_ms  int        optional  200 in the example. Animation timing; NOT sent by the storyboard.
+
+------------------------------------------------------------------------------
+1. Python SDK (pip install wavespeed)
+------------------------------------------------------------------------------
+import os
+import wavespeed
+
+client = wavespeed.Client(api_key=os.environ["WAVESPEED_API_KEY"])
+
+# Reference images must be public URLs. Upload local files first:
+reference_urls = [
+    client.upload("character_front.png"),
+    client.upload("location.png"),
+]
+prompt = "16:9 cinematic storyboard frame. VOSS kicks the warehouse door open."
+
+output = client.run(
+    "openai/gpt-image-2.6-flare/edit",
+    {
+        "prompt": prompt,
+        "images": reference_urls,
+        "aspect_ratio": "16:9",
+        "resolution": "1k",
+        "quality": "medium",               # low | medium | high | xhigh | max
+        "complexity": "high",              # low | medium | high
+        "output_format": "png",
+        "enable_sync_mode": False,
+        "enable_base64_output": False,
+    },
+    timeout=300,          # seconds to wait for the result (None = no limit)
+    poll_interval=1.0,    # seconds between status checks
+)
+print(output["outputs"][0])   # URL of the generated image
+
+# One-liner without a client object (reads WAVESPEED_API_KEY from the environment):
+# output = wavespeed.run("openai/gpt-image-2.6-flare/edit", {"prompt": prompt, "images": reference_urls})
+
+------------------------------------------------------------------------------
+2. Plain REST with requests (what the SDK does under the hood)
+------------------------------------------------------------------------------
+import os
+import time
+import requests
+
+API = "https://api.wavespeed.ai/api/v3"
+HEADERS = {"Authorization": f"Bearer {os.environ['WAVESPEED_API_KEY']}", "Content-Type": "application/json"}
+
+submit = requests.post(f"{API}/openai/gpt-image-2.6-flare/edit", headers=HEADERS, json={
+    "prompt": "A storyboard frame.",
+    "images": ["https://example.com/ref1.png"],
+    "aspect_ratio": "16:9",
+    "resolution": "1k",
+    "quality": "medium",               # low | medium | high | xhigh | max
+    "complexity": "high",              # low | medium | high
+    "output_format": "png",
+    "enable_sync_mode": False,
+    "enable_base64_output": False,
+}, timeout=30)
+submit.raise_for_status()
+task_id = submit.json()["data"]["id"]
+
+while True:
+    result = requests.get(f"{API}/predictions/{task_id}/result", headers=HEADERS, timeout=30)
+    result.raise_for_status()
+    data = result.json()["data"]
+    if data["status"] == "completed":
+        print(data["outputs"][0])
+        break
+    if data["status"] in {"failed", "cancelled", "timeout", "deleted"}:
+        raise RuntimeError(data)
+    time.sleep(1)
+
+------------------------------------------------------------------------------
+3. How this app uses it
+------------------------------------------------------------------------------
+backend/services/storyboard_models.py builds this request body for storyboard frames
+(StoryboardModel.build_params) and backend/services/wavespeed_service.py sends it with
+client.run(). Extra reference images beyond the model's limit are dropped. A shot with no
+reference images is rendered with google/nano-banana-2/text-to-image instead, because edit
+models require at least one image.
+
+------------------------------------------------------------------------------
+4. Official example from the WaveSpeed model page (verbatim, as pasted)
+------------------------------------------------------------------------------
+import json
+import os
+import time
+from urllib.request import Request, urlopen
+
+api_key = os.environ["WAVESPEED_API_KEY"]
+headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+payload = {
+    "prompt": "Change only her reflection into a mysterious royal version of herself wearing an elaborate silver crown and dark ceremonial dress, staring directly back at her. Preserve the woman outside the mirror exactly. ",
+    "images": [
+        "https://static.wavespeed.ai/examples/13e005eba378c8692e4f84bc27d32f7d/c474fc1d-fd28-46da-b4c9-e5472cbfe117-b1dda8a17bac.webp"
+    ],
+    "aspect_ratio": "1:1",
+    "resolution": "1k",
+    "quality": "medium",
+    "complexity": "high",
+    "output_format": "png",
+    "frame_count": 9,
+    "frame_duration_ms": 200
+}
+
+def request_json(url, data=None):
+    request = Request(url, data=data, headers=headers, method="POST" if data else "GET")
+    with urlopen(request) as response:
+        return json.load(response)
+
+# 1. Submit the prediction.
+submit_body = request_json("https://api.wavespeed.ai/api/v3/openai/gpt-image-2.6-flare/edit", json.dumps(payload).encode())
+task = submit_body.get("data", submit_body)
+prediction_id = task.get("id")
+if not prediction_id:
+    raise RuntimeError("Submission response did not contain a prediction id")
+result_url = f"https://api.wavespeed.ai/api/v3/predictions/{prediction_id}/result"
+
+# 2. Poll until the prediction finishes.
+while True:
+    body = request_json(result_url)
+    result = body.get("data", body)
+    status = result.get("status")
+    if status == "completed":
+        print(result.get("outputs", []))
+        break
+    if status in {"failed", "cancelled", "timeout", "deleted"}:
+        raise RuntimeError(result)
+    time.sleep(2)

@@ -100,16 +100,28 @@ class GenerateStoryboardRequest(BaseModel):
     project_id: str = Field(min_length=1)
     scene_id: str = Field(min_length=1)
     force_regenerate: bool = Field(default=False)
-    provider: str = Field(default="replicate")
-    model: str = Field(default="nanobanana")
+    provider: str = Field(default="wavespeed")
+    model: str = Field(default="google/nano-banana-2/edit")
 
 
 class RegenerateShotFrameRequest(BaseModel):
     project_id: str = Field(min_length=1)
     shot_id: str = Field(min_length=1)
     prompt_override: str | None = Field(default=None)
-    provider: str = Field(default="replicate")
-    model: str = Field(default="nanobanana")
+    provider: str = Field(default="wavespeed")
+    model: str = Field(default="google/nano-banana-2/edit")
+
+
+class StoryboardModelOption(BaseModel):
+    """A WaveSpeed edit model the user can pick for storyboard frames."""
+    id: str
+    label: str
+    family: str
+    max_images: int
+    verified: bool
+    page_url: str
+    notes: str
+    is_default: bool
 
 
 class StoryboardCharacter(BaseModel):

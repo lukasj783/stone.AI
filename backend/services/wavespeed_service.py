@@ -5,6 +5,7 @@ import wavespeed
 from core.supabase_client import get_supabase_client
 from schemas.image_generation import CreateImageRequest, CreateImageResponse
 from schemas.video_generation import CreateImageToVideoRequest, CreateVideoRequest, CreateMotionTransferRequest, CreateLipsyncRequest
+from services.storyboard_models import STORYBOARD_MODELS
 
 class WaveSpeedServiceError(Exception):
     pass
@@ -139,8 +140,14 @@ def generate_wavespeed_images(payload: CreateImageRequest) -> CreateImageRespons
         if input_images:
             params["images"] = input_images
 
+        storyboard_spec = STORYBOARD_MODELS.get(model_name)
+        if storyboard_spec:
+            # Storyboard edit models carry their own request shape (see storyboard_models.py).
+            params = storyboard_spec.build_params(
+                payload.prompt, input_images, payload.aspect_ratio, payload.resolution, payload.output_format,
+            )
         # Text-to-image params
-        if "nano-banana-pro/text-to-image-multi" in model_name:
+        elif "nano-banana-pro/text-to-image-multi" in model_name:
             params["aspect_ratio"] = _normalize_aspect_ratio(payload.aspect_ratio, MULTI_IMAGE_ASPECT_RATIOS)
             params["num_images"] = 2
             params["output_format"] = output_fmt

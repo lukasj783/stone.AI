@@ -41,9 +41,11 @@ from schemas.image_generation import (
     GenerateStoryboardRequest,
     GenerateStoryboardResponse,
     RegenerateShotFrameRequest,
+    StoryboardModelOption,
     StoryboardFrame,
 )
 from services.storyboard_generation import generate_scene_storyboard, regenerate_single_shot_frame
+from services.storyboard_models import DEFAULT_STORYBOARD_MODEL, STORYBOARD_MODELS
 from services.character_views import EDITABLE_CHARACTER_FIELDS, effective_character_profile
 from services.character_ranking import rank_characters_from_script
 from services.environment_ranking import rank_environments_from_script
@@ -605,6 +607,20 @@ async def update_character_profile(payload: UpdateCharacterProfilePayload) -> Ch
         raise HTTPException(status_code=404, detail=str(error)) from error
     except Exception as error:
         raise HTTPException(status_code=400, detail=f"Character profile update failed: {error}") from error
+
+
+@router.get("/storyboard/models", response_model=list[StoryboardModelOption])
+async def list_storyboard_models() -> list[StoryboardModelOption]:
+    """WaveSpeed edit models available for storyboard frames, default first."""
+    models = sorted(STORYBOARD_MODELS.values(), key=lambda model: model.id != DEFAULT_STORYBOARD_MODEL)
+    return [
+        StoryboardModelOption(
+            id=model.id, label=model.label, family=model.family, max_images=model.max_images,
+            verified=model.verified, page_url=model.page_url, notes=model.notes,
+            is_default=model.id == DEFAULT_STORYBOARD_MODEL,
+        )
+        for model in models
+    ]
 
 
 @router.post("/storyboard", response_model=GenerateStoryboardResponse)
