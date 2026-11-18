@@ -143,6 +143,22 @@ OBJECT_PRIORITY = {
     FRAMING_CLOSE: ["detail", "primary", "three_quarter", "side", "back"],
 }
 OBJECT_CAP = {FRAMING_WIDE: 1, FRAMING_MEDIUM: 2, FRAMING_CLOSE: 3}
+MAX_IMAGES_PER_ENTITY = 3
+
+
+def tier_cap(framing_cap: int, tier: object) -> int:
+    """Adjust a location's or object's image cap by how much it matters in the script.
+
+    Major ones get one extra image (up to 3), medium ones at most 2, minor ones 1.
+    Unranked ones keep the cap for the framing.
+    """
+    if tier == "major":
+        return min(MAX_IMAGES_PER_ENTITY, framing_cap + 1)
+    if tier == "medium":
+        return min(2, framing_cap)
+    if tier == "minor":
+        return 1
+    return framing_cap
 ENTITY_ANGLE_LABELS = {
     "primary": "main view",
     "wide": "extra-wide view",
@@ -213,7 +229,8 @@ def build_frame_references(
         )
         queues.append([ReferenceImage(url, f"{name}, {VIEW_LABELS.get(view, view.replace('_', ' '))}") for view, url in views])
     environment_images = select_entity_images(
-        entity_reference_images(environment), ENVIRONMENT_PRIORITY[framing], ENVIRONMENT_CAP[framing],
+        entity_reference_images(environment), ENVIRONMENT_PRIORITY[framing],
+        tier_cap(ENVIRONMENT_CAP[framing], (environment or {}).get("tier")),
     )
     queues.append([
         ReferenceImage(url, f"location, {ENTITY_ANGLE_LABELS.get(angle, angle.replace('_', ' '))}")
@@ -221,7 +238,9 @@ def build_frame_references(
     ])
     for obj in objects:
         name = str(obj.get("name") or "prop")
-        images = select_entity_images(entity_reference_images(obj), OBJECT_PRIORITY[framing], OBJECT_CAP[framing])
+        images = select_entity_images(
+            entity_reference_images(obj), OBJECT_PRIORITY[framing], tier_cap(OBJECT_CAP[framing], obj.get("tier")),
+        )
         queues.append([
             ReferenceImage(url, f"prop: {name}, {ENTITY_ANGLE_LABELS.get(angle, angle.replace('_', ' '))}")
             for angle, url in images

@@ -19,6 +19,8 @@ from schemas.image_generation import (
 from services.image_generation_service import generate_provider_images
 from services.project_visual_style import ProjectVisualStyle, apply_visual_style, load_project_visual_style
 from services.script_config import ProjectTypeConfig, load_project_script_context
+from services.environment_ranking import rank_environments_from_script
+from services.object_ranking import rank_objects_from_script
 from services.storyboard_references import (
     FACE_CLOSEUP_VIEW,
     build_frame_references,
@@ -932,6 +934,29 @@ def _entity_gallery(
     return gallery
 
 
+def _attach_importance_tiers(
+    project_id: str,
+    environment: dict[str, Any] | None,
+    objects: list[dict[str, Any]],
+) -> None:
+    """Tag the location and props with their major/medium/minor tier from the whole script.
+
+    The tier decides how many of their reference images a shot may use. Ranking is a
+    refinement, so a failure leaves them untiered rather than stopping the storyboard.
+    """
+    try:
+        if objects:
+            rankings = rank_objects_from_script(project_id, objects)
+            for obj in objects:
+                ranking = rankings.get(str(obj.get("id")))
+                obj["tier"] = ranking.tier if ranking else None
+        if environment and environment.get("id"):
+            ranking = rank_environments_from_script(project_id).get(str(environment["id"]))
+            environment["tier"] = ranking.tier if ranking else None
+    except Exception as error:
+        logger.warning("Could not rank storyboard environment and props: %s", error)
+
+
 def _gather_scene_linked_entities(
     project_id: str, scene_id: str, blocks: list[dict[str, Any]]
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None, list[dict[str, Any]]]:
@@ -1007,7 +1032,7 @@ def _gather_scene_linked_entities(
     # 3. Objects / Props
     objects_out: list[dict[str, Any]] = []
     props = _rows(supabase.table("props").select(
-        "id, name, description, tags, primary_asset_id"
+        "id, name, description, tags, primary_asset_id, metadata"
     ).eq("project_id", project_id).execute())
     prop_galleries = _entity_galleries(supabase, project_id, "prop", props)
     for obj in props:
@@ -1018,6 +1043,7 @@ def _gather_scene_linked_entities(
             "references": gallery,
         })
 
+    _attach_importance_tiers(project_id, environment_out, objects_out)
     return characters_out, environment_out, objects_out
 
 

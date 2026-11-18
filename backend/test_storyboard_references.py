@@ -207,3 +207,22 @@ class PipelineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TierCapTests(unittest.TestCase):
+    def test_tier_caps(self) -> None:
+        from services.storyboard_references import tier_cap
+        self.assertEqual([tier_cap(1, "major"), tier_cap(3, "major")], [2, 3])
+        self.assertEqual([tier_cap(3, "medium"), tier_cap(1, "medium")], [2, 1])
+        self.assertEqual(tier_cap(3, "minor"), 1)
+        self.assertEqual(tier_cap(2, None), 2)
+
+    def test_major_prop_gets_an_extra_image_and_minor_location_only_one(self) -> None:
+        prop = {**PROP_GALLERY, "tier": "major"}
+        location = {**ENVIRONMENT_GALLERY, "tier": "minor"}
+        refs = build_frame_references([], {}, "wide shot", location, [prop], 10)
+        self.assertEqual(_views(refs), ["location, main view", "prop: Revolver, main view", "prop: Revolver, side angle"])
+
+    def test_minor_prop_stays_at_one_image_in_close_up(self) -> None:
+        refs = build_frame_references([], {}, "close-up", None, [{**PROP_GALLERY, "tier": "minor"}], 10)
+        self.assertEqual(_views(refs), ["prop: Revolver, detail view"])
