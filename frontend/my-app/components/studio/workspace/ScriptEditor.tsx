@@ -1382,7 +1382,7 @@ export function ScriptEditor({ projectId }: ScriptProps) {
             </div>
           )}
 
-          <div className="w-full max-w-200 min-w-175 bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl p-12 min-h-full font-mono text-sm leading-relaxed text-zinc-300">
+          <div className="w-full max-w-200 min-w-175 shrink-0 bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl p-12 min-h-full font-mono text-sm leading-relaxed text-zinc-300">
             {isLoading ? (
               <div className="flex flex-col items-center justify-center pt-20">
                 <RefreshCw className="h-8 w-8 animate-spin text-zinc-500 mb-4" />
