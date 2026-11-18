@@ -142,3 +142,26 @@ class WaveSpeedCallTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FrameEncodingTests(unittest.TestCase):
+    def test_png_frames_become_bounded_jpegs(self) -> None:
+        import io
+        from PIL import Image
+        buffer = io.BytesIO()
+        Image.new("RGB", (2752, 1536), (40, 60, 110)).save(buffer, "PNG")
+        out, width, height = sg._storyboard_frame_jpeg(buffer.getvalue())
+        with Image.open(io.BytesIO(out)) as decoded:
+            self.assertEqual(decoded.format, "JPEG")
+        self.assertEqual((width, height), (1920, 1072))
+
+    def test_small_frames_are_not_upscaled(self) -> None:
+        import io
+        from PIL import Image
+        buffer = io.BytesIO()
+        Image.new("RGBA", (1344, 768), (0, 0, 0, 0)).save(buffer, "PNG")
+        _, width, height = sg._storyboard_frame_jpeg(buffer.getvalue())
+        self.assertEqual((width, height), (1344, 768))
+
+    def test_undecodable_bytes_are_kept(self) -> None:
+        self.assertEqual(sg._storyboard_frame_jpeg(b"not an image"), (b"not an image", None, None))

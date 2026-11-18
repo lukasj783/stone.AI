@@ -621,6 +621,9 @@ export function StoryboardWorkspace({
                           fill
                           className="object-cover transition-transform duration-300 group-hover:scale-[1.02]"
                           sizes="(max-width: 768px) 100vw, (max-width: 1280px) 50vw, 33vw"
+                          // Load straight from Supabase like the other studio images: the Next.js
+                          // optimizer times out (500) fetching large frames from storage.
+                          unoptimized
                         />
                       ) : (
                         <div className="flex h-full flex-col items-center justify-center gap-2 text-xs text-zinc-500">

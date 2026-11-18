@@ -1,4 +1,5 @@
 import concurrent.futures
+import io
 import logging
 import os
 import re
@@ -9,6 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
+from PIL import Image
 
 from core.supabase_client import require_supabase_client
 from schemas.image_generation import (
@@ -820,6 +822,29 @@ def _existing_storyboard(
     )
 
 
+STORYBOARD_FRAME_MAX_SIDE = 1920
+STORYBOARD_FRAME_JPEG_QUALITY = 88
+
+
+def _storyboard_frame_jpeg(content: bytes) -> tuple[bytes, int | None, int | None]:
+    """Re-encode a model output as a real JPEG, at most 1920px on the long side.
+
+    Models return PNG or JPEG at up to ~2.7K; storing those bytes as-is made frames
+    several megabytes (a 2752x1536 PNG was 6.8 MB), too slow for the browser and for
+    Next.js image optimization. If the bytes cannot be decoded they are stored unchanged.
+    """
+    try:
+        with Image.open(io.BytesIO(content)) as image:
+            frame = image.convert("RGB")
+        frame.thumbnail((STORYBOARD_FRAME_MAX_SIDE, STORYBOARD_FRAME_MAX_SIDE), Image.Resampling.LANCZOS)
+        buffer = io.BytesIO()
+        frame.save(buffer, "JPEG", quality=STORYBOARD_FRAME_JPEG_QUALITY, optimize=True, progressive=True)
+        return buffer.getvalue(), frame.width, frame.height
+    except Exception as error:  # noqa: BLE001 - keep the frame even if it cannot be re-encoded
+        logger.warning("Could not re-encode storyboard frame; storing original bytes: %s", error)
+        return content, None, None
+
+
 def _persist_frame_image(
     project_id: str,
     scene_id: str,
@@ -831,9 +856,10 @@ def _persist_frame_image(
     supabase = require_supabase_client()
     download = httpx.get(source_url, timeout=60.0)
     download.raise_for_status()
+    frame_bytes, width, height = _storyboard_frame_jpeg(download.content)
     storage_path = f"storyboards/{scene_id}/{job_id}/{output_index}_{uuid.uuid4().hex}.jpg"
     supabase.storage.from_("output-images").upload(
-        file=download.content,
+        file=frame_bytes,
         path=storage_path,
         file_options={"content-type": "image/jpeg"},
     )
@@ -846,6 +872,9 @@ def _persist_frame_image(
         "url": image_url,
         "storage_path": storage_path,
         "mime_type": "image/jpeg",
+        "size_bytes": len(frame_bytes),
+        "width": width,
+        "height": height,
         "metadata": {"storyboard": True, "scene_id": scene_id, "shot_id": shot["id"]},
     }).execute()
     if not _rows(asset_result):
