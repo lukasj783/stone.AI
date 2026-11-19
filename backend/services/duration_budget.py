@@ -177,6 +177,23 @@ def target_unit_count(target_seconds: int, project_type: str, pacing: str = "") 
     return min(high, max(low, aim))
 
 
+# On long runtimes the planning model delivers about 70% of the scene count it is
+# asked for (measured with the real model: 1-2 hour films got 63-80% of the
+# target), so for those the prompt asks for this much more than the target, never
+# beyond the allowed range. Up to 30 minutes it hit the target (e.g. 24-25 of 25),
+# so shorter runtimes are asked for the target itself.
+REQUEST_FACTOR = 1.4
+REQUEST_FACTOR_FROM_SECONDS = 45 * 60
+
+
+def requested_unit_count(target_seconds: int, project_type: str, pacing: str = "") -> int:
+    """The scene count written into the prompt (the target, scaled up on long runtimes)."""
+    _, high = unit_count_range(target_seconds, project_type, pacing)
+    aim = target_unit_count(target_seconds, project_type, pacing)
+    factor = REQUEST_FACTOR if target_seconds >= REQUEST_FACTOR_FROM_SECONDS else 1.0
+    return min(high, math.floor(aim * factor + 0.5))
+
+
 def average_shot_seconds(project_type: str, pacing: str = "") -> int:
     base = AVERAGE_SHOT_SECONDS.get(project_type, DEFAULT_SHOT_SECONDS)
     factor = PACING_FACTORS.get(normalize_pacing(pacing), (1.0, 1.0))[1]
@@ -186,8 +203,8 @@ def average_shot_seconds(project_type: str, pacing: str = "") -> int:
 def plan_duration_rules(target_seconds: int, project_type: str, leaf_label: str, pacing: str = "") -> str:
     """Prompt lines that make the plan add up to the target."""
     low, high = unit_count_range(target_seconds, project_type, pacing)
-    aim = target_unit_count(target_seconds, project_type, pacing)
-    average = round(average_unit_seconds(project_type, pacing))
+    ask = requested_unit_count(target_seconds, project_type, pacing)
+    average = round(target_seconds / ask)
     leaf = leaf_label.lower()
     guidance = PACING_GUIDANCE.get(normalize_pacing(pacing))
     pacing_line = f"\n- {guidance}" if guidance else ""
@@ -195,7 +212,7 @@ def plan_duration_rules(target_seconds: int, project_type: str, leaf_label: str,
         f"Target duration: {format_seconds(target_seconds)} ({target_seconds} seconds of screen time).\n"
         f"- Give every \"{leaf}\" a realistic \"duration_seconds\" (screen time, whole seconds).\n"
         f"- The \"duration_seconds\" of all {leaf}s must add up to {target_seconds} seconds.\n"
-        f"- Plan about {aim} {leaf}s (never fewer than {low} or more than {high}); "
+        f"- Plan about {ask} {leaf}s (never fewer than {low} or more than {high}); "
         f"a typical {leaf} runs about {average} seconds.{pacing_line}"
     )
 
@@ -319,12 +336,11 @@ def budget_plan(plan: Sequence[_Unit], target_seconds: int | None) -> dict[str, 
         fill = target_seconds / len(leaves)
     weights = [leaf.duration_seconds or fill for leaf in leaves]
     drift = abs(sum(weights) - target_seconds) / target_seconds
-    if drift > DEFAULT_TOLERANCE or len(known) < len(leaves):
-        minimum = MIN_UNIT_SECONDS if MIN_UNIT_SECONDS * len(leaves) <= target_seconds else 1
-        seconds = distribute_integer(target_seconds, weights, minimum)
-        report["rescaled"] = drift > DEFAULT_TOLERANCE
-    else:
-        seconds = [int(round(w)) for w in weights]
+    # Always split the exact target in proportion to the model's lengths, so the
+    # plan adds up to the runtime to the second, however close the model was.
+    minimum = MIN_UNIT_SECONDS if MIN_UNIT_SECONDS * len(leaves) <= target_seconds else 1
+    seconds = distribute_integer(target_seconds, weights, minimum)
+    report["rescaled"] = drift > DEFAULT_TOLERANCE
     for leaf, value in zip(leaves, seconds):
         leaf.duration_seconds = float(value)
     report["planned_seconds"] = round(_sum_containers(plan))
@@ -364,16 +380,16 @@ def plan_fit_problems(
     leaves = _leaves(plan)
     leaf = leaf_label.lower()
     low, high = unit_count_range(target_seconds, project_type, pacing)
-    aim = target_unit_count(target_seconds, project_type, pacing)
+    ask = requested_unit_count(target_seconds, project_type, pacing)
     problems: list[str] = []
     if len(leaves) < low:
         problems.append(
-            f"You planned {len(leaves)} {leaf}s for {format_seconds(target_seconds)}; plan about {aim} (between {low} and {high}). "
+            f"You planned {len(leaves)} {leaf}s for {format_seconds(target_seconds)}; plan about {ask} (between {low} and {high}). "
             f"Break long {leaf}s into separate beats."
         )
     elif len(leaves) > high:
         problems.append(
-            f"You planned {len(leaves)} {leaf}s for {format_seconds(target_seconds)}; plan about {aim} (between {low} and {high}). "
+            f"You planned {len(leaves)} {leaf}s for {format_seconds(target_seconds)}; plan about {ask} (between {low} and {high}). "
             f"Merge {leaf}s that are the same continuous moment."
         )
     limit = max_unit_seconds(target_seconds, project_type, pacing)
@@ -387,17 +403,40 @@ def plan_fit_problems(
 
 
 def split_oversized_units(
-    plan: list[Any], target_seconds: int | None, project_type: str, pacing: str = ""
+    plan: list[Any],
+    target_seconds: int | None,
+    project_type: str,
+    pacing: str = "",
 ) -> int:
-    """Last resort when the model keeps planning too few, too long units: split
-    each leaf longer than ``max_unit_seconds`` into consecutive parts of about the
-    type's typical length. The parts keep the unit's brief, marked "Part i of n",
-    so the writer continues the same moment. Mutates the plan; returns how many
-    units were split."""
+    """Last resort when the model keeps planning too few or too long units.
+
+    1. Each leaf longer than ``max_unit_seconds`` is split into parts of about the
+       typical length.
+    2. While the plan still has fewer leaves than the minimum for the runtime, the
+       leaf whose parts are longest gets one more part.
+
+    The parts keep the unit's brief, marked "Part i of n", so the writer continues
+    the same moment. Mutates the plan; returns how many units were split.
+    """
     if not target_seconds:
         return 0
     limit = max_unit_seconds(target_seconds, project_type, pacing)
     average = average_unit_seconds(project_type, pacing)
+    low, _ = unit_count_range(target_seconds, project_type, pacing)
+
+    leaves = _leaves(plan)
+    parts_by_leaf: dict[int, int] = {}
+    for leaf in leaves:
+        seconds = leaf.duration_seconds or 0
+        parts_by_leaf[id(leaf)] = max(2, round(seconds / average)) if seconds > limit else 1
+    total = sum(parts_by_leaf.values())
+    while total < low and leaves:
+        longest = max(leaves, key=lambda leaf: (leaf.duration_seconds or 0) / parts_by_leaf[id(leaf)])
+        if (longest.duration_seconds or 0) / (parts_by_leaf[id(longest)] + 1) < MIN_UNIT_SECONDS:
+            break
+        parts_by_leaf[id(longest)] += 1
+        total += 1
+
     split_count = 0
 
     def visit(units: list[Any]) -> list[Any]:
@@ -408,12 +447,11 @@ def split_oversized_units(
                 unit.children = visit(unit.children)
                 result.append(unit)
                 continue
-            seconds = unit.duration_seconds or 0
-            if seconds <= limit:
+            parts = parts_by_leaf.get(id(unit), 1)
+            if parts <= 1:
                 result.append(unit)
                 continue
-            parts = max(2, round(seconds / average))
-            lengths = distribute_integer(int(round(seconds)), [1.0] * parts)
+            lengths = distribute_integer(int(round(unit.duration_seconds or 0)), [1.0] * parts)
             split_count += 1
             for index, length in enumerate(lengths, start=1):
                 label = f"Part {index} of {parts}"

@@ -14,6 +14,7 @@ from services.duration_budget import (
     normalize_pacing,
     parse_duration_seconds,
     plan_fit_problems,
+    requested_unit_count,
     split_oversized_units,
     target_unit_count,
     plan_duration_rules,
@@ -22,11 +23,23 @@ from services.duration_budget import (
 )
 from services.script_config import build_engine_config
 from services.project_runtime import runtime_from_idea_metadata
-from services.script_generation import PlanError, PlannedUnit, build_plan_prompt, leaf_units, plan_to_runtime
+from services.script_generation import (
+    PlanError,
+    PlannedUnit,
+    build_plan_prompt,
+    leaf_units,
+    plan_script,
+    plan_to_runtime,
+)
 
 FIXTURE = Path(__file__).parent / "test_fixtures" / "script_engine_config.json"
 CONFIG = build_engine_config(json.loads(FIXTURE.read_text(encoding="utf-8")))
 FILM = CONFIG.project_type("feature_film")
+
+
+def _total(units) -> float:
+    """Sum of duration_seconds, treating a missing duration as 0."""
+    return sum(unit.duration_seconds or 0 for unit in units)
 
 
 def _leaf(seconds=None, title="S"):
@@ -76,7 +89,7 @@ class PlanBudgetTests(unittest.TestCase):
         a, b, c = _leaf(60), _leaf(120), _leaf(60)
         act = _act(a, b)
         report = budget_plan([act, c], 1800)
-        self.assertEqual(sum(l.duration_seconds for l in (a, b, c)), 1800)
+        self.assertEqual(_total((a, b, c)), 1800)
         self.assertEqual((a.duration_seconds, b.duration_seconds, c.duration_seconds), (450, 900, 450))
         self.assertEqual(act.duration_seconds, 1350)
         self.assertTrue(report["rescaled"])
@@ -93,11 +106,20 @@ class PlanBudgetTests(unittest.TestCase):
         budget_plan(leaves, 180)
         self.assertEqual([l.duration_seconds for l in leaves], [60, 60, 60])
 
-    def test_close_plan_is_kept(self) -> None:
+    def test_close_plan_is_made_exact(self) -> None:
+        # Within tolerance, so not reported as rescaled, but still sums exactly.
         a, b = _leaf(88), _leaf(90)
         report = budget_plan([a, b], 180)
         self.assertFalse(report["rescaled"])
-        self.assertEqual((a.duration_seconds, b.duration_seconds), (88, 90))
+        self.assertEqual((a.duration_seconds, b.duration_seconds), (89, 91))
+
+    def test_eval_cases_that_drifted_now_sum_exactly(self) -> None:
+        # Totals the real-model evaluation left 0.8%-5% off the target.
+        for target, lengths in ((3600, [150] * 23), (3600, [182] * 20), (7200, [180] * 38), (1800, [140] * 13)):
+            with self.subTest(target=target, total=sum(lengths)):
+                leaves = [_leaf(s) for s in lengths]
+                self.assertEqual(budget_plan(leaves, target)["planned_seconds"], target)
+                self.assertEqual(_total(leaves), target)
 
     def test_without_target_only_fills_gaps(self) -> None:
         a, b = _leaf(30), _leaf(None)
@@ -177,9 +199,9 @@ class PlanFitTests(unittest.TestCase):
         low, high = unit_count_range(target, project_type)
         self.assertGreaterEqual(len(leaves), low)
         self.assertLessEqual(len(leaves), high)
-        self.assertEqual(sum(l.duration_seconds for l in leaves), target)
+        self.assertEqual(_total(leaves), target)
         limit = max_unit_seconds(target, project_type)
-        self.assertTrue(all(l.duration_seconds <= limit for l in leaves))
+        self.assertTrue(all((l.duration_seconds or 0) <= limit for l in leaves))
 
     def test_three_scenes_for_thirty_minutes_is_flagged(self) -> None:
         plan = [PlannedUnit("scene", f"S{i}", "", True, duration_seconds=120) for i in range(3)]
@@ -219,6 +241,16 @@ class PlanFitTests(unittest.TestCase):
         self.assertIn("Scene 1 (Part 1 of 5)", titles)
         self.assertEqual(plan[0].duration_seconds, 1800)  # the act sums its parts
 
+    def test_too_few_scenes_that_are_not_too_long_are_split_to_the_minimum(self) -> None:
+        # 1-hour drama: minimum 15 scenes; 10 scenes of 6 min are each under the 6 min 15 s limit.
+        plan = [PlannedUnit("scene", f"S{i}", "", True, duration_seconds=360) for i in range(10)]
+        self.assertEqual(plan_fit_problems(plan, 3600, "feature_film", pacing="drama")[0][:24], "You planned 10 scenes fo")
+        split = split_oversized_units(plan, 3600, "feature_film", "drama")
+        self.assertEqual(split, 5)
+        self.assertEqual(len(plan), 15)
+        self.assertEqual(_total(plan), 3600)
+        self.assertEqual(plan_fit_problems(plan, 3600, "feature_film", pacing="drama"), [])
+
     def test_split_keeps_script_order(self) -> None:
         plan = [PlannedUnit("scene", "A", "a", True, duration_seconds=900),
                 PlannedUnit("scene", "B", "b", True, duration_seconds=900)]
@@ -243,7 +275,9 @@ class PlanFitTests(unittest.TestCase):
                 reply = json.dumps({"units": [{"unit_type": leaf, "title": "Only", "summary": "All of it.", "duration_seconds": 60}]})
                 plan, report = plan_to_runtime(FakeModel(reply), "PROMPT", type_config, duration)
                 self.assertTrue(report["fits"], report)
-                self.assert_fits(plan, parse_duration_seconds(duration), type_key)
+                target = parse_duration_seconds(duration)
+                assert target is not None
+                self.assert_fits(plan, target, type_key)
 
     def test_unreadable_duration_skips_the_check(self) -> None:
         model = FakeModel(_model_plan(3))
@@ -279,6 +313,20 @@ class PacingTests(unittest.TestCase):
         self.assertLess(average_shot_seconds("feature_film", "action"), average_shot_seconds("feature_film", "drama"))
         self.assertGreaterEqual(average_shot_seconds("advertisement", "action"), MIN_CLIP_SECONDS)
 
+    def test_long_runtimes_ask_for_more_than_the_target(self) -> None:
+        # Short runtimes: the model hit its target, so it is asked for the target itself.
+        self.assertEqual(requested_unit_count(1800, "feature_film", "action"), 25)
+        self.assertEqual(requested_unit_count(30, "advertisement"), 5)
+        # From 45 minutes: 1.4x the target, capped at the top of the range.
+        self.assertEqual(requested_unit_count(3600, "feature_film", "action"), 70)
+        self.assertEqual(requested_unit_count(3600, "feature_film", "drama"), 34)
+        self.assertEqual(requested_unit_count(7200, "feature_film", "action"), 140)
+        for pacing in ("action", "comedy", "drama", ""):
+            for runtime in (2700, 3600, 7200, 10800):
+                with self.subTest(pacing=pacing, runtime=runtime):
+                    _, high = unit_count_range(runtime, "feature_film", pacing)
+                    self.assertLessEqual(requested_unit_count(runtime, "feature_film", pacing), high)
+
     def test_unknown_pacing_uses_type_defaults(self) -> None:
         self.assertEqual(normalize_pacing(" Action "), "action")
         self.assertEqual(normalize_pacing("thriller"), "")
@@ -286,10 +334,11 @@ class PacingTests(unittest.TestCase):
 
     def test_plan_prompt_states_pacing_and_target_count(self) -> None:
         prompt = build_plan_prompt(FILM, FILM.default_format, "Outline:", "A heist.", "- none", "1 hr", "action")
-        self.assertIn("Plan about 50 scenes (never fewer than 31 or more than 84)", prompt)
+        # 1 hour is a long runtime: the prompt asks for 1.4x the target of 50.
+        self.assertIn("Plan about 70 scenes (never fewer than 31 or more than 84)", prompt)
         self.assertIn("Pacing: ACTION", prompt)
         drama = build_plan_prompt(FILM, FILM.default_format, "Outline:", "A heist.", "- none", "1 hr", "drama")
-        self.assertIn("Plan about 24 scenes", drama)
+        self.assertIn("Plan about 34 scenes", drama)
 
     def test_same_plan_fits_drama_but_is_sent_back_for_action(self) -> None:
         reply = _model_plan(20, 180)  # 20 scenes of 3 minutes for 1 hour
@@ -301,7 +350,7 @@ class PacingTests(unittest.TestCase):
         action_model = FakeModel(reply, _model_plan(50, 72))
         plan, action = plan_to_runtime(action_model, "PROMPT", FILM, "1 hr", pacing="action")
         self.assertEqual(len(action_model.prompts), 2)
-        self.assertIn("plan about 50 (between 31 and 84)", action_model.prompts[1])
+        self.assertIn("plan about 70 (between 31 and 84)", action_model.prompts[1])
         self.assertTrue(action["fits"])
         self.assertEqual(action["pacing"], "action")
         self.assertEqual(len(leaf_units(plan)), 50)
@@ -316,6 +365,26 @@ class PacingTests(unittest.TestCase):
         brief = runtime_from_idea_metadata({"brief": {"duration": "30 sec"}})
         self.assertEqual((brief.target_seconds, brief.pacing), (30, ""))
         self.assertIsNone(runtime_from_idea_metadata(None).target_seconds)
+
+
+class PlanScriptTests(unittest.TestCase):
+    def plan(self, model, duration: str, pacing: str = ""):
+        return plan_script(model, FILM, FILM.default_format, "Outline:", "A story.", "- none", duration, pacing)
+
+    def test_long_film_is_planned_in_one_call(self) -> None:
+        model = FakeModel(_model_plan(60, 60))
+        plan, report = self.plan(model, "1 hr", "action")
+        self.assertEqual(len(model.prompts), 1)
+        self.assertIn("Plan about 70 scenes", model.prompts[0])
+        self.assertTrue(report["fits"])
+        self.assertEqual(_total(leaf_units(plan)), 3600)
+
+    def test_short_runtime_uses_one_call(self) -> None:
+        model = FakeModel(_model_plan(25, 72))
+        _, report = self.plan(model, "30 min", "action")
+        self.assertEqual(len(model.prompts), 1)
+        self.assertIn("Plan about 25 scenes", model.prompts[0])
+        self.assertTrue(report["fits"])
 
 
 if __name__ == "__main__":

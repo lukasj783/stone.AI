@@ -1,7 +1,7 @@
 """Measure how well real script plans fit the chosen runtime.
 
-Runs the production plan prompt (build_plan_prompt) through the configured Gemini
-model and the production fit loop (plan_to_runtime) for each project type at its
+Runs the production planner (plan_script: one plan call plus the fit loop) through
+the configured Gemini model for each project type at its
 usual runtimes, several times each, and reports:
 
 - first-try fit: how often the model's own plan already had the right scene count
@@ -25,7 +25,7 @@ from pathlib import Path
 from services.duration_budget import format_seconds, parse_duration_seconds, unit_count_range
 from services.gemini_client import run_gemini
 from services.script_config import build_engine_config
-from services.script_generation import build_plan_prompt, leaf_units, plan_to_runtime
+from services.script_generation import leaf_units, plan_script
 
 FIXTURE = Path(__file__).parent / "test_fixtures" / "script_engine_config.json"
 
@@ -68,15 +68,6 @@ CHARACTERS = {
 def run_case(type_config, duration: str, run: int, pacing: str = "") -> dict:
     target = parse_duration_seconds(duration)
     label = "Here is the outline:" if type_config.key in ("feature_film", "short_film") else "Here is the creative brief:"
-    prompt = build_plan_prompt(
-        type_config,
-        type_config.default_format,
-        label,
-        SOURCES[type_config.key],
-        CHARACTERS.get(type_config.key, "- Elements inferred from the source material"),
-        duration,
-        pacing,
-    )
     calls = 0
 
     def model(text: str) -> str:
@@ -87,7 +78,16 @@ def run_case(type_config, duration: str, run: int, pacing: str = "") -> dict:
     started = time.monotonic()
     result = {"type": type_config.key, "duration": duration, "target_seconds": target, "run": run, "pacing": pacing}
     try:
-        plan, report = plan_to_runtime(model, prompt, type_config, duration, pacing=pacing)
+        plan, report = plan_script(
+            model,
+            type_config,
+            type_config.default_format,
+            label,
+            SOURCES[type_config.key],
+            CHARACTERS.get(type_config.key, "- Elements inferred from the source material"),
+            duration,
+            pacing,
+        )
     except Exception as error:  # record and keep going
         return {**result, "error": str(error), "calls": calls, "seconds": round(time.monotonic() - started, 1)}
     leaves = leaf_units(plan)
@@ -107,6 +107,8 @@ def run_case(type_config, duration: str, run: int, pacing: str = "") -> dict:
         "longest_scene": max((u.duration_seconds or 0 for u in leaves), default=0),
         "max_scene": report["max_unit_seconds"],
         "fits": report["fits"],
+        "retries": len(report["attempts"]) - 1,
+        "target_count": report.get("target_unit_count"),
     }
 
 
@@ -122,10 +124,11 @@ def summarize(results: list[dict]) -> str:
         ok = [r for r in rows if "error" not in r]
         errors = len(rows) - len(ok)
         target = parse_duration_seconds(duration)
-        low, high = unit_count_range(target, type_key, rows[0].get("pacing", "") if rows else "")
+        assert target is not None, f"unreadable case duration: {duration}"
+        low, high = unit_count_range(target, type_key, rows[0].get("pacing", ""))
         first = ",".join(str(r["first_count"]) for r in ok)
         final = ",".join(str(r["final_count"]) for r in ok)
-        retries = sum(r["calls"] - 1 for r in ok)
+        retries = sum(r["retries"] for r in ok)
         totals = {r["final_seconds"] for r in ok}
         total_text = format_seconds(next(iter(totals))) if len(totals) == 1 else "varies"
         lines.append(
@@ -141,7 +144,7 @@ def summarize(results: list[dict]) -> str:
         lines.append(
             f"Overall: first-try fit {sum(r['first_fit'] for r in ok)}/{len(ok)}, "
             f"final fit {sum(r['fits'] for r in ok)}/{len(ok)}, "
-            f"plans needing a retry {sum(1 for r in ok if r['calls'] > 1)}, "
+            f"plans needing a retry {sum(1 for r in ok if r['retries'])}, "
             f"plans split in code {sum(1 for r in ok if r['split_units'])}, "
             f"model calls {sum(r['calls'] for r in results)}, "
             f"errors {len(results) - len(ok)}, "
@@ -158,10 +161,15 @@ def main() -> int:
     parser.add_argument("--pacing", choices=["action", "comedy", "drama"], default="",
                         help="pacing for the film cases (other project types ignore it)")
     parser.add_argument("--films-only", action="store_true", help="only run the feature and short film cases")
+    parser.add_argument("--long-only", action="store_true", help="only run cases of 45 minutes or more")
     args = parser.parse_args()
 
     config = build_engine_config(json.loads(FIXTURE.read_text(encoding="utf-8")))
-    cases = [c for c in CASES if not args.films_only or c[0] in ("feature_film", "short_film")]
+    cases = [
+        c for c in CASES
+        if (not args.films_only or c[0] in ("feature_film", "short_film"))
+        and (not args.long_only or (parse_duration_seconds(c[1]) or 0) >= 45 * 60)
+    ]
     jobs = [
         (config.project_type(t), d, r, args.pacing if t in ("feature_film", "short_film") else "")
         for t, d in cases

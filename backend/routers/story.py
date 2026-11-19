@@ -57,11 +57,10 @@ from services.script_config import load_project_script_context
 from services.script_generation import (
     blocks_context,
     build_block_prompt,
-    build_plan_prompt,
     normalize_blocks,
     parse_model_json,
     PlanError,
-    plan_to_runtime,
+    plan_script,
 )
 from routers.script_engine import compile_project_script, save_compiled_script
 
@@ -1095,20 +1094,21 @@ async def generate_script(payload: GenerateScriptPayload, background_tasks: Back
             if not duration and saved.target_seconds:
                 duration = f"{saved.target_seconds} sec"
             pacing = pacing or saved.pacing
-        plan_prompt = build_plan_prompt(
-            type_config, context.format, source_label, source_body, characters_text, duration, pacing
-        )
         client = replicate.Client(api_token=api_token)
-        # Plan, then make the scene count and lengths fit the runtime the user chose
-        # (re-asking the model when they do not, then splitting overlong scenes).
+        # Plan, then make the scene count and lengths fit the runtime the user chose:
+        # long runtimes are planned part by part; every plan is re-asked when it does
+        # not fit, then overlong scenes are split.
         try:
             plan, runtime = await asyncio.to_thread(
-                plan_to_runtime,
+                plan_script,
                 lambda prompt: _run_gemini(client, prompt),
-                plan_prompt,
                 type_config,
+                context.format,
+                source_label,
+                source_body,
+                characters_text,
                 duration,
-                pacing=pacing,
+                pacing,
             )
         except PlanError as plan_error:
             raise HTTPException(status_code=500, detail=str(plan_error)) from plan_error

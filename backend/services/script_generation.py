@@ -321,6 +321,30 @@ def leaf_units(plan: list[PlannedUnit]) -> list[PlannedUnit]:
     return leaves
 
 
+def plan_script(
+    run_model: Callable[[str], str],
+    type_config: ProjectTypeConfig,
+    script_format: FormatConfig,
+    source_label: str,
+    source_body: str,
+    characters_text: str,
+    duration: str = "",
+    pacing: str = "",
+) -> tuple[list[PlannedUnit], dict[str, Any]]:
+    """Plan the script units to fit the runtime: one plan call, re-asked when it
+    does not fit (see plan_to_runtime).
+
+    Planning long films act by act was tried and measured with the real model: it
+    took 5-10 calls per plan and did not get closer to the scene target (the model
+    delivers about 70% of the count asked for, per act as for a whole film), so the
+    prompt asks for more scenes than the target instead (see requested_unit_count).
+    """
+    prompt = build_plan_prompt(
+        type_config, script_format, source_label, source_body, characters_text, duration, pacing
+    )
+    return plan_to_runtime(run_model, prompt, type_config, duration, pacing=pacing)
+
+
 # ---------------------------------------------------------------------------
 # Step 2: blocks for one leaf unit
 # ---------------------------------------------------------------------------
