@@ -21,6 +21,7 @@ from schemas.image_generation import (
 )
 from services.duration_budget import MAX_CLIP_SECONDS, allocate_shot_durations, shot_weight
 from services.image_generation_service import generate_provider_images
+from services.project_runtime import load_project_runtime
 from services.project_visual_style import ProjectVisualStyle, apply_visual_style, load_project_visual_style
 from services.script_config import ProjectTypeConfig, load_project_script_context
 from services.character_ranking import rank_characters_from_script
@@ -530,6 +531,7 @@ def _plan_scene_shots(
     production: str = "Film",
     target_seconds: float | None = None,
     project_type: str = "",
+    pacing: str = "",
 ) -> tuple[list[dict[str, Any]], str, str | None]:
     """Turn script beats into an ordered shot list.
 
@@ -559,6 +561,7 @@ def _plan_scene_shots(
             max_shots=max_shots,
             target_seconds=target_seconds,
             project_type=project_type,
+            pacing=pacing,
         )
     except ShotPlanningError as error:
         logger.warning("Storyboard shot planner failed; using one shot per line: %s", error)
@@ -604,6 +607,7 @@ def _shot_durations(
     blocks: list[dict[str, Any]],
     type_config: ProjectTypeConfig,
     scene_seconds: float | None,
+    pacing: str = "",
 ) -> list[int]:
     """Clip length for each shot: the scene's budget split by how much each shot
     has to carry (spoken lines need time to be heard), snapped to clip lengths
@@ -629,7 +633,7 @@ def _shot_durations(
     for index, frame in enumerate(frames):
         share = max((counts.get(b, 1) for b in frame.get("source_block_ids") or []), default=1)
         weights[index] = max(1.0, weights[index] / share)
-    return allocate_shot_durations(scene_seconds, weights, type_config.key)
+    return allocate_shot_durations(scene_seconds, weights, type_config.key, pacing=pacing)
 
 
 def _shot_characters(plan: dict[str, Any], characters: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -1224,6 +1228,7 @@ def generate_scene_storyboard(
     characters, environment, objects = _gather_scene_linked_entities(project_id, scene_id, blocks)
 
     scene_seconds = _scene_seconds(scene)
+    pacing = load_project_runtime(supabase, project_id).pacing
     shot_plans, shot_planner, planner_error = _plan_scene_shots(
         capped_beats,
         scene,
@@ -1233,9 +1238,10 @@ def generate_scene_storyboard(
         production=vocabulary.production,
         target_seconds=scene_seconds,
         project_type=type_config.key,
+        pacing=pacing,
     )
     planned_frames = _build_frames_from_shot_plans(shot_plans, scene, characters, environment, objects)
-    shot_seconds = _shot_durations(planned_frames, blocks, type_config, scene_seconds)
+    shot_seconds = _shot_durations(planned_frames, blocks, type_config, scene_seconds, pacing)
 
     action_blocks = _action_blocks(blocks, vocabulary)
     covered_block_ids = {block_id for frame in planned_frames for block_id in frame["source_block_ids"]}

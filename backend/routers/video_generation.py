@@ -26,7 +26,8 @@ from schemas.video_generation import (
     AddShotVideoToTimelineRequest,
     AddShotVideoToTimelineResponse,
 )
-from services.duration_budget import MAX_CLIP_SECONDS, MIN_CLIP_SECONDS, parse_duration_seconds
+from services.duration_budget import MAX_CLIP_SECONDS, MIN_CLIP_SECONDS
+from services.project_runtime import load_project_runtime
 from tasks.shot_video_tasks import submit_shot_video
 from services.wavespeed_service import (
     WaveSpeedServiceError,
@@ -50,7 +51,7 @@ def _shot_list_response(project_id: str) -> ShotListResponse:
     shots = supabase.table("shots").select(
         "id, scene_id, shot_number, description, camera_angle, camera_motion, sort_order, duration_seconds"
     ).eq("project_id", project_id).order("scene_id").order("sort_order").execute().data or []
-    target_seconds = _project_target_seconds(supabase, project_id)
+    target_seconds = load_project_runtime(supabase, project_id).target_seconds
     if not shots:
         return ShotListResponse(project_id=project_id, shots=[], target_seconds=target_seconds)
 
@@ -123,18 +124,6 @@ def _shot_list_response(project_id: str) -> ShotListResponse:
         planned_seconds=round(sum(planned), 3) if planned else None,
         rendered_seconds=round(sum(rendered), 3) if rendered else None,
     )
-
-
-def _project_target_seconds(supabase, project_id: str) -> int | None:
-    """The runtime chosen on the idea form, in seconds."""
-    rows = supabase.table("project_documents").select("metadata").eq("project_id", project_id).eq(
-        "type", "idea"
-    ).limit(1).execute().data or []
-    metadata = rows[0].get("metadata") if rows else None
-    if not isinstance(metadata, dict):
-        return None
-    brief = metadata.get("brief") if isinstance(metadata.get("brief"), dict) else {}
-    return parse_duration_seconds(metadata.get("duration") or brief.get("duration"))
 
 
 @router.get("/shot-list", response_model=ShotListResponse)

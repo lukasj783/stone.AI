@@ -61,6 +61,7 @@ def build_planner_prompt(
     production: str = "Film",
     target_seconds: float | None = None,
     project_type: str = "",
+    pacing: str = "",
 ) -> str:
     rendered_lines = []
     for line in script_lines:
@@ -73,7 +74,7 @@ def build_planner_prompt(
     coverage = PRODUCTION_COVERAGE.get(production, "")
     coverage_line = f"\nCOVERAGE STYLE: {coverage}" if coverage else ""
     if target_seconds:
-        coverage_line += "\n" + planner_shot_guide(target_seconds, project_type)
+        coverage_line += "\n" + planner_shot_guide(target_seconds, project_type, pacing)
     return f"""Break this {production.lower()} script unit into a storyboard shot list.
 
 PRODUCTION: {production}{coverage_line}
@@ -205,6 +206,7 @@ def plan_scene_shots(
     production: str = "Film",
     target_seconds: float | None = None,
     project_type: str = "",
+    pacing: str = "",
 ) -> list[dict[str, Any]]:
     """Ask the language model for a shot list and return the validated shots."""
     valid_line_numbers = {int(line["number"]) for line in script_lines if line.get("number")}
@@ -219,6 +221,7 @@ def plan_scene_shots(
         production,
         target_seconds=target_seconds,
         project_type=project_type,
+        pacing=pacing,
     )
     try:
         parsed = _parse_json(_run_planner_model(prompt))

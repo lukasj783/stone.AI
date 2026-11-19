@@ -136,27 +136,67 @@ SCREENPLAY_LINES_PER_MINUTE = 55  # about one formatted page a minute
 DEFAULT_TOLERANCE = 0.05
 
 
-def unit_count_range(target_seconds: int, project_type: str) -> tuple[int, int]:
+# Pacing chosen on the idea form. It scales the typical scene and shot length:
+# action cuts between many short scenes, drama lets fewer, longer scenes play out.
+PACING_FACTORS = {
+    "action": (0.6, 0.6),   # (scene length, shot length)
+    "comedy": (0.8, 0.85),
+    "drama": (1.25, 1.2),
+}
+PACING_GUIDANCE = {
+    "action": "Pacing: ACTION. Many short scenes, frequent location changes and intercutting; enter scenes late and leave early.",
+    "comedy": "Pacing: COMEDY. Brisk scenes built around one comic situation or gag each; cut on the laugh.",
+    "drama": "Pacing: DRAMA. Fewer, longer scenes that let conversations and emotional beats play out.",
+}
+
+
+def normalize_pacing(value: Any) -> str:
+    """'action' | 'comedy' | 'drama', or '' when unknown (type defaults apply)."""
+    text = " ".join(str(value or "").lower().split())
+    return text if text in PACING_FACTORS else ""
+
+
+def average_unit_seconds(project_type: str, pacing: str = "") -> float:
+    base = AVERAGE_UNIT_SECONDS.get(project_type, DEFAULT_UNIT_SECONDS)
+    return base * PACING_FACTORS.get(normalize_pacing(pacing), (1.0, 1.0))[0]
+
+
+def unit_count_range(target_seconds: int, project_type: str, pacing: str = "") -> tuple[int, int]:
     """How many leaf units a plan of this length should have."""
-    average = AVERAGE_UNIT_SECONDS.get(project_type, DEFAULT_UNIT_SECONDS)
+    average = average_unit_seconds(project_type, pacing)
     low = max(1, math.floor(target_seconds / (average * 1.6)))
     high = max(low, math.ceil(target_seconds / (average * 0.6)))
     return low, high
 
 
-def average_shot_seconds(project_type: str) -> int:
-    return AVERAGE_SHOT_SECONDS.get(project_type, DEFAULT_SHOT_SECONDS)
+def target_unit_count(target_seconds: int, project_type: str, pacing: str = "") -> int:
+    """The scene count to aim for: runtime / typical scene length, kept inside the range."""
+    low, high = unit_count_range(target_seconds, project_type, pacing)
+    # Round halves up (not Python's round-half-to-even) to match the frontend estimate.
+    aim = math.floor(target_seconds / average_unit_seconds(project_type, pacing) + 0.5)
+    return min(high, max(low, aim))
 
 
-def plan_duration_rules(target_seconds: int, project_type: str, leaf_label: str) -> str:
+def average_shot_seconds(project_type: str, pacing: str = "") -> int:
+    base = AVERAGE_SHOT_SECONDS.get(project_type, DEFAULT_SHOT_SECONDS)
+    factor = PACING_FACTORS.get(normalize_pacing(pacing), (1.0, 1.0))[1]
+    return max(MIN_CLIP_SECONDS, round(base * factor))
+
+
+def plan_duration_rules(target_seconds: int, project_type: str, leaf_label: str, pacing: str = "") -> str:
     """Prompt lines that make the plan add up to the target."""
-    low, high = unit_count_range(target_seconds, project_type)
+    low, high = unit_count_range(target_seconds, project_type, pacing)
+    aim = target_unit_count(target_seconds, project_type, pacing)
+    average = round(average_unit_seconds(project_type, pacing))
     leaf = leaf_label.lower()
+    guidance = PACING_GUIDANCE.get(normalize_pacing(pacing))
+    pacing_line = f"\n- {guidance}" if guidance else ""
     return (
         f"Target duration: {format_seconds(target_seconds)} ({target_seconds} seconds of screen time).\n"
         f"- Give every \"{leaf}\" a realistic \"duration_seconds\" (screen time, whole seconds).\n"
         f"- The \"duration_seconds\" of all {leaf}s must add up to {target_seconds} seconds.\n"
-        f"- Plan between {low} and {high} {leaf}s; pace the story so it fits the runtime."
+        f"- Plan about {aim} {leaf}s (never fewer than {low} or more than {high}); "
+        f"a typical {leaf} runs about {average} seconds.{pacing_line}"
     )
 
 
@@ -172,9 +212,9 @@ def unit_length_guide(duration_seconds: float, renderer: str) -> str:
     return guide
 
 
-def planner_shot_guide(duration_seconds: float, project_type: str) -> str:
+def planner_shot_guide(duration_seconds: float, project_type: str, pacing: str = "") -> str:
     """Prompt line asking the shot planner for a shot count that fits the scene."""
-    average = average_shot_seconds(project_type)
+    average = average_shot_seconds(project_type, pacing)
     seconds = int(round(duration_seconds))
     shots = max(1, round(seconds / average))
     return (
@@ -299,16 +339,20 @@ def budget_plan(plan: Sequence[_Unit], target_seconds: int | None) -> dict[str, 
 MAX_UNIT_FACTOR = 2.5
 
 
-def max_unit_seconds(target_seconds: int, project_type: str) -> int:
+def max_unit_seconds(target_seconds: int, project_type: str, pacing: str = "") -> int:
     """Longest a single leaf unit may run. Never below what the smallest allowed
     unit count needs, so a plan inside the count range is never flagged for length."""
-    average = AVERAGE_UNIT_SECONDS.get(project_type, DEFAULT_UNIT_SECONDS)
-    low, _ = unit_count_range(target_seconds, project_type)
+    average = average_unit_seconds(project_type, pacing)
+    low, _ = unit_count_range(target_seconds, project_type, pacing)
     return max(math.ceil(average * MAX_UNIT_FACTOR), math.ceil(target_seconds / low))
 
 
 def plan_fit_problems(
-    plan: Sequence[_Unit], target_seconds: int | None, project_type: str, leaf_label: str = "scene"
+    plan: Sequence[_Unit],
+    target_seconds: int | None,
+    project_type: str,
+    leaf_label: str = "scene",
+    pacing: str = "",
 ) -> list[str]:
     """Why a budgeted plan does not fit the runtime (empty when it fits).
 
@@ -319,19 +363,20 @@ def plan_fit_problems(
         return []
     leaves = _leaves(plan)
     leaf = leaf_label.lower()
-    low, high = unit_count_range(target_seconds, project_type)
+    low, high = unit_count_range(target_seconds, project_type, pacing)
+    aim = target_unit_count(target_seconds, project_type, pacing)
     problems: list[str] = []
     if len(leaves) < low:
         problems.append(
-            f"You planned {len(leaves)} {leaf}s for {format_seconds(target_seconds)}; plan between {low} and {high}. "
+            f"You planned {len(leaves)} {leaf}s for {format_seconds(target_seconds)}; plan about {aim} (between {low} and {high}). "
             f"Break long {leaf}s into separate beats."
         )
     elif len(leaves) > high:
         problems.append(
-            f"You planned {len(leaves)} {leaf}s for {format_seconds(target_seconds)}; plan between {low} and {high}. "
+            f"You planned {len(leaves)} {leaf}s for {format_seconds(target_seconds)}; plan about {aim} (between {low} and {high}). "
             f"Merge {leaf}s that are the same continuous moment."
         )
-    limit = max_unit_seconds(target_seconds, project_type)
+    limit = max_unit_seconds(target_seconds, project_type, pacing)
     too_long = [unit for unit in leaves if (unit.duration_seconds or 0) > limit]
     if too_long:
         problems.append(
@@ -341,7 +386,9 @@ def plan_fit_problems(
     return problems
 
 
-def split_oversized_units(plan: list[Any], target_seconds: int | None, project_type: str) -> int:
+def split_oversized_units(
+    plan: list[Any], target_seconds: int | None, project_type: str, pacing: str = ""
+) -> int:
     """Last resort when the model keeps planning too few, too long units: split
     each leaf longer than ``max_unit_seconds`` into consecutive parts of about the
     type's typical length. The parts keep the unit's brief, marked "Part i of n",
@@ -349,8 +396,8 @@ def split_oversized_units(plan: list[Any], target_seconds: int | None, project_t
     units were split."""
     if not target_seconds:
         return 0
-    limit = max_unit_seconds(target_seconds, project_type)
-    average = AVERAGE_UNIT_SECONDS.get(project_type, DEFAULT_UNIT_SECONDS)
+    limit = max_unit_seconds(target_seconds, project_type, pacing)
+    average = average_unit_seconds(project_type, pacing)
     split_count = 0
 
     def visit(units: list[Any]) -> list[Any]:
@@ -416,6 +463,7 @@ def allocate_shot_durations(
     project_type: str = "",
     min_seconds: int = MIN_CLIP_SECONDS,
     max_seconds: int = MAX_CLIP_SECONDS,
+    pacing: str = "",
 ) -> list[int]:
     """Split a scene's budget across its shots as clip lengths the model can render.
 
@@ -429,7 +477,7 @@ def allocate_shot_durations(
     if count == 0:
         return []
     if not scene_seconds or scene_seconds <= 0:
-        average = average_shot_seconds(project_type)
+        average = average_shot_seconds(project_type, pacing)
         return [
             int(min(max_seconds, max(min_seconds, math.ceil(max(average, w)))))
             for w in weights

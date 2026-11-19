@@ -70,3 +70,47 @@ export function runtimeDrift(target: number | null, actual: number | null): numb
   if (!target || actual == null) return null;
   return (actual - target) / target;
 }
+
+// ---------------------------------------------------------------------------
+// Pacing (mirrors PACING_FACTORS / target_unit_count in duration_budget.py)
+// ---------------------------------------------------------------------------
+
+export type Pacing = 'action' | 'comedy' | 'drama';
+
+export const PACING_OPTIONS: { id: Pacing; label: string; hint: string }[] = [
+  { id: 'action', label: 'Action', hint: 'Many short scenes, fast cutting' },
+  { id: 'comedy', label: 'Comedy', hint: 'Brisk scenes built around a gag' },
+  { id: 'drama', label: 'Drama', hint: 'Fewer, longer scenes that breathe' },
+];
+
+const PACING_SCENE_FACTOR: Record<Pacing, number> = { action: 0.6, comedy: 0.8, drama: 1.25 };
+
+const AVERAGE_SCENE_SECONDS: Record<string, number> = {
+  feature_film: 120,
+  short_film: 75,
+  music_video: 20,
+  documentary: 90,
+  advertisement: 6,
+  explainer: 20,
+  educational: 90,
+};
+
+export function isPacing(value: unknown): value is Pacing {
+  return value === 'action' || value === 'comedy' || value === 'drama';
+}
+
+/** Best guess from free-text genres, used until the user picks a pacing. */
+export function pacingFromGenres(genres: string[]): Pacing {
+  const text = genres.join(' ').toLowerCase();
+  if (/\b(action|thriller|adventure|heist|war|chase|martial)/.test(text)) return 'action';
+  if (/\b(comed|funny|sitcom|parody|satire)/.test(text)) return 'comedy';
+  return 'drama';
+}
+
+/** About how many scenes a runtime holds at this pacing. */
+export function estimateSceneCount(targetSeconds: number, videoType: string, pacing: Pacing): number {
+  const average = (AVERAGE_SCENE_SECONDS[videoType] ?? 60) * PACING_SCENE_FACTOR[pacing];
+  const low = Math.max(1, Math.floor(targetSeconds / (average * 1.6)));
+  const high = Math.max(low, Math.ceil(targetSeconds / (average * 0.6)));
+  return Math.min(high, Math.max(low, Math.round(targetSeconds / average)));
+}

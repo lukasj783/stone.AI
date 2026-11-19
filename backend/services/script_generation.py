@@ -21,11 +21,13 @@ from typing import Any, Callable
 from services.duration_budget import (
     budget_plan,
     max_unit_seconds,
+    normalize_pacing,
     parse_duration_seconds,
     plan_duration_rules,
     plan_fit_problems,
     plan_retry_note,
     split_oversized_units,
+    target_unit_count,
     unit_count_range,
     unit_length_guide,
 )
@@ -79,6 +81,7 @@ def build_plan_prompt(
     source_body: str,
     characters_text: str,
     duration: str = "",
+    pacing: str = "",
 ) -> str:
     leaf = type_config.leaf_unit
     unit_lines = "\n".join(
@@ -94,7 +97,7 @@ def build_plan_prompt(
     )
     target_seconds = parse_duration_seconds(duration)
     if target_seconds:
-        duration_line = "\n" + plan_duration_rules(target_seconds, type_config.key, leaf.label)
+        duration_line = "\n" + plan_duration_rules(target_seconds, type_config.key, leaf.label, pacing)
     elif duration:
         duration_line = f"\nTarget duration: {duration}"
     else:
@@ -246,6 +249,7 @@ def plan_to_runtime(
     type_config: ProjectTypeConfig,
     duration: str = "",
     max_retries: int = PLAN_FIT_RETRIES,
+    pacing: str = "",
 ) -> tuple[list[PlannedUnit], dict[str, Any]]:
     """Plan the units and make the plan fit the chosen runtime.
 
@@ -271,7 +275,7 @@ def plan_to_runtime(
             plan = []
         if plan:
             budget = budget_plan(plan, target_seconds)
-            problems = plan_fit_problems(plan, target_seconds, type_config.key, leaf_label)
+            problems = plan_fit_problems(plan, target_seconds, type_config.key, leaf_label, pacing)
             attempts.append({
                 "attempt": attempt + 1,
                 "unit_count": budget["unit_count"],
@@ -290,17 +294,19 @@ def plan_to_runtime(
     if best is None:
         raise PlanError("The model returned no usable script plan")
     plan, budget, problems = best
-    split = split_oversized_units(plan, target_seconds, type_config.key) if problems else 0
+    split = split_oversized_units(plan, target_seconds, type_config.key, pacing) if problems else 0
     count = len(leaf_units(plan))
-    low, high = unit_count_range(target_seconds, type_config.key) if target_seconds else (None, None)
+    low, high = unit_count_range(target_seconds, type_config.key, pacing) if target_seconds else (None, None)
     report = {
         **budget,
         "unit_count": count,
         "unit_count_range": [low, high] if target_seconds else None,
-        "max_unit_seconds": max_unit_seconds(target_seconds, type_config.key) if target_seconds else None,
+        "max_unit_seconds": max_unit_seconds(target_seconds, type_config.key, pacing) if target_seconds else None,
+        "target_unit_count": target_unit_count(target_seconds, type_config.key, pacing) if target_seconds else None,
+        "pacing": normalize_pacing(pacing) or None,
         "attempts": attempts,
         "split_units": split,
-        "fits": not plan_fit_problems(plan, target_seconds, type_config.key, leaf_label),
+        "fits": not plan_fit_problems(plan, target_seconds, type_config.key, leaf_label, pacing),
     }
     return plan, report
 

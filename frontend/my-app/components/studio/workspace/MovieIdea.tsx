@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import Image from "next/image";
-import { BadgePlus, BookOpen, Check, Clock3, Info, Palette, Sparkles, UserPlus, WandSparkles } from "lucide-react";
+import { BadgePlus, BookOpen, Check, Clapperboard, Clock3, Info, Palette, Sparkles, UserPlus, WandSparkles } from "lucide-react";
 import { motion } from "framer-motion";
 import { supabase } from "@/lib/supabaseClient";
 import { cn } from "@/lib/utils";
@@ -14,7 +14,15 @@ import {
   type StudioVideoTypeId,
 } from "@/lib/studioVideoTypes";
 import AlertModal from '@/components/ui/AlertModal';
-import { formatSeconds, parseDurationSeconds } from "@/lib/duration";
+import {
+  estimateSceneCount,
+  formatSeconds,
+  isPacing,
+  PACING_OPTIONS,
+  pacingFromGenres,
+  parseDurationSeconds,
+  type Pacing,
+} from "@/lib/duration";
 
 interface MovieIdeaProps {
   projectId: string | null;
@@ -47,6 +55,8 @@ interface IdeaFormState {
   premise: string;
   endingType: "Bittersweet" | "Positive" | "Cliffhanger" | "Ambiguous";
   visualStyle: VisualStyle;
+  /** Scene pacing; decides how many scenes the runtime is split into. */
+  pacing: Pacing;
 }
 
 const VISUAL_STYLES: { label: VisualStyle; emoji: string; gradient: string }[] = [
@@ -103,6 +113,7 @@ function buildDefaultIdea(config: StudioVideoTypeConfig): IdeaFormState {
     premise: "",
     endingType: "Bittersweet",
     visualStyle: "Realistic",
+    pacing: pacingFromGenres(config.defaultGenres),
   };
 }
 
@@ -214,6 +225,11 @@ export function MovieIdea({
             premise: docData.content || (typeof metadata.premise === "string" ? metadata.premise : ""),
             endingType: (metadata.endingType as IdeaFormState["endingType"]) || defaults.endingType,
             visualStyle: normalizeVisualStyle(metadata.visualStyle),
+            pacing: isPacing(metadata.pacing)
+              ? metadata.pacing
+              : pacingFromGenres(
+                  sameType && Array.isArray(metadata.genres) ? (metadata.genres as string[]) : defaults.genres,
+                ),
           });
 
           const storedBrief = (metadata.brief as Partial<CreativeBriefState> | undefined) ?? {};
@@ -289,6 +305,7 @@ export function MovieIdea({
         premise: idea.premise,
         endingType: idea.endingType,
         visualStyle: idea.visualStyle,
+        pacing: idea.pacing,
         brief,
       },
     };
@@ -381,6 +398,7 @@ export function MovieIdea({
             genres: idea.genres,
             endingType: idea.endingType,
             visualStyle: idea.visualStyle,
+            pacing: idea.pacing,
           },
           story: {
             logline: idea.logline,
@@ -470,6 +488,7 @@ export function MovieIdea({
             genres: idea.genres,
             endingType: idea.endingType,
             visualStyle: idea.visualStyle,
+            pacing: idea.pacing,
           },
           characters: characters.map((c) => ({
             name: c.name,
@@ -634,6 +653,44 @@ export function MovieIdea({
                 <option value="Cliffhanger">Cliffhanger</option>
                 <option value="Ambiguous">Ambiguous</option>
               </select>
+            </Panel>
+          )}
+
+          {isNarrative && (
+            <Panel>
+              <FieldLabel icon={Clapperboard}>Pacing</FieldLabel>
+              <div role="radiogroup" aria-label="Scene pacing" className="grid grid-cols-3 gap-2">
+                {PACING_OPTIONS.map((option) => {
+                  const selected = idea.pacing === option.id;
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      onClick={() => setIdea((s) => ({ ...s, pacing: option.id }))}
+                      className={cn(
+                        "rounded-lg border px-2 py-2 text-left transition-colors",
+                        selected
+                          ? "border-cyan-500/60 bg-cyan-500/10 text-cyan-100"
+                          : "border-zinc-800 bg-zinc-950 text-zinc-300 hover:border-zinc-700",
+                      )}
+                    >
+                      <span className="block text-sm font-semibold">{option.label}</span>
+                      <span className="mt-0.5 block text-[11px] leading-4 text-zinc-500">{option.hint}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              {durationSeconds ? (
+                <p className="mt-2 text-xs text-zinc-500">
+                  About{" "}
+                  <span className="font-semibold text-zinc-300">
+                    {estimateSceneCount(durationSeconds, videoTypeConfig.id, idea.pacing)} scenes
+                  </span>{" "}
+                  for {formatSeconds(durationSeconds)}.
+                </p>
+              ) : null}
             </Panel>
           )}
         </section>

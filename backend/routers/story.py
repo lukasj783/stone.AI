@@ -50,8 +50,9 @@ from services.character_views import EDITABLE_CHARACTER_FIELDS, effective_charac
 from services.character_ranking import rank_characters_from_script
 from services.environment_ranking import rank_environments_from_script
 from services.object_ranking import ObjectRanking, rank_objects_from_script, rank_project_objects
-from services.duration_budget import format_seconds, parse_duration_seconds
+from services.duration_budget import PACING_GUIDANCE, format_seconds, normalize_pacing, parse_duration_seconds
 from services.gemini_client import run_gemini
+from services.project_runtime import load_project_runtime
 from services.script_config import load_project_script_context
 from services.script_generation import (
     blocks_context,
@@ -963,14 +964,16 @@ async def delete_object(object_id: str, project_id: str) -> None:
     except Exception as error:
         raise HTTPException(status_code=400, detail=f"Object deletion failed: {error}") from error
 
-def _outline_runtime_line(duration: str) -> str:
-    """Ask the outline to fit the runtime the user chose (about one page a minute)."""
+def _outline_runtime_line(duration: str, pacing: str = "") -> str:
+    """Ask the outline to fit the runtime and pacing the user chose."""
     seconds = parse_duration_seconds(duration)
+    guidance = PACING_GUIDANCE.get(normalize_pacing(pacing), "")
     if not seconds:
-        return ""
+        return guidance
     return (
         f"The finished film must run about {format_seconds(seconds)}. Scale the number of scenes and "
         "story beats to that runtime, and note an approximate length (in minutes or seconds) beside each act."
+        + (f"\n{guidance}" if guidance else "")
     )
 
 
@@ -1015,7 +1018,7 @@ Please structure the outline into:
 3. Act III (Climax, Resolution)
 
 Return the output in clean Markdown format with professional sluglines.
-{_outline_runtime_line(payload.basics.duration)}"""
+{_outline_runtime_line(payload.basics.duration, payload.basics.pacing)}"""
 
         client = replicate.Client(api_token=api_token)
 
@@ -1084,8 +1087,16 @@ async def generate_script(payload: GenerateScriptPayload, background_tasks: Back
         duration = (brief.duration.strip() if brief and brief.duration else "") or (
             payload.basics.duration if payload.basics else ""
         )
+        pacing = payload.basics.pacing if payload.basics else ""
+        if not duration or not pacing:
+            # The film flow (Outline -> Generate Script) sends only the outline; use
+            # the runtime and pacing saved on the project's idea form.
+            saved = await asyncio.to_thread(load_project_runtime, supabase, payload.project_id)
+            if not duration and saved.target_seconds:
+                duration = f"{saved.target_seconds} sec"
+            pacing = pacing or saved.pacing
         plan_prompt = build_plan_prompt(
-            type_config, context.format, source_label, source_body, characters_text, duration
+            type_config, context.format, source_label, source_body, characters_text, duration, pacing
         )
         client = replicate.Client(api_token=api_token)
         # Plan, then make the scene count and lengths fit the runtime the user chose
@@ -1097,6 +1108,7 @@ async def generate_script(payload: GenerateScriptPayload, background_tasks: Back
                 plan_prompt,
                 type_config,
                 duration,
+                pacing=pacing,
             )
         except PlanError as plan_error:
             raise HTTPException(status_code=500, detail=str(plan_error)) from plan_error

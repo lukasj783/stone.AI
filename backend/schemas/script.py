@@ -181,6 +181,8 @@ class MovieBasics(BaseModel):
     duration: str = "120 min"
     genres: list[str] = Field(default_factory=list)
     endingType: Literal["Bittersweet", "Positive", "Cliffhanger", "Ambiguous"] | str = "Bittersweet"
+    # Scene pacing chosen on the idea form: "action" | "comedy" | "drama" ("" = type default).
+    pacing: str = ""
 
 
 class MovieStory(BaseModel):
