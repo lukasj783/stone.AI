@@ -204,6 +204,10 @@ export default function StudioPage() {
             projects={projects}
             activeProjectId={projectId}
             onSelectProject={handleSelectProject}
+            onOpenStoryboard={(sceneId) => {
+              setSelectedStoryboardSceneId(sceneId);
+              setActiveView('storyboards');
+            }}
           />
         );
       case 'projects':
