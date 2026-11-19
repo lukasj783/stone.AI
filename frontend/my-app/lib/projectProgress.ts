@@ -377,24 +377,17 @@ export async function loadProjectSnapshot(projectId: string): Promise<ProjectSna
           .eq('role', 'video')
           .range(from, to),
       ),
+      // Optional: a missing timeline table only leaves the Edit stage at 0.
       countRows(
         supabase.from('timeline_items').select('id', { count: 'exact', head: true }).eq('project_id', projectId),
-      ),
+      ).catch(() => 0),
       supabase
         .from('exports')
         .select('status')
         .eq('project_id', projectId)
         .order('created_at', { ascending: false })
         .limit(1),
-      // Newest first, so the first job seen per scene / shot is its latest run.
-      fetchAll<GenerationJobRow>((from, to) =>
-        supabase
-          .from('generation_jobs')
-          .select('kind, status, scene_id, shot_id, batch_id, error_message')
-          .eq('project_id', projectId)
-          .order('created_at', { ascending: false })
-          .range(from, to),
-      ),
+      loadGenerationJobs(projectId),
     ]);
 
   const sceneList = scenes.map((scene, index) => ({
@@ -489,6 +482,43 @@ interface GenerationJobRow {
   shot_id: string | null;
   batch_id: string | null;
   error_message: string | null;
+}
+
+/**
+ * The project's generation jobs, newest first (so the first job seen per scene or
+ * shot is its latest run). generation_jobs.batch_id only exists once
+ * supabase_shot_video_batches.sql has been applied, so the jobs are read without it
+ * when it is missing; job status is extra information, so any other error only
+ * hides it instead of failing the whole dashboard.
+ */
+async function loadGenerationJobs(projectId: string): Promise<GenerationJobRow[]> {
+  const read = (columns: string) =>
+    fetchAll<GenerationJobRow>((from, to) =>
+      supabase
+        .from('generation_jobs')
+        .select(columns)
+        .eq('project_id', projectId)
+        .order('created_at', { ascending: false })
+        .range(from, to) as unknown as PromiseLike<{
+          data: GenerationJobRow[] | null;
+          error: { message: string } | null;
+        }>,
+    );
+  try {
+    return await read('kind, status, scene_id, shot_id, batch_id, error_message');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    try {
+      if (message.includes('batch_id')) {
+        const rows = await read('kind, status, scene_id, shot_id, error_message');
+        return rows.map((row) => ({ ...row, batch_id: null }));
+      }
+    } catch {
+      // Fall through: show progress without job status.
+    }
+    console.warn('Could not load generation jobs for the dashboard:', message);
+    return [];
+  }
 }
 
 /** Total length of the rendered clips, read in batches of asset ids. */
