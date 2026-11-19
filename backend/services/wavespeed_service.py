@@ -5,7 +5,7 @@ import wavespeed
 from core.supabase_client import get_supabase_client
 from schemas.image_generation import CreateImageRequest, CreateImageResponse
 from schemas.video_generation import CreateImageToVideoRequest, CreateVideoRequest, CreateMotionTransferRequest, CreateLipsyncRequest
-from services.storyboard_models import STORYBOARD_MODELS
+from services.storyboard_models import GPT_IMAGE_EDIT_MODEL, LEGACY_GPT_IMAGE_EDIT_MODELS, STORYBOARD_MODELS
 
 class WaveSpeedServiceError(Exception):
     pass
@@ -18,7 +18,6 @@ NANO_BANANA_ASPECT_RATIOS = {
 NANO_BANANA_2_ASPECT_RATIOS = NANO_BANANA_ASPECT_RATIOS | {"1:4", "4:1", "1:8", "8:1"}
 NANO_BANANA_RESOLUTIONS = {"1k", "2k", "4k"}
 NANO_BANANA_2_RESOLUTIONS = {"0.5k", "1k", "2k", "4k"}
-GPT_IMAGE_2_RESOLUTIONS = {"1k", "2k", "4k"}
 OUTPUT_FORMATS = {"png", "jpeg"}
 INPAINT_MODELS = {"wavespeed-ai/flux-fill-dev", "google/nano-banana-pro/edit"}
 
@@ -130,6 +129,8 @@ def generate_wavespeed_images(payload: CreateImageRequest) -> CreateImageRespons
         }
 
         model_name = payload.model
+        if model_name in LEGACY_GPT_IMAGE_EDIT_MODELS:
+            model_name = GPT_IMAGE_EDIT_MODEL
         output_fmt = _normalize_output_format(payload.output_format)
         input_images = _extract_input_images(payload)
 
@@ -160,12 +161,7 @@ def generate_wavespeed_images(payload: CreateImageRequest) -> CreateImageRespons
         elif "seedream" in model_name and "edit" not in model_name:
             params["size"] = _size_from_aspect_ratio(payload.aspect_ratio)
             
-        # Image-to-image params
-        elif model_name == "openai/gpt-image-2/edit":
-            params["aspect_ratio"] = _normalize_aspect_ratio(payload.aspect_ratio, NANO_BANANA_ASPECT_RATIOS, "1:1")
-            params["resolution"] = _normalize_resolution(payload.resolution, GPT_IMAGE_2_RESOLUTIONS)
-            params["quality"] = "medium"
-            params["output_format"] = output_fmt
+        # Image-to-image params (GPT Image edit models are in STORYBOARD_MODELS above)
         elif "edit-multi" in model_name:
             params["aspect_ratio"] = _normalize_aspect_ratio(payload.aspect_ratio, MULTI_IMAGE_ASPECT_RATIOS)
             params["num_images"] = 2

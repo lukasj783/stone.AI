@@ -21,6 +21,10 @@ from dataclasses import dataclass
 from typing import Callable
 
 DEFAULT_STORYBOARD_MODEL = "google/nano-banana-2/edit"
+# The GPT Image edit model used outside storyboards too (character creator uploads).
+GPT_IMAGE_EDIT_MODEL = "openai/gpt-image-2.6-sunburst/edit"
+# Older GPT Image edit IDs that clients may still send; they map to GPT_IMAGE_EDIT_MODEL.
+LEGACY_GPT_IMAGE_EDIT_MODELS = {"openai/gpt-image-2/edit"}
 TEXT_ONLY_FALLBACK_MODEL = "google/nano-banana-2/text-to-image"
 
 # 16:9 at the smallest size every documented Seedream edit version accepts

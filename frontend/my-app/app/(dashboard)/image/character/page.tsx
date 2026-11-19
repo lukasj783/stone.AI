@@ -107,8 +107,8 @@ const characterModels: GenerationModel[] = [
   },
   {
     id: 201,
-    apiModel: 'openai/gpt-image-2/edit',
-    name: 'GPT Image 2 Edit',
+    apiModel: 'openai/gpt-image-2.6-sunburst/edit',
+    name: 'GPT Image 2.6 Sunburst Edit',
     creator: 'OpenAI',
     tags: ['Edit', 'Reference'],
     thumbnail: 'from-emerald-900 via-teal-900 to-cyan-900',

@@ -6,7 +6,13 @@ import uuid
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 
 from core.supabase_client import get_supabase_client
-from schemas.image_generation import BatchDeleteRequest, CharacterKeyframe, CreateImageRequest, CreateImageResponse
+from schemas.image_generation import (
+    BatchDeleteRequest,
+    CharacterKeyframe,
+    CharacterView,
+    CreateImageRequest,
+    CreateImageResponse,
+)
 from services.character_views import (
     CHARACTER_VIEW_SPECS,
     attach_generation_to_character,
@@ -30,6 +36,7 @@ from services.visual_style import (
     resolve_scene_visual_style,
     resolve_visual_style,
 )
+from services.storyboard_models import GPT_IMAGE_EDIT_MODEL, LEGACY_GPT_IMAGE_EDIT_MODELS
 from services.wavespeed_service import (
     INPAINT_MODELS,
     WaveSpeedServiceError,
@@ -250,6 +257,8 @@ async def generate_from_upload(
                 model = "google/nano-banana-pro/edit"
             elif "nano-banana-2" in model:
                 model = "google/nano-banana/edit"
+            elif model in LEGACY_GPT_IMAGE_EDIT_MODELS:
+                model = GPT_IMAGE_EDIT_MODEL
 
         shared_seed = seed if seed is not None else random.SystemRandom().randint(0, 2_147_483_647)
         prompt_context = "\n\n".join(
@@ -274,7 +283,7 @@ async def generate_from_upload(
         concurrency_limit = max(1, int(os.getenv("CHARACTER_GENERATION_CONCURRENCY", "3")))
         semaphore = asyncio.Semaphore(concurrency_limit)
 
-        async def generate_view(view: object, view_label: str, view_direction: str) -> CharacterKeyframe:
+        async def generate_view(view: CharacterView, view_label: str, view_direction: str) -> CharacterKeyframe:
             prompt = build_character_img2img_view_prompt(prompt_context, view_label, view_direction)
             view_payload = base_payload.model_copy(update={"prompt": prompt, "num_images": 1})
             async with semaphore:
