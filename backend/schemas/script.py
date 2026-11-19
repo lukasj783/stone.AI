@@ -262,3 +262,5 @@ class GenerateScriptResponse(BaseModel):
     project_type: str | None = None
     script_format: str | None = None
     scenes: list[ScriptSceneSchema]
+    target_seconds: int | None = None
+    planned_seconds: int | None = None

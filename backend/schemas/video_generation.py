@@ -75,6 +75,9 @@ SEEDANCE_SHOT_MODEL = "bytedance/seedance-2.0/image-to-video"
 class StartShotVideoBatchRequest(BaseModel):
     project_id: str = Field(min_length=1)
     duration: int = Field(default=5, ge=4, le=15)
+    # Use each shot's planned clip length (sized from the scene's runtime budget);
+    # ``duration`` is then only the fallback for shots without one.
+    use_shot_durations: bool = True
     resolution: Literal["480p", "720p", "1080p", "4k"] = "720p"
     aspect_ratio: Literal["16:9", "9:16", "4:3", "3:4", "1:1", "21:9"] = "16:9"
     generate_audio: bool = True
@@ -118,6 +121,8 @@ class ShotListItem(BaseModel):
     video_asset_id: str | None = None
     video_url: str | None = None
     duration_seconds: float | None = None
+    # Clip length planned from the scene's runtime budget.
+    planned_seconds: float | None = None
     generation_job_id: str | None = None
     batch_id: str | None = None
     status: str
@@ -127,6 +132,11 @@ class ShotListItem(BaseModel):
 class ShotListResponse(BaseModel):
     project_id: str
     shots: list[ShotListItem]
+    # Runtime chosen on the idea form, the sum of planned clip lengths, and the
+    # sum of rendered clip lengths (all in seconds).
+    target_seconds: int | None = None
+    planned_seconds: float | None = None
+    rendered_seconds: float | None = None
 
 
 class AddShotVideoToTimelineRequest(BaseModel):

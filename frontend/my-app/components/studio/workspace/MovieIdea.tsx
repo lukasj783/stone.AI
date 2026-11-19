@@ -14,6 +14,7 @@ import {
   type StudioVideoTypeId,
 } from "@/lib/studioVideoTypes";
 import AlertModal from '@/components/ui/AlertModal';
+import { formatSeconds, parseDurationSeconds } from "@/lib/duration";
 
 interface MovieIdeaProps {
   projectId: string | null;
@@ -166,6 +167,7 @@ export function MovieIdea({
   };
 
   const secondaryCast = useMemo(() => Math.max(characters.length - 1, 0), [characters.length]);
+  const durationSeconds = useMemo(() => parseDurationSeconds(idea.duration), [idea.duration]);
 
   useEffect(() => {
     if (!projectId) return;
@@ -281,6 +283,7 @@ export function MovieIdea({
         videoType: videoTypeConfig.id,
         projectType: idea.projectType,
         duration: idea.duration,
+        durationSeconds: parseDurationSeconds(idea.duration),
         genres: idea.genres,
         logline: idea.logline,
         premise: idea.premise,
@@ -586,8 +589,19 @@ export function MovieIdea({
               aria-label="Estimated duration"
               className="h-10 w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 text-sm"
               value={idea.duration}
+              placeholder="e.g. 30 min, 1 hr, 90 sec"
               onChange={(e) => setIdea((s) => ({ ...s, duration: e.target.value }))}
             />
+            {durationSeconds ? (
+              <p className="mt-2 text-xs text-zinc-500">
+                Target runtime: <span className="font-semibold text-zinc-300">{formatSeconds(durationSeconds)}</span>.
+                Scenes and shots will be planned to add up to this.
+              </p>
+            ) : idea.duration.trim() ? (
+              <p className="mt-2 text-xs text-amber-300">
+                Can&apos;t read this runtime. Try &quot;30 min&quot;, &quot;1 hr&quot; or &quot;90 sec&quot;.
+              </p>
+            ) : null}
           </Panel>
 
           <Panel>

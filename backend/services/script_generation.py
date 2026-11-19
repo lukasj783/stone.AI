@@ -16,8 +16,19 @@ rules again on insert.
 
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
+from services.duration_budget import (
+    budget_plan,
+    max_unit_seconds,
+    parse_duration_seconds,
+    plan_duration_rules,
+    plan_fit_problems,
+    plan_retry_note,
+    split_oversized_units,
+    unit_count_range,
+    unit_length_guide,
+)
 from services.script_config import BlockTypeConfig, FormatConfig, ProjectTypeConfig
 
 
@@ -77,11 +88,17 @@ def build_plan_prompt(
     is_screenplay = script_format.renderer == "screenplay"
     leaf_fields = (
         '"slugline_raw": "INT. OR EXT. LOCATION - TIME", "location_type": "INT." | "EXT." | "INT./EXT.", '
-        '"location": "LOCATION", "time_of_day": "TIME"'
+        '"location": "LOCATION", "time_of_day": "TIME", "duration_seconds": 90'
         if is_screenplay
         else '"location": "Where it takes place, or null", "time_of_day": "DAY | NIGHT | null", "duration_seconds": 15'
     )
-    duration_line = f"\nTarget duration: {duration}" if duration else ""
+    target_seconds = parse_duration_seconds(duration)
+    if target_seconds:
+        duration_line = "\n" + plan_duration_rules(target_seconds, type_config.key, leaf.label)
+    elif duration:
+        duration_line = f"\nTarget duration: {duration}"
+    else:
+        duration_line = ""
     return f"""You are an expert {type_config.label.lower()} writer and story planner.
 Break the source material into a structured plan for a {type_config.label} written as a {script_format.label}.
 Do not write the script content yet; only plan the units.
@@ -121,7 +138,8 @@ Rules:
 - Use only the allowed unit types. A unit may only contain unit types with a higher level number.
 - Every branch must end in a "{leaf.key}"; only "{leaf.key}" units hold script content.
 - Container levels are optional: you may place a "{leaf.key}" directly at the top level.
-- Keep units in the order they will play."""
+- Keep units in the order they will play.
+- "duration_seconds" is the screen time of a "{leaf.key}" in whole seconds."""
 
 
 @dataclass
@@ -214,6 +232,79 @@ def normalize_unit_plan(parsed: Any, type_config: ProjectTypeConfig) -> list[Pla
     return [unit for unit in (convert(raw, 1) for raw in raw_units) if unit]
 
 
+class PlanError(RuntimeError):
+    """The model did not return a usable unit plan."""
+
+
+# Extra model calls allowed when a plan does not fit the runtime.
+PLAN_FIT_RETRIES = 2
+
+
+def plan_to_runtime(
+    run_model: Callable[[str], str],
+    prompt: str,
+    type_config: ProjectTypeConfig,
+    duration: str = "",
+    max_retries: int = PLAN_FIT_RETRIES,
+) -> tuple[list[PlannedUnit], dict[str, Any]]:
+    """Plan the units and make the plan fit the chosen runtime.
+
+    1. Ask the model for a plan and budget it to the target (``budget_plan``).
+    2. If the scene count is outside the range for this runtime, or a scene would
+       run too long, send the plan back with the problems, up to ``max_retries`` times.
+    3. If it still does not fit, split oversized scenes in code so no scene runs
+       longer than ``max_unit_seconds``.
+
+    Returns the plan and a report of what happened.
+    """
+    target_seconds = parse_duration_seconds(duration)
+    leaf_label = type_config.leaf_unit.label
+    attempt_prompt = prompt
+    attempts: list[dict[str, Any]] = []
+    best: tuple[list[PlannedUnit], dict[str, Any], list[str]] | None = None
+
+    for attempt in range(max_retries + 1):
+        try:
+            plan = normalize_unit_plan(parse_model_json(run_model(attempt_prompt)), type_config)
+        except json.JSONDecodeError as error:
+            attempts.append({"attempt": attempt + 1, "error": f"invalid JSON: {error}"})
+            plan = []
+        if plan:
+            budget = budget_plan(plan, target_seconds)
+            problems = plan_fit_problems(plan, target_seconds, type_config.key, leaf_label)
+            attempts.append({
+                "attempt": attempt + 1,
+                "unit_count": budget["unit_count"],
+                "model_seconds": budget["model_seconds"],
+                "problems": problems,
+            })
+            # Keep the plan with the fewest problems in case no attempt fits.
+            if best is None or len(problems) < len(best[2]):
+                best = (plan, budget, problems)
+            if not problems:
+                break
+            attempt_prompt = prompt + plan_retry_note(problems)
+        elif not attempts or "error" not in attempts[-1]:
+            attempts.append({"attempt": attempt + 1, "error": "empty plan"})
+
+    if best is None:
+        raise PlanError("The model returned no usable script plan")
+    plan, budget, problems = best
+    split = split_oversized_units(plan, target_seconds, type_config.key) if problems else 0
+    count = len(leaf_units(plan))
+    low, high = unit_count_range(target_seconds, type_config.key) if target_seconds else (None, None)
+    report = {
+        **budget,
+        "unit_count": count,
+        "unit_count_range": [low, high] if target_seconds else None,
+        "max_unit_seconds": max_unit_seconds(target_seconds, type_config.key) if target_seconds else None,
+        "attempts": attempts,
+        "split_units": split,
+        "fits": not plan_fit_problems(plan, target_seconds, type_config.key, leaf_label),
+    }
+    return plan, report
+
+
 def leaf_units(plan: list[PlannedUnit]) -> list[PlannedUnit]:
     leaves: list[PlannedUnit] = []
     for unit in plan:
@@ -283,7 +374,7 @@ def build_block_prompt(
     if unit.get("location"):
         details.append(f"Location: {unit['location']}")
     if unit.get("duration_seconds"):
-        details.append(f"Target length: about {int(unit['duration_seconds'])} seconds")
+        details.append(unit_length_guide(float(unit["duration_seconds"]), script_format.renderer))
     if unit.get("parent_title"):
         details.append(f"Part of: {unit['parent_title']}")
     genre_line = f"\nGenres / style: {', '.join(genres)}" if genres else ""

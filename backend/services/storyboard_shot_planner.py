@@ -9,6 +9,7 @@ image prompt itself is still assembled deterministically by the storyboard servi
 import json
 from typing import Any
 
+from services.duration_budget import planner_shot_guide
 from services.gemini_client import GeminiError, run_gemini
 from services.storyboard_references import FACINGS, normalize_facing
 
@@ -58,6 +59,8 @@ def build_planner_prompt(
     prop_names: list[str],
     max_shots: int,
     production: str = "Film",
+    target_seconds: float | None = None,
+    project_type: str = "",
 ) -> str:
     rendered_lines = []
     for line in script_lines:
@@ -69,6 +72,8 @@ def build_planner_prompt(
 
     coverage = PRODUCTION_COVERAGE.get(production, "")
     coverage_line = f"\nCOVERAGE STYLE: {coverage}" if coverage else ""
+    if target_seconds:
+        coverage_line += "\n" + planner_shot_guide(target_seconds, project_type)
     return f"""Break this {production.lower()} script unit into a storyboard shot list.
 
 PRODUCTION: {production}{coverage_line}
@@ -198,12 +203,23 @@ def plan_scene_shots(
     prop_names: list[str],
     max_shots: int,
     production: str = "Film",
+    target_seconds: float | None = None,
+    project_type: str = "",
 ) -> list[dict[str, Any]]:
     """Ask the language model for a shot list and return the validated shots."""
     valid_line_numbers = {int(line["number"]) for line in script_lines if line.get("number")}
     if not valid_line_numbers:
         raise ShotPlanningError("Scene has no lines to plan shots for")
-    prompt = build_planner_prompt(scene_heading, script_lines, character_names, prop_names, max_shots, production)
+    prompt = build_planner_prompt(
+        scene_heading,
+        script_lines,
+        character_names,
+        prop_names,
+        max_shots,
+        production,
+        target_seconds=target_seconds,
+        project_type=project_type,
+    )
     try:
         parsed = _parse_json(_run_planner_model(prompt))
     except ShotPlanningError:

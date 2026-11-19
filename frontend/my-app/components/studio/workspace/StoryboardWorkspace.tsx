@@ -115,7 +115,8 @@ export function StoryboardWorkspace({
   }, [projectId]);
   const [videoBatch, setVideoBatch] = useState<ShotVideoBatchResponse | null>(null);
   const [isQueueingVideos, setIsQueueingVideos] = useState(false);
-  const [videoDuration, setVideoDuration] = useState(5);
+  // 0 = auto: each shot uses the clip length planned from the runtime budget.
+  const [videoDuration, setVideoDuration] = useState(0);
   const [videoResolution, setVideoResolution] = useState<'480p' | '720p' | '1080p' | '4k'>('720p');
   const [videoAudio, setVideoAudio] = useState(true);
 
@@ -374,7 +375,8 @@ export function StoryboardWorkspace({
     try {
       applyVideoBatch(await startShotVideoBatch({
         project_id: projectId,
-        duration: videoDuration,
+        duration: videoDuration || 5,
+        use_shot_durations: videoDuration === 0,
         resolution: videoResolution,
         aspect_ratio: '16:9',
         generate_audio: videoAudio,
@@ -489,7 +491,8 @@ export function StoryboardWorkspace({
                   aria-label="Shot video duration"
                   className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-[11px] font-semibold text-zinc-200 disabled:opacity-50"
                 >
-                  {[4, 5, 6, 8, 10, 15].map((duration) => <option key={duration} value={duration}>{duration}s</option>)}
+                  <option value={0}>Auto (fits runtime)</option>
+                  {[4, 5, 6, 8, 10, 15].map((duration) => <option key={duration} value={duration}>{duration}s each</option>)}
                 </select>
                 <select
                   value={videoResolution}

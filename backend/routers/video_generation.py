@@ -26,6 +26,7 @@ from schemas.video_generation import (
     AddShotVideoToTimelineRequest,
     AddShotVideoToTimelineResponse,
 )
+from services.duration_budget import MAX_CLIP_SECONDS, MIN_CLIP_SECONDS, parse_duration_seconds
 from tasks.shot_video_tasks import submit_shot_video
 from services.wavespeed_service import (
     WaveSpeedServiceError,
@@ -47,10 +48,11 @@ def _shot_list_response(project_id: str) -> ShotListResponse:
     if not supabase:
         raise RuntimeError("Supabase client not configured")
     shots = supabase.table("shots").select(
-        "id, scene_id, shot_number, description, camera_angle, camera_motion, sort_order"
+        "id, scene_id, shot_number, description, camera_angle, camera_motion, sort_order, duration_seconds"
     ).eq("project_id", project_id).order("scene_id").order("sort_order").execute().data or []
+    target_seconds = _project_target_seconds(supabase, project_id)
     if not shots:
-        return ShotListResponse(project_id=project_id, shots=[])
+        return ShotListResponse(project_id=project_id, shots=[], target_seconds=target_seconds)
 
     scene_ids = list({shot["scene_id"] for shot in shots if shot.get("scene_id")})
     scenes = supabase.table("scenes").select("id, slugline_raw, sort_order").in_("id", scene_ids).execute().data or []
@@ -106,12 +108,33 @@ def _shot_list_response(project_id: str) -> ShotListResponse:
             video_asset_id=video.get("id") if video else None,
             video_url=video.get("url") if video else None,
             duration_seconds=float(video["duration_seconds"]) if video and video.get("duration_seconds") is not None else None,
+            planned_seconds=float(shot["duration_seconds"]) if shot.get("duration_seconds") is not None else None,
             generation_job_id=job.get("id") if job else None,
             batch_id=job.get("batch_id") if job else None,
             status=status,
             error_message=job.get("error_message") if job else None,
         ))
-    return ShotListResponse(project_id=project_id, shots=sorted(result, key=lambda item: (item.scene_sort_order, item.sort_order)))
+    planned = [item.planned_seconds for item in result if item.planned_seconds is not None]
+    rendered = [item.duration_seconds for item in result if item.duration_seconds is not None]
+    return ShotListResponse(
+        project_id=project_id,
+        shots=sorted(result, key=lambda item: (item.scene_sort_order, item.sort_order)),
+        target_seconds=target_seconds,
+        planned_seconds=round(sum(planned), 3) if planned else None,
+        rendered_seconds=round(sum(rendered), 3) if rendered else None,
+    )
+
+
+def _project_target_seconds(supabase, project_id: str) -> int | None:
+    """The runtime chosen on the idea form, in seconds."""
+    rows = supabase.table("project_documents").select("metadata").eq("project_id", project_id).eq(
+        "type", "idea"
+    ).limit(1).execute().data or []
+    metadata = rows[0].get("metadata") if rows else None
+    if not isinstance(metadata, dict):
+        return None
+    brief = metadata.get("brief") if isinstance(metadata.get("brief"), dict) else {}
+    return parse_duration_seconds(metadata.get("duration") or brief.get("duration"))
 
 
 @router.get("/shot-list", response_model=ShotListResponse)
@@ -231,6 +254,19 @@ def _batch_response(project_id: str, batch_id: str) -> ShotVideoBatchResponse:
     )
 
 
+def _shot_clip_seconds(shot: dict, payload: StartShotVideoBatchRequest) -> int:
+    """The shot's planned length (from the scene's runtime budget) when there is one,
+    otherwise the batch default, clamped to what Seedance renders."""
+    planned = shot.get("duration_seconds")
+    if not payload.use_shot_durations or planned is None:
+        return payload.duration
+    try:
+        seconds = round(float(planned))
+    except (TypeError, ValueError):
+        return payload.duration
+    return min(MAX_CLIP_SECONDS, max(MIN_CLIP_SECONDS, seconds))
+
+
 @router.post("/shot-batches", response_model=ShotVideoBatchResponse, status_code=202)
 def start_shot_video_batch(payload: StartShotVideoBatchRequest) -> ShotVideoBatchResponse:
     """Queue one Seedance render for every completed storyboard image in a project."""
@@ -245,7 +281,7 @@ def start_shot_video_batch(payload: StartShotVideoBatchRequest) -> ShotVideoBatc
             raise HTTPException(status_code=409, detail="A shot video batch is already active for this project")
 
         shots = supabase.table("shots").select(
-            "id, shot_number, prompt, camera_motion"
+            "id, shot_number, prompt, camera_motion, duration_seconds"
         ).eq("project_id", payload.project_id).eq("status", "complete").order("scene_id").order("sort_order").execute().data or []
         if not shots:
             raise ValueError("No completed storyboard shots are available for this project")
@@ -285,7 +321,11 @@ def start_shot_video_batch(payload: StartShotVideoBatchRequest) -> ShotVideoBatc
                 "kind": "video",
                 "model": "bytedance/seedance-2.0/image-to-video",
                 "prompt": f"{shot.get('prompt') or ''}\nCamera movement: {shot.get('camera_motion') or 'natural subtle cinematic motion'}".strip(),
-                "settings": {**settings, "storyboard_image_url": image_by_shot[shot["id"]]},
+                "settings": {
+                    **settings,
+                    "duration": _shot_clip_seconds(shot, payload),
+                    "storyboard_image_url": image_by_shot[shot["id"]],
+                },
                 "status": "queued",
             }
             for shot in eligible_shots

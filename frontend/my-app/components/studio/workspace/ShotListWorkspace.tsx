@@ -13,6 +13,7 @@ import {
   retryFailedShotVideos,
   type ShotListItem,
 } from '@/lib/api/video-generation';
+import { formatSeconds, RUNTIME_TOLERANCE, runtimeDrift } from '@/lib/duration';
 
 type Filter = 'all' | 'complete' | 'rendering' | 'failed' | 'missing';
 
@@ -41,6 +42,30 @@ function statusClass(status: string): string {
   return 'border-zinc-700 bg-zinc-800/70 text-zinc-400';
 }
 
+interface Runtime {
+  target: number | null;
+  planned: number | null;
+  rendered: number | null;
+}
+
+function RuntimeFigure({ label, seconds, target }: { label: string; seconds: number | null; target: number | null }): JSX.Element | null {
+  if (seconds == null) return null;
+  const drift = runtimeDrift(target, seconds);
+  const tone = drift == null
+    ? 'text-zinc-300'
+    : Math.abs(drift) <= RUNTIME_TOLERANCE
+      ? 'text-emerald-300'
+      : Math.abs(drift) <= RUNTIME_TOLERANCE * 3
+        ? 'text-amber-300'
+        : 'text-red-300';
+  return (
+    <span className="text-zinc-500">
+      {label} <span className={`font-mono font-semibold ${tone}`}>{formatSeconds(seconds)}</span>
+      {drift != null && <span className={`ml-1 font-mono ${tone}`}>({drift >= 0 ? '+' : ''}{Math.round(drift * 100)}%)</span>}
+    </span>
+  );
+}
+
 function statusLabel(status: string): string {
   if (status === 'in_progress') return 'Rendering';
   if (status === 'missing') return 'No video';
@@ -49,6 +74,7 @@ function statusLabel(status: string): string {
 
 export function ShotListWorkspace({ projectId, onOpenStoryboard, onOpenTimeline }: ShotListWorkspaceProps): JSX.Element {
   const [shots, setShots] = useState<ShotListItem[]>([]);
+  const [runtime, setRuntime] = useState<Runtime>({ target: null, planned: null, rendered: null });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>('all');
   const [isLoading, setIsLoading] = useState(false);
@@ -63,6 +89,11 @@ export function ShotListWorkspace({ projectId, onOpenStoryboard, onOpenTimeline 
     try {
       const response = await getShotList(projectId);
       setShots(response.shots);
+      setRuntime({
+        target: response.target_seconds ?? null,
+        planned: response.planned_seconds ?? null,
+        rendered: response.rendered_seconds ?? null,
+      });
       setSelectedId((current) => {
         if (current && response.shots.some((shot) => shot.shot_id === current)) return current;
         return response.shots.find((shot) => shot.video_url)?.shot_id ?? response.shots[0]?.shot_id ?? null;
@@ -148,6 +179,9 @@ export function ShotListWorkspace({ projectId, onOpenStoryboard, onOpenTimeline 
           <span className="text-emerald-300">{completedCount} complete</span>
           {renderingCount > 0 && <span className="text-cyan-300">{renderingCount} rendering</span>}
           {failedCount > 0 && <span className="text-red-300">{failedCount} failed</span>}
+          {runtime.target != null && <span className="text-zinc-500">Target <span className="font-mono font-semibold text-zinc-300">{formatSeconds(runtime.target)}</span></span>}
+          <RuntimeFigure label="Planned" seconds={runtime.planned} target={runtime.target} />
+          <RuntimeFigure label="Rendered" seconds={runtime.rendered} target={runtime.target} />
           <div className="ml-auto flex flex-wrap gap-1">
             {FILTERS.map((item) => <button key={item.id} type="button" onClick={() => setFilter(item.id)} className={`h-7 px-2.5 font-medium ${filter === item.id ? 'bg-cyan-500/15 text-cyan-200' : 'text-zinc-500 hover:bg-zinc-900 hover:text-zinc-300'}`}>{item.label}</button>)}
           </div>
@@ -159,7 +193,7 @@ export function ShotListWorkspace({ projectId, onOpenStoryboard, onOpenTimeline 
         {isLoading && shots.length === 0 ? <div className="flex min-h-72 items-center justify-center gap-3 text-sm text-zinc-500"><LoaderCircle className="h-5 w-5 animate-spin" />Loading shots...</div> : shots.length === 0 ? <div className="flex min-h-72 flex-col items-center justify-center border border-dashed border-zinc-800 text-center"><Film className="mb-3 h-8 w-8 text-zinc-700" /><h2 className="text-sm font-semibold text-zinc-300">No planned shots yet</h2><p className="mt-1 max-w-sm text-sm text-zinc-500">Generate storyboard images from a scene before reviewing production shots.</p></div> : (
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_26rem]">
             <div className="overflow-x-auto border border-zinc-800 bg-zinc-950">
-              <table className="w-full min-w-220 text-left text-sm"><thead className="border-b border-zinc-800 bg-zinc-900/60 text-[10px] font-semibold uppercase tracking-wide text-zinc-500"><tr><th className="px-4 py-3">Shot</th><th className="px-4 py-3">Scene</th><th className="px-4 py-3">Description</th><th className="px-4 py-3">Camera</th><th className="px-4 py-3">Duration</th><th className="px-4 py-3 text-right">Video</th></tr></thead><tbody className="divide-y divide-zinc-800/80">{visibleShots.map((shot) => <tr key={shot.shot_id} onClick={() => { setSelectedId(shot.shot_id); setNotice(null); }} className={`cursor-pointer transition-colors hover:bg-zinc-900 ${selected?.shot_id === shot.shot_id ? 'bg-cyan-500/10' : ''}`}><td className="px-4 py-3 font-mono text-xs font-bold text-cyan-300">S{shot.scene_sort_order + 1}.{shot.shot_number ?? shot.sort_order + 1}</td><td className="max-w-44 truncate px-4 py-3 text-xs text-zinc-400">{shot.scene_slugline || 'Untitled scene'}</td><td className="max-w-72 truncate px-4 py-3 text-xs text-zinc-200">{shot.description || 'No description'}</td><td className="px-4 py-3 text-xs text-zinc-500"><div>{shot.camera_angle || 'Unspecified'}</div><div className="mt-0.5 text-zinc-600">{shot.camera_motion || 'Static'}</div></td><td className="px-4 py-3 font-mono text-xs text-zinc-500">{shot.duration_seconds ? `${shot.duration_seconds}s` : '---'}</td><td className="px-4 py-3 text-right"><span className={`inline-flex items-center gap-1 border px-2 py-1 text-[10px] font-semibold ${statusClass(shot.status)}`}>{isRendering(shot.status) && <RefreshCw className="h-3 w-3 animate-spin" />}{shot.status === 'complete' && <CheckCircle2 className="h-3 w-3" />}{shot.status === 'failed' && <XCircle className="h-3 w-3" />}{statusLabel(shot.status)}</span></td></tr>)}</tbody></table>
+              <table className="w-full min-w-220 text-left text-sm"><thead className="border-b border-zinc-800 bg-zinc-900/60 text-[10px] font-semibold uppercase tracking-wide text-zinc-500"><tr><th className="px-4 py-3">Shot</th><th className="px-4 py-3">Scene</th><th className="px-4 py-3">Description</th><th className="px-4 py-3">Camera</th><th className="px-4 py-3">Duration</th><th className="px-4 py-3 text-right">Video</th></tr></thead><tbody className="divide-y divide-zinc-800/80">{visibleShots.map((shot) => <tr key={shot.shot_id} onClick={() => { setSelectedId(shot.shot_id); setNotice(null); }} className={`cursor-pointer transition-colors hover:bg-zinc-900 ${selected?.shot_id === shot.shot_id ? 'bg-cyan-500/10' : ''}`}><td className="px-4 py-3 font-mono text-xs font-bold text-cyan-300">S{shot.scene_sort_order + 1}.{shot.shot_number ?? shot.sort_order + 1}</td><td className="max-w-44 truncate px-4 py-3 text-xs text-zinc-400">{shot.scene_slugline || 'Untitled scene'}</td><td className="max-w-72 truncate px-4 py-3 text-xs text-zinc-200">{shot.description || 'No description'}</td><td className="px-4 py-3 text-xs text-zinc-500"><div>{shot.camera_angle || 'Unspecified'}</div><div className="mt-0.5 text-zinc-600">{shot.camera_motion || 'Static'}</div></td><td className="px-4 py-3 font-mono text-xs text-zinc-500">{shot.duration_seconds ? `${shot.duration_seconds}s` : shot.planned_seconds ? <span className="text-zinc-600" title="Planned clip length">{shot.planned_seconds}s planned</span> : '---'}</td><td className="px-4 py-3 text-right"><span className={`inline-flex items-center gap-1 border px-2 py-1 text-[10px] font-semibold ${statusClass(shot.status)}`}>{isRendering(shot.status) && <RefreshCw className="h-3 w-3 animate-spin" />}{shot.status === 'complete' && <CheckCircle2 className="h-3 w-3" />}{shot.status === 'failed' && <XCircle className="h-3 w-3" />}{statusLabel(shot.status)}</span></td></tr>)}</tbody></table>
               {visibleShots.length === 0 && <div className="px-6 py-12 text-center text-sm text-zinc-500">No shots match this filter.</div>}
             </div>
 

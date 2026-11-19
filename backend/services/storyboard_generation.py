@@ -1,6 +1,7 @@
 import concurrent.futures
 import io
 import logging
+import math
 import os
 import re
 import uuid
@@ -18,6 +19,7 @@ from schemas.image_generation import (
     GenerateStoryboardResponse,
     StoryboardFrame,
 )
+from services.duration_budget import MAX_CLIP_SECONDS, allocate_shot_durations, shot_weight
 from services.image_generation_service import generate_provider_images
 from services.project_visual_style import ProjectVisualStyle, apply_visual_style, load_project_visual_style
 from services.script_config import ProjectTypeConfig, load_project_script_context
@@ -526,6 +528,8 @@ def _plan_scene_shots(
     characters: list[dict[str, Any]] | None,
     objects: list[dict[str, Any]] | None,
     production: str = "Film",
+    target_seconds: float | None = None,
+    project_type: str = "",
 ) -> tuple[list[dict[str, Any]], str, str | None]:
     """Turn script beats into an ordered shot list.
 
@@ -537,7 +541,12 @@ def _plan_scene_shots(
         return _deterministic_shot_plans(beats), SHOT_PLANNER_DETERMINISTIC, None
 
     # The cap never drops below the line count, so each line always keeps a shot.
-    max_shots = max(_env_int("STORYBOARD_MAX_SHOTS", DEFAULT_MAX_SHOTS), len(beats))
+    # It also leaves room for enough clips to fill the scene's runtime budget.
+    max_shots = max(
+        _env_int("STORYBOARD_MAX_SHOTS", DEFAULT_MAX_SHOTS),
+        len(beats),
+        math.ceil((target_seconds or 0) / MAX_CLIP_SECONDS),
+    )
     try:
         raw_plans = plan_scene_shots(
             scene_heading=str(
@@ -548,6 +557,8 @@ def _plan_scene_shots(
             character_names=[str(c["name"]) for c in characters or [] if c.get("name")],
             prop_names=[str(o["name"]) for o in objects or [] if o.get("name")],
             max_shots=max_shots,
+            target_seconds=target_seconds,
+            project_type=project_type,
         )
     except ShotPlanningError as error:
         logger.warning("Storyboard shot planner failed; using one shot per line: %s", error)
@@ -578,6 +589,47 @@ def _plan_scene_shots(
             })
     plans.sort(key=lambda plan: plan["first_line"])
     return _trim_shot_plans(plans, max_shots), SHOT_PLANNER_LLM, None
+
+
+def _scene_seconds(scene: dict[str, Any]) -> float | None:
+    try:
+        seconds = float(scene.get("duration_seconds") or 0)
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
+
+
+def _shot_durations(
+    frames: list[dict[str, Any]],
+    blocks: list[dict[str, Any]],
+    type_config: ProjectTypeConfig,
+    scene_seconds: float | None,
+) -> list[int]:
+    """Clip length for each shot: the scene's budget split by how much each shot
+    has to carry (spoken lines need time to be heard), snapped to clip lengths
+    the video model renders."""
+    blocks_by_id = {block.get("id"): block for block in blocks if block.get("id")}
+    spoken_keys = set(type_config.spoken_block_keys)
+    weights: list[float] = []
+    for frame in frames:
+        spoken: list[str] = []
+        visual: list[str] = [str(frame.get("description") or "")]
+        for block_id in frame.get("source_block_ids") or []:
+            block = blocks_by_id.get(block_id)
+            if not block:
+                continue
+            target = spoken if _block_type(block) in spoken_keys else visual
+            target.append(_block_text(block))
+        weights.append(shot_weight(" ".join(spoken), " ".join(visual)))
+    # A line split over several shots shares its spoken time between them.
+    counts: dict[Any, int] = {}
+    for frame in frames:
+        for block_id in frame.get("source_block_ids") or []:
+            counts[block_id] = counts.get(block_id, 0) + 1
+    for index, frame in enumerate(frames):
+        share = max((counts.get(b, 1) for b in frame.get("source_block_ids") or []), default=1)
+        weights[index] = max(1.0, weights[index] / share)
+    return allocate_shot_durations(scene_seconds, weights, type_config.key)
 
 
 def _shot_characters(plan: dict[str, Any], characters: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -1133,7 +1185,7 @@ def generate_scene_storyboard(
     supabase = require_supabase_client()
 
     scene_result = supabase.table("scenes").select(
-        "id, project_id, slugline_raw, title, unit_type, is_leaf, location, time_of_day, summary"
+        "id, project_id, slugline_raw, title, unit_type, is_leaf, location, time_of_day, summary, duration_seconds"
     ).eq("id", scene_id).eq("project_id", project_id).execute()
     if not _rows(scene_result):
         raise ValueError("Scene was not found in this project")
@@ -1171,10 +1223,19 @@ def generate_scene_storyboard(
     visual_style = load_project_visual_style(project_id, supabase)
     characters, environment, objects = _gather_scene_linked_entities(project_id, scene_id, blocks)
 
+    scene_seconds = _scene_seconds(scene)
     shot_plans, shot_planner, planner_error = _plan_scene_shots(
-        capped_beats, scene, blocks, characters, objects, production=vocabulary.production
+        capped_beats,
+        scene,
+        blocks,
+        characters,
+        objects,
+        production=vocabulary.production,
+        target_seconds=scene_seconds,
+        project_type=type_config.key,
     )
     planned_frames = _build_frames_from_shot_plans(shot_plans, scene, characters, environment, objects)
+    shot_seconds = _shot_durations(planned_frames, blocks, type_config, scene_seconds)
 
     action_blocks = _action_blocks(blocks, vocabulary)
     covered_block_ids = {block_id for frame in planned_frames for block_id in frame["source_block_ids"]}
@@ -1202,6 +1263,7 @@ def generate_scene_storyboard(
             "prompt": frame["prompt"],
             "status": "in_progress",
             "sort_order": index,
+            "duration_seconds": shot_seconds[index],
             "metadata": {
                 "source_block_id": frame["source_block_id"],
                 "source_block_ids": frame["source_block_ids"],

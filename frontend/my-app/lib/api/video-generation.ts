@@ -11,6 +11,8 @@ export type SeedanceAspectRatio = '16:9' | '9:16' | '4:3' | '3:4' | '1:1' | '21:
 export interface StartShotVideoBatchPayload {
   project_id: string;
   duration: number;
+  /** Use each shot's planned clip length; `duration` is the fallback. */
+  use_shot_durations?: boolean;
   resolution: SeedanceResolution;
   aspect_ratio: SeedanceAspectRatio;
   generate_audio: boolean;
@@ -50,6 +52,8 @@ export interface ShotListItem {
   video_asset_id: string | null;
   video_url: string | null;
   duration_seconds: number | null;
+  /** Clip length planned from the scene's runtime budget. */
+  planned_seconds: number | null;
   generation_job_id: string | null;
   batch_id: string | null;
   status: string;
@@ -59,6 +63,12 @@ export interface ShotListItem {
 export interface ShotListResponse {
   project_id: string;
   shots: ShotListItem[];
+  /** Runtime chosen on the idea form, in seconds. */
+  target_seconds: number | null;
+  /** Sum of the shots' planned clip lengths. */
+  planned_seconds: number | null;
+  /** Sum of the rendered clip lengths. */
+  rendered_seconds: number | null;
 }
 
 export interface AddShotVideoToTimelineResponse {

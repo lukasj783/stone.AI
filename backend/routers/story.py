@@ -50,6 +50,7 @@ from services.character_views import EDITABLE_CHARACTER_FIELDS, effective_charac
 from services.character_ranking import rank_characters_from_script
 from services.environment_ranking import rank_environments_from_script
 from services.object_ranking import ObjectRanking, rank_objects_from_script, rank_project_objects
+from services.duration_budget import format_seconds, parse_duration_seconds
 from services.gemini_client import run_gemini
 from services.script_config import load_project_script_context
 from services.script_generation import (
@@ -57,8 +58,9 @@ from services.script_generation import (
     build_block_prompt,
     build_plan_prompt,
     normalize_blocks,
-    normalize_unit_plan,
     parse_model_json,
+    PlanError,
+    plan_to_runtime,
 )
 from routers.script_engine import compile_project_script, save_compiled_script
 
@@ -961,6 +963,17 @@ async def delete_object(object_id: str, project_id: str) -> None:
     except Exception as error:
         raise HTTPException(status_code=400, detail=f"Object deletion failed: {error}") from error
 
+def _outline_runtime_line(duration: str) -> str:
+    """Ask the outline to fit the runtime the user chose (about one page a minute)."""
+    seconds = parse_duration_seconds(duration)
+    if not seconds:
+        return ""
+    return (
+        f"The finished film must run about {format_seconds(seconds)}. Scale the number of scenes and "
+        "story beats to that runtime, and note an approximate length (in minutes or seconds) beside each act."
+    )
+
+
 @router.post("/generate-outline", response_model=GenerateOutlineResponse)
 async def generate_outline(payload: MovieIdeaPayload) -> GenerateOutlineResponse:
     try:
@@ -1002,7 +1015,7 @@ Please structure the outline into:
 3. Act III (Climax, Resolution)
 
 Return the output in clean Markdown format with professional sluglines.
-"""
+{_outline_runtime_line(payload.basics.duration)}"""
 
         client = replicate.Client(api_token=api_token)
 
@@ -1075,13 +1088,19 @@ async def generate_script(payload: GenerateScriptPayload, background_tasks: Back
             type_config, context.format, source_label, source_body, characters_text, duration
         )
         client = replicate.Client(api_token=api_token)
-        plan_text = await asyncio.to_thread(_run_gemini, client, plan_prompt)
+        # Plan, then make the scene count and lengths fit the runtime the user chose
+        # (re-asking the model when they do not, then splitting overlong scenes).
         try:
-            plan = normalize_unit_plan(parse_model_json(plan_text), type_config)
-        except json.JSONDecodeError as je:
-            raise HTTPException(status_code=500, detail=f"Invalid plan JSON returned by the model: {je}") from je
-        if not plan:
-            raise HTTPException(status_code=500, detail="The model returned an empty script plan")
+            plan, runtime = await asyncio.to_thread(
+                plan_to_runtime,
+                lambda prompt: _run_gemini(client, prompt),
+                plan_prompt,
+                type_config,
+                duration,
+            )
+        except PlanError as plan_error:
+            raise HTTPException(status_code=500, detail=str(plan_error)) from plan_error
+        print(f"Script plan runtime fit: {runtime}")
 
         # Replace any previous script for the project.
         supabase.table("scenes").delete().eq("project_id", payload.project_id).execute()
@@ -1140,6 +1159,8 @@ async def generate_script(payload: GenerateScriptPayload, background_tasks: Back
             project_type=type_config.key,
             script_format=context.format.key,
             scenes=response_scenes,
+            target_seconds=runtime["target_seconds"],
+            planned_seconds=runtime["planned_seconds"],
         )
 
     except HTTPException:
