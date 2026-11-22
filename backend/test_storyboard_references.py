@@ -238,3 +238,87 @@ class CharacterTierTests(unittest.TestCase):
         self.assertEqual(sum(label.startswith("VOSS") for label in labels), 3)
         self.assertEqual(sum(label.startswith("MARA") for label in labels), 2)
         self.assertEqual([label for label in labels if label.startswith("CLERK")], ["CLERK, face close-up"])
+
+
+def _sheet_character(name: str, tier: str | None = None, with_old_views: bool = False) -> dict:
+    views = {view: f"http://img/{name}/{view}.png" for view in ALL_VIEWS} if with_old_views else {}
+    views.update({"model_sheet": f"http://img/{name}/sheet.png", "face_closeup": f"http://img/{name}/face.png"})
+    return {"id": name, "name": name, "views": views, "tier": tier}
+
+
+class ModelSheetTests(unittest.TestCase):
+    def test_medium_shot_sends_sheet_then_face(self) -> None:
+        refs = build_frame_references([_sheet_character("VOSS")], {}, "medium shot", None, [], 10)
+        self.assertEqual([r.url for r in refs], ["http://img/VOSS/sheet.png", "http://img/VOSS/face.png"])
+        self.assertTrue(refs[0].is_sheet)
+        self.assertFalse(refs[1].is_sheet)
+
+    def test_close_up_puts_face_first(self) -> None:
+        refs = build_frame_references([_sheet_character("VOSS")], {}, "close-up", None, [], 10)
+        self.assertEqual([r.url for r in refs], ["http://img/VOSS/face.png", "http://img/VOSS/sheet.png"])
+
+    def test_facing_away_sends_only_the_sheet(self) -> None:
+        voss = _sheet_character("VOSS")
+        refs = build_frame_references([voss], {id(voss): "away from camera"}, "medium shot", None, [], 10)
+        self.assertEqual([r.url for r in refs], ["http://img/VOSS/sheet.png"])
+
+    def test_sheet_wins_over_older_turnaround_views(self) -> None:
+        refs = build_frame_references([_sheet_character("VOSS", with_old_views=True)], {}, "wide shot", None, [], 10)
+        self.assertEqual([r.url for r in refs], ["http://img/VOSS/sheet.png", "http://img/VOSS/face.png"])
+
+    def test_minor_character_gets_one_image(self) -> None:
+        wide = build_frame_references([_sheet_character("CLERK", "minor")], {}, "wide shot", None, [], 10)
+        close = build_frame_references([_sheet_character("CLERK", "minor")], {}, "close-up", None, [], 10)
+        self.assertEqual([r.url for r in wide], ["http://img/CLERK/sheet.png"])
+        self.assertEqual([r.url for r in close], ["http://img/CLERK/face.png"])
+
+    def test_prompt_says_the_sheet_is_one_person(self) -> None:
+        refs = build_frame_references([_sheet_character("VOSS")], {}, "medium shot", None, [], 10)
+        text = describe_references(refs) or ""
+        self.assertIn("Image 1: VOSS, character sheet", text)
+        self.assertIn("ONE person", text)
+        self.assertIn("Draw that person once", text)
+        legacy = describe_references(build_frame_references([_character("MARA", *ALL_VIEWS)], {}, "medium shot", None, [], 10)) or ""
+        self.assertNotIn("ONE person", legacy)
+
+    def test_sheet_link_is_read_as_a_view(self) -> None:
+        links = [
+            {"asset_id": "sheet", "role": "model_sheet", "metadata": {}},
+            {"asset_id": "face", "role": "face_closeup", "metadata": {}},
+        ]
+        self.assertEqual(
+            sg._character_views_from_links(links, {"sheet": "http://sheet", "face": "http://face"}),
+            {"model_sheet": "http://sheet", "face_closeup": "http://face"},
+        )
+
+
+class _FakeQuery:
+    """Any chain of query calls; execute() returns the table's rows."""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    def __getattr__(self, name):
+        return lambda *args, **kwargs: self
+
+    def execute(self):
+        from types import SimpleNamespace
+        return SimpleNamespace(data=self.rows)
+
+
+class ManualProfileTests(unittest.TestCase):
+    def test_storyboard_uses_manual_profile_values_over_script_facts(self) -> None:
+        from unittest.mock import MagicMock, patch
+        character = {
+            "id": "c1", "name": "VOSS", "role": None, "character_type": "main", "age": None, "gender": None, "race": None,
+            "appearance": None, "personality": None, "tags": [], "primary_asset_id": None,
+            "metadata": {"source": "script", "manual_overrides": {
+                "role": "Station engineer", "gender": "woman", "appearance": "cropped grey hair, scar over the left brow", "age": 48,
+            }},
+        }
+        supabase = MagicMock()
+        supabase.table.side_effect = lambda name: _FakeQuery({"characters": [character], "scenes": {"location": "DOCK"}}.get(name, []))
+        with patch.object(sg, "require_supabase_client", return_value=supabase), patch.object(sg, "_attach_importance_tiers"):
+            characters, _, _ = sg._gather_scene_linked_entities("project-1", "scene-1", [])
+        description = sg._describe_character(characters[0])
+        self.assertEqual(description, "VOSS (Station engineer, 48, woman): cropped grey hair, scar over the left brow")

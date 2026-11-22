@@ -39,6 +39,9 @@ export interface RuntimeSnapshot {
   scriptSeconds: number | null;
   /** Sum of the storyboard shots' planned clip lengths. */
   shotSeconds: number | null;
+  /** Planned script length of just the storyboarded scenes (what shotSeconds should match). */
+  storyboardedSceneSeconds: number | null;
+  storyboardedSceneCount: number;
   /** Sum of the rendered shot clips' lengths. */
   renderedSeconds: number | null;
 }
@@ -455,6 +458,10 @@ export async function loadProjectSnapshot(projectId: string): Promise<ProjectSna
       pacing: isPacing(ideaMetadata.pacing) ? ideaMetadata.pacing : null,
       scriptSeconds: sum(scenes.map((scene) => scene.duration_seconds)),
       shotSeconds: sum(storyboardShots.map((shot) => shot.duration_seconds)),
+      storyboardedSceneSeconds: sum(
+        scenes.filter((scene) => storyboardedSceneIds.has(scene.id)).map((scene) => scene.duration_seconds),
+      ),
+      storyboardedSceneCount: scenes.filter((scene) => storyboardedSceneIds.has(scene.id)).length,
       renderedSeconds: await renderedSeconds(videoLinks.map((link) => link.asset_id)),
     },
     failures: {

@@ -11,13 +11,17 @@ interface StoryboardModelPickerProps {
   value: string;
   onChange: (modelId: string) => void;
   disabled?: boolean;
+  /** Shown before the dropdown, e.g. "Character model". */
+  label?: string;
+  /** "end" right-aligns (storyboard toolbar); "start" stacks under a form label. */
+  align?: 'start' | 'end';
 }
 
 /**
- * Choose which WaveSpeed image-edit model renders storyboard frames. Every shot sends its
- * character, location and prop reference images to the chosen model.
+ * Choose a WaveSpeed image-edit model. Storyboard frames use it to render each shot from its
+ * character, location and prop references; character sheets use the same list.
  */
-export function StoryboardModelPicker({ value, onChange, disabled = false }: StoryboardModelPickerProps) {
+export function StoryboardModelPicker({ value, onChange, disabled = false, label = 'Storyboard model', align = 'end' }: StoryboardModelPickerProps) {
   const [models, setModels] = useState<StoryboardModelOption[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -39,16 +43,16 @@ export function StoryboardModelPicker({ value, onChange, disabled = false }: Sto
   const selected = models.find((model) => model.id === value);
   const families = Array.from(new Set(models.map((model) => model.family)));
 
-  return <div className="flex min-w-0 flex-col items-end gap-1">
-    <label className="flex items-center gap-2 text-[11px] text-zinc-400">
-      <Cpu className="h-3.5 w-3.5 text-violet-400" />
-      <span className="whitespace-nowrap">Storyboard model</span>
+  const start = align === 'start';
+  return <div className={`flex min-w-0 flex-col gap-1 ${start ? 'items-stretch' : 'items-end'}`}>
+    <label className={`flex gap-2 text-[11px] text-zinc-400 ${start ? 'flex-col items-stretch' : 'items-center'}`}>
+      <span className="flex items-center gap-2 whitespace-nowrap"><Cpu className="h-3.5 w-3.5 text-violet-400" />{label}</span>
       <select
         value={value}
         onChange={(event) => onChange(event.target.value)}
         disabled={disabled || models.length === 0}
-        aria-label="Storyboard image model"
-        className="max-w-60 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-[11px] font-semibold text-zinc-200 outline-none focus:border-violet-400 disabled:opacity-50"
+        aria-label={`${label} (WaveSpeed)`}
+        className={`${start ? 'w-full' : 'max-w-60'} rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-[11px] font-semibold text-zinc-200 outline-none focus:border-violet-400 disabled:opacity-50`}
       >
         {models.length === 0 && <option value={value}>{loadError ? 'Default (WaveSpeed)' : 'Loading models...'}</option>}
         {families.map((family) => <optgroup key={family} label={family}>
@@ -58,7 +62,7 @@ export function StoryboardModelPicker({ value, onChange, disabled = false }: Sto
         </optgroup>)}
       </select>
     </label>
-    {selected && <p className="max-w-md text-right text-[10px] leading-4 text-zinc-500">
+    {selected && <p className={`max-w-md text-[10px] leading-4 text-zinc-500 ${start ? 'text-left' : 'text-right'}`}>
       <span className="font-mono text-zinc-400">{selected.id}</span> · up to {selected.max_images} reference images
       {!selected.verified && <span className="ml-1 inline-flex items-center gap-1 text-amber-300"><AlertTriangle className="h-3 w-3" />settings not confirmed against WaveSpeed docs</span>}
     </p>}

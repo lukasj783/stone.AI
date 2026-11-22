@@ -1,13 +1,5 @@
 export type ImageModel = 'nanobanana' | 'nanobanana2' | 'seedream45' | 'qwen' | 'z-image' | 'flux-klein';
 export type VisualStyle = 'Realistic' | 'Anime' | '3D' | 'Pixel' | 'Cartoon';
-export type CharacterView =
-  | 'front'
-  | 'left_three_quarter'
-  | 'left_profile'
-  | 'back'
-  | 'right_profile'
-  | 'right_three_quarter';
-
 export interface CreateImageRequest {
   model: ImageModel | string;
   provider?: string;
@@ -25,33 +17,10 @@ export interface CreateImageRequest {
   visual_style?: VisualStyle | string;
 }
 
-export interface CharacterKeyframe {
-  view: CharacterView;
-  image_url: string;
-  prompt: string;
-  seed?: number;
-  model: string;
-  status: string;
-  asset_id?: string;
-}
-
 export interface CreateImageResponse {
   model: string;
   images: string[];
-  keyframes?: CharacterKeyframe[];
   generation_job_id?: string;
-}
-
-export interface GenerateScriptCharacterRequest {
-  project_id: string;
-  character_id: string;
-  model: ImageModel | string;
-  provider?: string;
-  aspect_ratio?: string;
-  resolution?: string;
-  output_format?: string;
-  seed?: number;
-  visual_style?: VisualStyle | string;
 }
 
 export interface GenerateScriptEnvironmentRequest {
@@ -122,39 +91,75 @@ export interface GenerateStoryboardResponse {
   frames: StoryboardFrame[];
 }
 
-export interface FinalizeCharacterRequest {
-  project_id: string;
-  generation_job_id: string;
-  name: string;
-  role?: string;
-  description?: string;
-  primary_view: CharacterView;
+/** What a character-sheet reference image should lend the character. */
+export type CharacterReferenceTag = 'face' | 'outfit' | 'style';
+
+export interface CharacterSheetReference {
+  file: File;
+  tag: CharacterReferenceTag;
 }
 
-export interface FinalizeCharacterResponse {
-  character_id: string;
-  primary_asset_id: string;
-}
-
-export interface CreateCharacterSheetRequest {
+export interface GenerateCharacterSheetRequest {
   project_id: string;
   character_id: string;
+  /** Extra direction on top of the script profile. */
+  prompt?: string;
+  /** Up to four images; empty for prompt-only creation. */
+  references?: CharacterSheetReference[];
+  /** A WaveSpeed storyboard model ID (see listStoryboardModels); the server default when omitted. */
   model?: string;
-  provider?: string;
-  /** Generate a new face close-up even when the stored one still matches the views. */
-  regenerate_face?: boolean;
+  visual_style?: string;
 }
 
+/** What the check of a generated sheet found before it was kept. */
+export interface CharacterSheetReview {
+  ok: boolean;
+  /** "vision": checked by the vision model; "layout": counted from the plain background. */
+  method: 'vision' | 'layout';
+  face_closeup: boolean;
+  views: Array<'front' | 'three_quarter' | 'profile' | 'back'>;
+  problems: string[];
+  face_box: number[] | null;
+  text_or_labels: boolean;
+}
+
+/** One generated model sheet (face close-up + turnaround). */
 export interface CharacterSheetResponse {
   character_id: string;
   sheet_asset_id: string;
   sheet_url: string;
+  generation_job_id: string | null;
+  /** True when this sheet is the one storyboards use. */
+  approved: boolean;
   face_closeup_asset_id: string | null;
-  face_closeup_url: string;
-  width: number;
-  height: number;
-  palette: string[];
-  missing_views: string[];
+  face_closeup_url: string | null;
+  review?: CharacterSheetReview | null;
+}
+
+/** A sheet drafted on the Character page before its character exists. */
+export interface DraftCharacterSheetRequest {
+  project_id: string;
+  /** Describes the character; optional when reference images are given. */
+  prompt?: string;
+  references?: CharacterSheetReference[];
+  /** A WaveSpeed storyboard model ID (see listStoryboardModels); the server default when omitted. */
+  model?: string;
+  visual_style?: string;
+}
+
+export interface DraftCharacterSheetResponse {
+  sheet_asset_id: string;
+  sheet_url: string;
+  generation_job_id: string | null;
+  review?: CharacterSheetReview | null;
+}
+
+export interface CreateCharacterFromSheetRequest {
+  project_id: string;
+  sheet_asset_id: string;
+  name: string;
+  role?: string;
+  description?: string;
 }
 
 export interface SetCharacterStyleRequest {

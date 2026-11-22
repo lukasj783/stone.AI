@@ -22,11 +22,26 @@ function driftTone(drift: number | null): string {
   return 'text-red-300';
 }
 
-function RuntimeRow({ label, seconds, target }: { label: string; seconds: number | null; target: number | null }) {
+function RuntimeRow({
+  label,
+  seconds,
+  target,
+  note,
+}: {
+  label: string;
+  seconds: number | null;
+  /** What the value is compared with; the drift is shown against it. */
+  target: number | null;
+  /** Says what the comparison is against, when it is not the whole film. */
+  note?: string;
+}) {
   const drift = runtimeDrift(target, seconds);
   return (
     <div className="flex items-center justify-between py-2 text-sm">
-      <span className="text-zinc-500">{label}</span>
+      <span className="text-zinc-500">
+        {label}
+        {note && <span className="block text-[11px] text-zinc-600">{note}</span>}
+      </span>
       {seconds == null ? (
         <span className="text-xs text-zinc-600">Not yet</span>
       ) : (
@@ -83,7 +98,18 @@ export function RuntimeCard({
           </div>
           <div className="divide-y divide-zinc-800/80 border-t border-zinc-800/80">
             <RuntimeRow label="Script plan" seconds={runtime.scriptSeconds} target={runtime.targetSeconds} />
-            <RuntimeRow label="Shots planned" seconds={runtime.shotSeconds} target={runtime.targetSeconds} />
+            <RuntimeRow
+              label="Shots planned"
+              seconds={runtime.shotSeconds}
+              target={runtime.storyboardedSceneSeconds}
+              note={
+                runtime.storyboardedSceneCount
+                  ? `vs ${runtime.storyboardedSceneCount} storyboarded scene${runtime.storyboardedSceneCount === 1 ? '' : 's'}${
+                      runtime.storyboardedSceneSeconds ? ` (${formatSeconds(runtime.storyboardedSceneSeconds)})` : ''
+                    }`
+                  : undefined
+              }
+            />
             <RuntimeRow label="Rendered video" seconds={runtime.renderedSeconds} target={runtime.targetSeconds} />
           </div>
         </>

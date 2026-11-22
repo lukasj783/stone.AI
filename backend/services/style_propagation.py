@@ -1,23 +1,15 @@
-import concurrent.futures
-import os
 import random
 from datetime import UTC, datetime
 from typing import Any
 
 from core.supabase_client import get_supabase_client
-from schemas.image_generation import CharacterKeyframe, CharacterView, CreateImageRequest
-from services.character_views import (
-    CHARACTER_VIEW_SPECS,
-    attach_generation_to_character,
-    build_character_view_prompt,
-    build_script_character_profile,
-    persist_character_generation,
-)
+from schemas.image_generation import CreateImageRequest
 from services.environment_text_to_image import (
     build_script_environment_prompt,
     load_script_environment,
     persist_environment_generation,
 )
+from services.character_sheet import approved_sheet_inputs, approved_sheet_model, generate_model_sheet
 from services.image_generation_service import generate_provider_images
 from services.object_text_to_image import build_object_prompt, load_object, persist_object_generation
 from services.visual_style import (
@@ -73,58 +65,25 @@ def _update_propagation(
     ).execute()
 
 
-def _regenerate_character_views(
+def _regenerate_character_sheet(
     project_id: str,
     character: dict[str, Any],
     style: VisualStyle,
-    model: str,
-    provider: str,
 ) -> None:
-    character_id = str(character["id"])
-    profile = build_script_character_profile(character, style)
-    seed = random.SystemRandom().randint(0, 2_147_483_647)
-    payload = CreateImageRequest(
-        model=model,
-        provider=provider,
-        prompt=profile,
-        aspect_ratio="2:3",
-        num_images=1,
-        resolution="1k",
-        output_format="jpg",
-        project_id=project_id,
-        seed=seed,
-        visual_style=style.label,
-    )
+    """Redraw the character's model sheet in the new style and use it right away.
 
-    def generate_view(spec: tuple[CharacterView, str, str]) -> CharacterKeyframe:
-        view, _, _ = spec
-        prompt = build_character_view_prompt(profile, view)
-        response = generate_provider_images(payload.model_copy(update={"prompt": prompt}))
-        if not response.images:
-            raise RuntimeError(f"No image returned for {view.value}")
-        return CharacterKeyframe(
-            view=view,
-            image_url=response.images[0],
-            prompt=prompt,
-            seed=seed,
-            model=model,
-        )
-
-    concurrency_limit = max(1, int(os.getenv("CHARACTER_GENERATION_CONCURRENCY", "3")))
-    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency_limit) as executor:
-        keyframes = list(executor.map(generate_view, CHARACTER_VIEW_SPECS))
-
-    generation_job_id, persisted_keyframes = persist_character_generation(
+    It uses the same WaveSpeed model as the approved sheet. The approved sheet's direction and face/outfit references are reused so the character
+    stays the same person; a style reference is dropped because the new style replaces it.
+    """
+    direction, references = approved_sheet_inputs(character)
+    generate_model_sheet(
         project_id,
-        payload,
-        keyframes,
-    )
-    attach_generation_to_character(
-        project_id,
-        character_id,
-        generation_job_id,
-        persisted_keyframes,
+        str(character["id"]),
+        direction=direction,
+        references=[reference for reference in references if reference.tag != "style"],
+        model=approved_sheet_model(character),
         visual_style=style.label,
+        approve=True,
     )
 
 
@@ -237,10 +196,10 @@ def propagate_character_style(
     try:
         if has_character_views:
             try:
-                _regenerate_character_views(project_id, character, style, model, provider)
+                _regenerate_character_sheet(project_id, character, style)
                 completed += 1
             except Exception as error:
-                errors.append(f"Character views: {error}")
+                errors.append(f"Character sheet: {error}")
             _update_propagation(project_id, character_id, state("running"))
 
         for environment_id in environment_ids:

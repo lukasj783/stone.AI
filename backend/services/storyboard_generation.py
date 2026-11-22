@@ -25,11 +25,13 @@ from services.project_runtime import load_project_runtime
 from services.project_visual_style import ProjectVisualStyle, apply_visual_style, load_project_visual_style
 from services.script_config import ProjectTypeConfig, load_project_script_context
 from services.character_ranking import rank_characters_from_script
+from services.character_views import effective_character_profile, physical_summary
 from services.environment_ranking import rank_environments_from_script
 from services.object_ranking import rank_objects_from_script
 from services.storyboard_models import DEFAULT_STORYBOARD_MODEL, TEXT_ONLY_FALLBACK_MODEL, storyboard_model
 from services.storyboard_references import (
     FACE_CLOSEUP_VIEW,
+    MODEL_SHEET_VIEW,
     build_frame_references,
     describe_references,
 )
@@ -111,8 +113,9 @@ def _scene_context(
         tags = _clean_labels(c.get("tags") or [])
         tag_line = f"\n  Tags: {', '.join(tags)}" if tags else ""
         char_lines.append(
-            f"- {c_name} (Role: {c.get('role', 'N/A')}, Age: {c.get('age', 'N/A')}, Gender: {c.get('gender', 'N/A')}, Race: {c.get('race', 'N/A')})\n"
-            f"  Appearance: {c.get('appearance', 'N/A')}{tag_line}\n"
+            f"- {c_name} (Role: {c.get('role') or 'N/A'}, Age: {c.get('age') or 'N/A'}, Gender: {c.get('gender') or 'N/A'}, Race: {c.get('race') or 'N/A'})\n"
+            f"  Physical: {physical_summary(c) or 'N/A'}\n"
+            f"  Appearance: {c.get('appearance') or 'N/A'}{tag_line}\n"
             f"  Visual Keyframe Views: {view_summary or 'None'}"
         )
     char_text = "\n".join(char_lines) if char_lines else "No specific character keyframes linked."
@@ -423,8 +426,10 @@ def _describe_character(character: dict[str, Any], name_override: str | None = N
     ][:4]
     if aliases:
         header = f"{header} [also called: {', '.join(aliases)}]"
-    appearance = str(character.get("appearance") or "").strip()
-    return f"{header}: {appearance}" if appearance else header
+    details = "; ".join(
+        part for part in (physical_summary(character), str(character.get("appearance") or "").strip()) if part
+    )
+    return f"{header}: {details}" if details else header
 
 
 def _describe_location(scene: dict[str, Any], environment: dict[str, Any] | None) -> str:
@@ -974,8 +979,8 @@ def _character_views_from_links(
         url = asset_urls.get(str(link.get("asset_id") or ""))
         if not url:
             continue
-        if link.get("role") == FACE_CLOSEUP_VIEW:
-            views[FACE_CLOSEUP_VIEW] = url
+        if link.get("role") in (FACE_CLOSEUP_VIEW, MODEL_SHEET_VIEW):
+            views[str(link["role"])] = url
         else:
             views[(link.get("metadata") or {}).get("view") or "front"] = url
     return views
@@ -1066,16 +1071,17 @@ def _gather_scene_linked_entities(
     characters_out: list[dict[str, Any]] = []
     chars_res = supabase.table("characters").select(
         "id, name, role, character_type, age, gender, race, appearance, personality, "
-        "tags, metadata, primary_asset_id"
+        "physical, tags, metadata, primary_asset_id"
     ).eq("project_id", project_id).execute()
     project_characters = _rows(chars_res)
     if project_characters:
         char_ids = [c["id"] for c in project_characters]
-        # Only turnaround keyframes and the face close-up are references; a composed
-        # character sheet is for people and must never reach the image model.
+        # The approved model sheet, its face crop and older turnaround keyframes are
+        # references. Unapproved sheet candidates and the old composed sheets (role
+        # "character_sheet", with printed labels) must never reach the image model.
         links_res = supabase.table("asset_links").select("target_id, asset_id, role, metadata").eq(
             "project_id", project_id
-        ).eq("target_type", "character").in_("role", ["keyframe", FACE_CLOSEUP_VIEW]).in_(
+        ).eq("target_type", "character").in_("role", ["keyframe", FACE_CLOSEUP_VIEW, MODEL_SHEET_VIEW]).in_(
             "target_id", char_ids
         ).order("created_at").execute()
         links = _rows(links_res)
@@ -1090,7 +1096,8 @@ def _gather_scene_linked_entities(
         for c in project_characters:
             metadata = c.get("metadata") if isinstance(c.get("metadata"), dict) else {}
             characters_out.append({
-                **c,
+                # Manual profile values (role, appearance...) win over script facts, as on the sheet.
+                **effective_character_profile(c),
                 "views": _character_views_from_links(
                     [link for link in links if link.get("target_id") == c["id"]],
                     assets_dict,

@@ -1,41 +1,32 @@
 import asyncio
-import os
-import random
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 
 from schemas.image_generation import (
-    CharacterKeyframe,
+    ApproveCharacterSheetRequest,
     CharacterSheetResponse,
-    CreateCharacterSheetRequest,
+    CreateCharacterFromSheetRequest,
+    DraftCharacterSheetResponse,
     CharacterStylePropagation,
-    CharacterView,
     CreateImageRequest,
     CreateImageResponse,
-    FinalizeCharacterRequest,
-    FinalizeCharacterResponse,
-    GenerateScriptCharacterRequest,
     GenerateScriptEnvironmentRequest,
     GenerateObjectReferenceRequest,
     GenerateStoryboardRequest,
     GenerateStoryboardResponse,
-    RegenerateCharacterKeyframeRequest,
     SetCharacterStyleRequest,
     SetCharacterStyleResponse,
 )
-from services.character_views import (
-    CHARACTER_VIEW_SPECS,
-    attach_generation_to_character,
-    build_character_img2img_view_prompt,
-    build_character_view_prompt,
-    build_script_character_profile,
-    finalize_character_generation,
-    load_script_character,
-    load_character_generation_payload,
-    persist_character_generation,
-    replace_character_keyframe,
+from services.character_sheet import (
+    MAX_REFERENCE_IMAGES,
+    SheetReference,
+    approve_model_sheet,
+    create_character_from_sheet,
+    draft_model_sheet,
+    generate_model_sheet,
+    normalize_reference_tag,
+    upload_reference_image,
 )
-from services.character_sheet import create_character_sheet
 from services.environment_text_to_image import (
     build_script_environment_prompt,
     load_script_environment,
@@ -48,12 +39,10 @@ from services.replicate_service import ReplicateConfigurationError
 from services.storyboard_generation import generate_scene_storyboard
 from services.style_propagation import character_style_impact, propagate_character_style
 from services.visual_style import (
-    apply_visual_style,
     character_visual_style,
     find_character_scene_ids,
     find_style_dependent_assets,
     load_character,
-    resolve_character_visual_style,
     resolve_scene_visual_style,
     resolve_visual_style,
     save_character_visual_style,
@@ -102,135 +91,6 @@ async def generate_storyboard(payload: GenerateStoryboardRequest) -> GenerateSto
         raise HTTPException(status_code=500, detail=str(error)) from error
     except Exception as error:
         raise HTTPException(status_code=500, detail=f"Storyboard generation failed: {error}") from error
-
-
-@router.post("/character-generate", response_model=CreateImageResponse)
-async def generate_character_images(payload: CreateImageRequest) -> CreateImageResponse:
-    """Generate six independently requested, ordered character keyframes."""
-    if not payload.project_id:
-        raise HTTPException(status_code=400, detail="project_id is required for character generation")
-    visual_style = resolve_visual_style(payload.visual_style)
-    seed = payload.seed if payload.seed is not None else random.SystemRandom().randint(0, 2_147_483_647)
-    concurrency_limit = max(1, int(os.getenv("CHARACTER_GENERATION_CONCURRENCY", "3")))
-    semaphore = asyncio.Semaphore(concurrency_limit)
-
-    async def generate_view(view: object) -> CharacterKeyframe:
-        prompt = build_character_view_prompt(apply_visual_style(payload.prompt, visual_style), view)
-        view_payload = payload.model_copy(update={
-            "prompt": prompt,
-            "num_images": 1,
-            "seed": seed,
-            "visual_style": visual_style.label,
-        })
-        async with semaphore:
-            response = await asyncio.to_thread(generate_provider_images, view_payload)
-        if not response.images:
-            raise RuntimeError(f"No image returned for {view.value}")
-        return CharacterKeyframe(
-            view=view,
-            image_url=response.images[0],
-            prompt=prompt,
-            seed=seed,
-            model=payload.model,
-        )
-
-    try:
-        keyframes = await asyncio.gather(*(generate_view(view) for view, _, _ in CHARACTER_VIEW_SPECS))
-    except (ReplicateConfigurationError, WaveSpeedServiceError) as error:
-        raise HTTPException(status_code=500, detail=str(error)) from error
-    except Exception as error:
-        raise HTTPException(status_code=400, detail=f"Character generation failed: {error}") from error
-
-    try:
-        generation_job_id, keyframes = await asyncio.to_thread(
-            persist_character_generation,
-            payload.project_id,
-            payload.model_copy(update={"seed": seed, "visual_style": visual_style.label}),
-            keyframes,
-        )
-    except Exception as error:
-        raise HTTPException(status_code=500, detail=f"Character storage failed: {error}") from error
-
-    return CreateImageResponse(
-        model=payload.model,
-        images=[keyframe.image_url for keyframe in keyframes],
-        keyframes=keyframes,
-        generation_job_id=generation_job_id,
-    )
-
-
-@router.post("/character-generate-from-script", response_model=CreateImageResponse)
-async def generate_script_character_images(payload: GenerateScriptCharacterRequest) -> CreateImageResponse:
-    """Generate six views from facts persisted by the screenplay extractor."""
-    try:
-        character = await asyncio.to_thread(load_script_character, payload.project_id, payload.character_id)
-        visual_style = resolve_character_visual_style(character, payload.visual_style)
-        prompt = build_script_character_profile(character, visual_style)
-    except ValueError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
-    except RuntimeError as error:
-        raise HTTPException(status_code=500, detail=str(error)) from error
-
-    seed = payload.seed if payload.seed is not None else random.SystemRandom().randint(0, 2_147_483_647)
-    concurrency_limit = max(1, int(os.getenv("CHARACTER_GENERATION_CONCURRENCY", "3")))
-    semaphore = asyncio.Semaphore(concurrency_limit)
-    image_payload = CreateImageRequest(
-        model=payload.model,
-        provider=payload.provider,
-        prompt=prompt,
-        aspect_ratio=payload.aspect_ratio,
-        num_images=1,
-        resolution=payload.resolution,
-        output_format=payload.output_format,
-        project_id=payload.project_id,
-        seed=seed,
-        visual_style=visual_style.label,
-    )
-
-    async def generate_view(view: CharacterView) -> CharacterKeyframe:
-        view_prompt = build_character_view_prompt(prompt, view)
-        async with semaphore:
-            response = await asyncio.to_thread(
-                generate_provider_images,
-                image_payload.model_copy(update={"prompt": view_prompt}),
-            )
-        if not response.images:
-            raise RuntimeError(f"No image returned for {view.value}")
-        return CharacterKeyframe(
-            view=view,
-            image_url=response.images[0],
-            prompt=view_prompt,
-            seed=seed,
-            model=payload.model,
-        )
-
-    try:
-        keyframes = await asyncio.gather(*(generate_view(view) for view, _, _ in CHARACTER_VIEW_SPECS))
-        generation_job_id, persisted_keyframes = await asyncio.to_thread(
-            persist_character_generation,
-            payload.project_id,
-            image_payload,
-            keyframes,
-        )
-        await asyncio.to_thread(
-            attach_generation_to_character,
-            payload.project_id,
-            payload.character_id,
-            generation_job_id,
-            persisted_keyframes,
-            visual_style=visual_style.label,
-        )
-    except (ReplicateConfigurationError, WaveSpeedServiceError) as error:
-        raise HTTPException(status_code=500, detail=str(error)) from error
-    except Exception as error:
-        raise HTTPException(status_code=400, detail=f"Script character generation failed: {error}") from error
-
-    return CreateImageResponse(
-        model=payload.model,
-        images=[keyframe.image_url for keyframe in persisted_keyframes],
-        keyframes=persisted_keyframes,
-        generation_job_id=generation_job_id,
-    )
 
 
 @router.post("/environment-generate-from-script", response_model=CreateImageResponse)
@@ -362,91 +222,114 @@ async def set_character_style(
     )
 
 
-@router.post("/character-keyframes/{generation_job_id}/{view}/regenerate", response_model=CharacterKeyframe)
-async def regenerate_character_keyframe(
-    generation_job_id: str,
-    view: CharacterView,
-    payload: RegenerateCharacterKeyframeRequest,
-) -> CharacterKeyframe:
-    try:
-        source_payload = await asyncio.to_thread(
-            load_character_generation_payload,
-            payload.project_id,
-            generation_job_id,
-        )
-        view_label, view_direction = next(
-            (label, direction) for candidate_view, label, direction in CHARACTER_VIEW_SPECS if candidate_view == view
-        )
-        base_prompt = source_payload.prompt
-        if payload.correction.strip():
-            base_prompt += f"\nAdditional repair guidance: {payload.correction.strip()}"
-        if source_payload.image_mapping:
-            prompt = build_character_img2img_view_prompt(base_prompt, view_label, view_direction)
-        else:
-            prompt = build_character_view_prompt(base_prompt, view)
-        response = await asyncio.to_thread(
-            generate_provider_images,
-            source_payload.model_copy(update={"prompt": prompt, "num_images": 1}),
-        )
-        if not response.images:
-            raise RuntimeError("No image returned for the replacement keyframe")
-        return await asyncio.to_thread(
-            replace_character_keyframe,
-            payload.project_id,
-            generation_job_id,
-            CharacterKeyframe(
-                view=view,
-                image_url=response.images[0],
-                prompt=prompt,
-                seed=source_payload.seed,
-                model=source_payload.model,
-            ),
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    except (ReplicateConfigurationError, WaveSpeedServiceError) as error:
-        raise HTTPException(status_code=500, detail=str(error)) from error
-    except Exception as error:
-        raise HTTPException(status_code=500, detail=f"Character keyframe regeneration failed: {error}") from error
+async def _upload_references(images: list[UploadFile] | None, image_tags: list[str] | None) -> list[SheetReference]:
+    """Store up to four uploaded reference images and pair each with its face/outfit/style tag."""
+    uploads = [image for image in images or [] if image.filename]
+    if len(uploads) > MAX_REFERENCE_IMAGES:
+        raise HTTPException(status_code=400, detail=f"Use at most {MAX_REFERENCE_IMAGES} reference images")
+    tags = list(image_tags or [])
+    references: list[SheetReference] = []
+    for index, upload in enumerate(uploads):
+        if not (upload.content_type or "").startswith("image/"):
+            raise HTTPException(status_code=400, detail=f"{upload.filename} is not an image")
+        content = await upload.read()
+        if not content:
+            raise HTTPException(status_code=400, detail=f"{upload.filename} is empty")
+        url = await asyncio.to_thread(upload_reference_image, content, upload.content_type)
+        references.append(SheetReference(url=url, tag=normalize_reference_tag(tags[index] if index < len(tags) else None)))
+    return references
 
 
-@router.post("/character-sheet", response_model=CharacterSheetResponse)
-async def generate_character_sheet(payload: CreateCharacterSheetRequest) -> CharacterSheetResponse:
-    """Compose one sheet image: large face close-up, six-view turnaround, palette, and profile."""
+@router.post("/character-sheet/generate", response_model=CharacterSheetResponse)
+async def generate_character_sheet(
+    project_id: str = Form(...),
+    character_id: str = Form(...),
+    prompt: str = Form("", max_length=4_000),
+    model: str | None = Form(None),
+    visual_style: str | None = Form(None),
+    images: list[UploadFile] | None = File(None),
+    image_tags: list[str] | None = Form(None),
+) -> CharacterSheetResponse:
+    """Generate one model sheet (face close-up + turnaround) from the script profile, an
+    optional prompt, and up to four reference images tagged face, outfit or style."""
     try:
+        references = await _upload_references(images, image_tags)
         result = await asyncio.to_thread(
-            create_character_sheet,
-            payload.project_id,
-            payload.character_id,
-            payload.model,
-            payload.provider,
-            payload.regenerate_face,
+            generate_model_sheet,
+            project_id,
+            character_id,
+            direction=prompt,
+            references=references,
+            model=model,
+            visual_style=visual_style,
         )
         return CharacterSheetResponse(**result)
+    except HTTPException:
+        raise
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except (ReplicateConfigurationError, WaveSpeedServiceError) as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
     except Exception as error:
-        raise HTTPException(status_code=500, detail=f"Character sheet creation failed: {error}") from error
+        raise HTTPException(status_code=500, detail=f"Character sheet generation failed: {error}") from error
 
 
-@router.post("/character-finalize", response_model=FinalizeCharacterResponse)
-async def finalize_character(payload: FinalizeCharacterRequest) -> FinalizeCharacterResponse:
+@router.post("/character-sheet/approve", response_model=CharacterSheetResponse)
+async def approve_character_sheet(payload: ApproveCharacterSheetRequest) -> CharacterSheetResponse:
+    """Use this sheet for the character in storyboards; its face panel becomes the face close-up."""
     try:
-        character_id, primary_asset_id = await asyncio.to_thread(
-            finalize_character_generation,
+        result = await asyncio.to_thread(approve_model_sheet, payload.project_id, payload.character_id, payload.asset_id)
+        return CharacterSheetResponse(character_id=payload.character_id, **result)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Character sheet approval failed: {error}") from error
+
+
+@router.post("/character-sheet/draft", response_model=DraftCharacterSheetResponse)
+async def draft_character_sheet(
+    project_id: str = Form(...),
+    prompt: str = Form("", max_length=4_000),
+    model: str | None = Form(None),
+    visual_style: str | None = Form(None),
+    images: list[UploadFile] | None = File(None),
+    image_tags: list[str] | None = Form(None),
+) -> DraftCharacterSheetResponse:
+    """Generate a sheet before the character exists (Character page); save it with create-character."""
+    try:
+        references = await _upload_references(images, image_tags)
+        result = await asyncio.to_thread(
+            draft_model_sheet,
+            project_id,
+            description=prompt,
+            references=references,
+            model=model,
+            visual_style=visual_style,
+        )
+        return DraftCharacterSheetResponse(**result)
+    except HTTPException:
+        raise
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except (ReplicateConfigurationError, WaveSpeedServiceError) as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Character sheet generation failed: {error}") from error
+
+
+@router.post("/character-sheet/create-character", response_model=CharacterSheetResponse)
+async def create_character_with_sheet(payload: CreateCharacterFromSheetRequest) -> CharacterSheetResponse:
+    """Create a character from a draft sheet; the sheet becomes its approved reference."""
+    try:
+        result = await asyncio.to_thread(
+            create_character_from_sheet,
             payload.project_id,
-            payload.generation_job_id,
+            payload.sheet_asset_id,
             payload.name,
             payload.role,
             payload.description,
-            payload.primary_view,
         )
-        return FinalizeCharacterResponse(
-            character_id=character_id,
-            primary_asset_id=primary_asset_id,
-        )
+        return CharacterSheetResponse(**result)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:

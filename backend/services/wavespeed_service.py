@@ -152,6 +152,10 @@ def generate_wavespeed_images(payload: CreateImageRequest) -> CreateImageRespons
             params["aspect_ratio"] = _normalize_aspect_ratio(payload.aspect_ratio, MULTI_IMAGE_ASPECT_RATIOS)
             params["num_images"] = 2
             params["output_format"] = output_fmt
+        elif model_name.endswith("nano-banana-pro/text-to-image"):
+            params["aspect_ratio"] = _normalize_aspect_ratio(payload.aspect_ratio, NANO_BANANA_ASPECT_RATIOS, "1:1")
+            params["resolution"] = _normalize_resolution(payload.resolution, NANO_BANANA_RESOLUTIONS)
+            params["output_format"] = output_fmt
         elif "nano-banana-2/text-to-image" in model_name:
             params["aspect_ratio"] = _normalize_aspect_ratio(payload.aspect_ratio, NANO_BANANA_2_ASPECT_RATIOS, "1:1")
             params["output_format"] = output_fmt

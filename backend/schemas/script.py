@@ -11,6 +11,29 @@ class CharacterSchema(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+# Keep in sync with EDITABLE_CHARACTER_FIELDS in services/character_views.py.
+ProfileField = Literal[
+    "role", "age", "gender", "race", "appearance", "personality",
+    "height", "build", "skin_tone", "face", "eyes", "hair",
+    "facial_hair", "distinguishing_marks", "glasses", "demeanor",
+]
+
+
+class PhysicalProfileSchema(BaseModel):
+    """Permanent physical identity. Costume and per-shot state (expression, pose) do not belong here."""
+
+    height: str | None = Field(default=None, max_length=300)
+    build: str | None = Field(default=None, max_length=300)
+    skin_tone: str | None = Field(default=None, max_length=300)
+    face: str | None = Field(default=None, max_length=500)
+    eyes: str | None = Field(default=None, max_length=300)
+    hair: str | None = Field(default=None, max_length=300)
+    facial_hair: str | None = Field(default=None, max_length=300)
+    distinguishing_marks: str | None = Field(default=None, max_length=500)
+    glasses: str | None = Field(default=None, max_length=300)
+    demeanor: str | None = Field(default=None, max_length=500)
+
+
 class ExtractedCharacterSchema(BaseModel):
     name: str
     # Any key from the character_types table (main, supporting, presenter, interviewee...).
@@ -21,6 +44,7 @@ class ExtractedCharacterSchema(BaseModel):
     race: str | None = None
     appearance: str | None = None
     personality: str | None = None
+    physical: PhysicalProfileSchema = Field(default_factory=PhysicalProfileSchema)
     tags: list[str] = Field(default_factory=list)
     image_prompt: str = ""
 
@@ -33,7 +57,7 @@ class ExtractScriptCharactersResponse(BaseModel):
     count: int
 
 
-class UpdateCharacterProfilePayload(BaseModel):
+class UpdateCharacterProfilePayload(PhysicalProfileSchema):
     project_id: str = Field(min_length=1)
     character_id: str = Field(min_length=1)
     role: str | None = Field(default=None, max_length=500)
@@ -42,10 +66,10 @@ class UpdateCharacterProfilePayload(BaseModel):
     race: str | None = Field(default=None, max_length=120)
     appearance: str | None = Field(default=None, max_length=2_000)
     personality: str | None = Field(default=None, max_length=2_000)
-    clear_fields: list[Literal["role", "age", "gender", "race", "appearance", "personality"]] = Field(default_factory=list)
+    clear_fields: list[ProfileField] = Field(default_factory=list)
 
 
-class CharacterProfileResponse(BaseModel):
+class CharacterProfileResponse(PhysicalProfileSchema):
     id: str
     name: str
     role: str | None = None

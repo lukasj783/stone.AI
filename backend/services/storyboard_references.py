@@ -11,6 +11,12 @@ Guidance this follows:
   close framing; 3/4 and profile views help when the camera sees the character from
   the side.
 - References that match the target viewpoint transfer identity best.
+
+A character with an approved model sheet (one generated image: face close-up plus a
+full-body turnaround) sends that sheet, which carries identity, body and costume from
+every angle, and the face crop cut from it for facial fidelity. The prompt tells the model
+the sheet shows one person, so it draws them once instead of copying the layout.
+Characters that only have the older separate turnaround views still use those.
 """
 
 from __future__ import annotations
@@ -19,6 +25,7 @@ from dataclasses import dataclass
 from typing import Any
 
 FACE_CLOSEUP_VIEW = "face_closeup"
+MODEL_SHEET_VIEW = "model_sheet"
 
 # Screen-direction vocabulary the shot planner uses for each visible character.
 FACING_TOWARD_CAMERA = "toward camera"
@@ -44,6 +51,7 @@ FACING_TO_VIEW = {
 }
 
 VIEW_LABELS = {
+    MODEL_SHEET_VIEW: "character sheet (one person: face close-up and full-body turnaround)",
     FACE_CLOSEUP_VIEW: "face close-up",
     "front": "front view",
     "left_three_quarter": "left 3/4 view",
@@ -66,6 +74,7 @@ CHARACTER_TIER_VIEWS = {"major": 3, "medium": 2, "minor": 1}
 class ReferenceImage:
     url: str
     label: str
+    is_sheet: bool = False
 
 
 def shot_framing(shot_size: str | None) -> str:
@@ -106,6 +115,15 @@ def _priority(framing: str, facing: str | None) -> list[str]:
     return [primary, "front", "left_three_quarter", "right_three_quarter"]
 
 
+def _sheet_priority(framing: str, facing: str | None) -> list[str]:
+    """Sheet and face crop, best first, for a character with an approved model sheet."""
+    if FACING_TO_VIEW.get(facing or FACING_TOWARD_CAMERA) == "back":
+        return [MODEL_SHEET_VIEW]  # the face is hidden; the sheet's back view is what matters
+    if framing == FRAMING_CLOSE:
+        return [FACE_CLOSEUP_VIEW, MODEL_SHEET_VIEW]
+    return [MODEL_SHEET_VIEW, FACE_CLOSEUP_VIEW]
+
+
 def select_character_views(
     character: dict[str, Any],
     framing: str,
@@ -118,7 +136,8 @@ def select_character_views(
     views = character.get("views") or {}
     chosen: list[tuple[str, str]] = []
     seen_urls: set[str] = set()
-    for view in _priority(framing, facing):
+    priority = _sheet_priority(framing, facing) if views.get(MODEL_SHEET_VIEW) else _priority(framing, facing)
+    for view in priority:
         url = views.get(view)
         if url and str(url) not in seen_urls:
             chosen.append((view, str(url)))
@@ -230,7 +249,10 @@ def build_frame_references(
             character, framing, facing_by_character.get(id(character)),
             CHARACTER_TIER_VIEWS.get(str(character.get("tier")), MAX_VIEWS_PER_CHARACTER),
         )
-        queues.append([ReferenceImage(url, f"{name}, {VIEW_LABELS.get(view, view.replace('_', ' '))}") for view, url in views])
+        queues.append([
+            ReferenceImage(url, f"{name}, {VIEW_LABELS.get(view, view.replace('_', ' '))}", is_sheet=view == MODEL_SHEET_VIEW)
+            for view, url in views
+        ])
     environment_images = select_entity_images(
         entity_reference_images(environment), ENVIRONMENT_PRIORITY[framing],
         tier_cap(ENVIRONMENT_CAP[framing], (environment or {}).get("tier")),
@@ -284,4 +306,10 @@ def describe_references(references: list[ReferenceImage]) -> str | None:
         "location and props to their images):"
     ]
     lines.extend(f"- Image {index}: {reference.label}" for index, reference in enumerate(references, start=1))
+    if any(reference.is_sheet for reference in references):
+        lines.append(
+            "A character sheet shows ONE person several times (a face close-up and turnaround angles). "
+            "Draw that person once, in this shot's pose and framing; never copy the sheet's layout, "
+            "repeated figures or plain background."
+        )
     return "\n".join(lines)

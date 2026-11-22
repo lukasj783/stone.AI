@@ -1,11 +1,15 @@
 import logging
 
-from supabase import Client, create_client
+from supabase import Client, ClientOptions, create_client
 
 from core.config import get_settings
 
 
 logger = logging.getLogger(__name__)
+
+# Storage's default is 20 s, too short to upload a multi-megabyte generated image on a slow
+# connection ("The read operation timed out").
+STORAGE_TIMEOUT_SECONDS = 120
 
 MISSING_CREDENTIALS_MESSAGE = (
     "Supabase client not initialized: set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY "
@@ -40,7 +44,7 @@ def get_supabase_client() -> Client | None:
         return None
 
     try:
-        return create_client(url, key)
+        return create_client(url, key, options=ClientOptions(storage_client_timeout=STORAGE_TIMEOUT_SECONDS))
     except Exception as error:  # noqa: BLE001 - surface every client construction failure
         logger.warning("Supabase client creation failed for %s: %s", url, error)
         return None

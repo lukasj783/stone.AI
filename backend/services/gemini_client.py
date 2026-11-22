@@ -27,8 +27,10 @@ def run_gemini(
     system_instruction: str | None = None,
     thinking_level: str | None = None,
     temperature: float | None = None,
+    images: list[str] | None = None,
     deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
 ) -> str:
+    """Run the text model; ``images`` are public image URLs it can look at (max 10)."""
     settings = get_settings()
     if not settings.replicate_api_token:
         raise GeminiError("REPLICATE_API_TOKEN is not configured")
@@ -44,6 +46,8 @@ def run_gemini(
         payload["system_instruction"] = system_instruction
     if temperature is not None:
         payload["temperature"] = temperature
+    if images:
+        payload["images"] = images[:10]
 
     headers = {"Authorization": f"Bearer {settings.replicate_api_token}", "Prefer": "wait"}
     with httpx.Client(timeout=HTTP_TIMEOUT_SECONDS, headers=headers) as client:

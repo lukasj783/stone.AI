@@ -149,8 +149,8 @@ export function Environments({ projectId, onSelect }: EnvironmentsProps) {
     if (mode === 'image' && !referenceImage) { setError('Choose a reference image before generating the environment.'); return; }
     setIsGenerating(true); setError(null);
     try {
-      if (mode === 'image' && referenceImage) await generateEnvironmentImageFromUpload(referenceImage, referenceGuidance, 'nanobanana', 'replicate', projectId, selected.id);
-      else await generateScriptEnvironmentImage({ project_id: projectId, environment_id: selected.id, model: 'nanobanana', provider: 'replicate' });
+      if (mode === 'image' && referenceImage) await generateEnvironmentImageFromUpload(referenceImage, referenceGuidance, 'nanobanana', 'wavespeed', projectId, selected.id);
+      else await generateScriptEnvironmentImage({ project_id: projectId, environment_id: selected.id, model: 'nanobanana', provider: 'wavespeed' });
       setGenerationProgress(100); await loadEnvironments(); setGalleryRefreshKey((key) => key + 1); setGenerationMode(null); setReferenceImage(null); setReferenceGuidance('');
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Failed to generate the environment reference image.'); }
     finally { setIsGenerating(false); }

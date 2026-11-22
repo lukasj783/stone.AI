@@ -1,13 +1,12 @@
 import {
-  CharacterKeyframe,
+  CharacterSheetReference,
   CharacterSheetResponse,
-  CharacterView,
-  CreateCharacterSheetRequest,
+  CreateCharacterFromSheetRequest,
+  DraftCharacterSheetRequest,
+  DraftCharacterSheetResponse,
+  GenerateCharacterSheetRequest,
   CreateImageRequest,
   CreateImageResponse,
-  FinalizeCharacterRequest,
-  FinalizeCharacterResponse,
-  GenerateScriptCharacterRequest,
   GenerateScriptEnvironmentRequest,
   GenerateObjectReferenceRequest,
   GenerateStoryboardRequest,
@@ -155,31 +154,6 @@ export async function generateInpaintImage(payload: FormData): Promise<CreateIma
   return response.json() as Promise<CreateImageResponse>;
 }
 
-export async function generateCharacterImages(payload: CreateImageRequest): Promise<CreateImageResponse> {
-  const response = await fetch(`${getApiBaseUrl()}/api/image/character-generate`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    let message = 'Character generation failed';
-    try {
-      const errorPayload = await response.json();
-      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
-        message = errorPayload.detail;
-      }
-    } catch {
-      message = `Character generation failed with status ${response.status}`;
-    }
-    throw new Error(message);
-  }
-
-  return response.json() as Promise<CreateImageResponse>;
-}
-
 export async function saveCharacterVisualStyle(
   payload: SetCharacterStyleRequest,
 ): Promise<SetCharacterStyleResponse> {
@@ -207,52 +181,76 @@ export async function saveCharacterVisualStyle(
   return response.json() as Promise<SetCharacterStyleResponse>;
 }
 
-export async function generateScriptCharacterImages(
-  payload: GenerateScriptCharacterRequest,
-): Promise<CreateImageResponse> {
-  const response = await fetch(`${getApiBaseUrl()}/api/image/character-generate-from-script`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    let message = 'Script character generation failed';
-    try {
-      const errorPayload = await response.json();
-      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
-        message = errorPayload.detail;
-      }
-    } catch {
-      message = `Script character generation failed with status ${response.status}`;
-    }
-    throw new Error(message);
+async function errorDetail(response: Response, fallback: string): Promise<string> {
+  try {
+    const payload = await response.json();
+    if (typeof payload?.detail === 'string') return payload.detail;
+  } catch {
+    // Keep the fallback message.
   }
-
-  return response.json() as Promise<CreateImageResponse>;
+  return `${fallback} (status ${response.status})`;
 }
 
-/** Compose one sheet image (face close-up, turnaround, palette, profile) for a character. */
-export async function createCharacterSheet(payload: CreateCharacterSheetRequest): Promise<CharacterSheetResponse> {
-  const response = await fetch(`${getApiBaseUrl()}/api/image/character-sheet`, {
+/**
+ * Generate one model sheet (face close-up + turnaround) for a script character, from its
+ * profile plus an optional prompt, and optionally up to four tagged reference images.
+ * The first sheet a character gets is approved automatically; later ones are candidates.
+ */
+export async function generateCharacterSheet(payload: GenerateCharacterSheetRequest): Promise<CharacterSheetResponse> {
+  const body = sheetFormData({
+    project_id: payload.project_id,
+    character_id: payload.character_id,
+    prompt: payload.prompt ?? '',
+    model: payload.model,
+    visual_style: payload.visual_style,
+  }, payload.references);
+  const response = await fetch(`${getApiBaseUrl()}/api/image/character-sheet/generate`, { method: 'POST', body });
+  if (!response.ok) throw new Error(await errorDetail(response, 'Character sheet generation failed'));
+  return response.json() as Promise<CharacterSheetResponse>;
+}
+
+/** Use this sheet for the character in storyboards; its face panel becomes the face close-up. */
+export async function approveCharacterSheet(projectId: string, characterId: string, assetId: string): Promise<CharacterSheetResponse> {
+  const response = await fetch(`${getApiBaseUrl()}/api/image/character-sheet/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project_id: projectId, character_id: characterId, asset_id: assetId }),
+  });
+  if (!response.ok) throw new Error(await errorDetail(response, 'Character sheet approval failed'));
+  return response.json() as Promise<CharacterSheetResponse>;
+}
+
+function sheetFormData(fields: Record<string, string | undefined>, references: CharacterSheetReference[] = []): FormData {
+  const formData = new FormData();
+  for (const [key, value] of Object.entries(fields)) if (value !== undefined) formData.append(key, value);
+  for (const reference of references) {
+    formData.append('images', reference.file);
+    formData.append('image_tags', reference.tag);
+  }
+  return formData;
+}
+
+/** Character page: generate a sheet before the character exists. Save it with createCharacterFromSheet. */
+export async function draftCharacterSheet(payload: DraftCharacterSheetRequest): Promise<DraftCharacterSheetResponse> {
+  const body = sheetFormData({
+    project_id: payload.project_id,
+    prompt: payload.prompt ?? '',
+    model: payload.model,
+    visual_style: payload.visual_style,
+  }, payload.references);
+  const response = await fetch(`${getApiBaseUrl()}/api/image/character-sheet/draft`, { method: 'POST', body });
+  if (!response.ok) throw new Error(await errorDetail(response, 'Character sheet generation failed'));
+  return response.json() as Promise<DraftCharacterSheetResponse>;
+}
+
+/** Create the character from a drafted sheet; the sheet becomes its storyboard reference. */
+export async function createCharacterFromSheet(payload: CreateCharacterFromSheetRequest): Promise<CharacterSheetResponse> {
+  const response = await fetch(`${getApiBaseUrl()}/api/image/character-sheet/create-character`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-
-  if (!response.ok) {
-    let message = `Character sheet creation failed with status ${response.status}`;
-    try {
-      const errorPayload = await response.json();
-      if (typeof errorPayload?.detail === 'string') message = errorPayload.detail;
-    } catch {
-      // Keep the status-based message.
-    }
-    throw new Error(message);
-  }
-
+  if (!response.ok) throw new Error(await errorDetail(response, 'Character save failed'));
   return response.json() as Promise<CharacterSheetResponse>;
 }
 
@@ -298,64 +296,6 @@ export async function generateObjectReferenceImage(payload: GenerateObjectRefere
   return response.json() as Promise<CreateImageResponse>;
 }
 
-export async function regenerateCharacterKeyframe(
-  generationJobId: string,
-  view: CharacterView,
-  projectId: string,
-  correction = ''
-): Promise<CharacterKeyframe> {
-  const response = await fetch(
-    `${getApiBaseUrl()}/api/image/character-keyframes/${generationJobId}/${view}/regenerate`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ project_id: projectId, correction }),
-    }
-  );
-
-  if (!response.ok) {
-    let message = 'Character keyframe regeneration failed';
-    try {
-      const errorPayload = await response.json();
-      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
-        message = errorPayload.detail;
-      }
-    } catch {
-      message = `Character keyframe regeneration failed with status ${response.status}`;
-    }
-    throw new Error(message);
-  }
-
-  return response.json() as Promise<CharacterKeyframe>;
-}
-
-export async function finalizeCharacter(payload: FinalizeCharacterRequest): Promise<FinalizeCharacterResponse> {
-  const response = await fetch(`${getApiBaseUrl()}/api/image/character-finalize`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    let message = 'Character save failed';
-    try {
-      const errorPayload = await response.json();
-      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
-        message = errorPayload.detail;
-      }
-    } catch {
-      message = `Character save failed with status ${response.status}`;
-    }
-    throw new Error(message);
-  }
-
-  return response.json() as Promise<FinalizeCharacterResponse>;
-}
-
 export async function generateMultipleAngle(imageFile: File, prompt: string): Promise<{ images: string[] }> {
   const formData = new FormData();
   formData.append('image', imageFile);
@@ -380,51 +320,6 @@ export async function generateMultipleAngle(imageFile: File, prompt: string): Pr
   }
 
   return response.json();
-}
-
-export async function generateImageFromUpload(
-  imageFile: File,
-  guidancePrompt: string,
-  model: string,
-  provider: 'replicate' | 'wavespeed',
-  projectId: string,
-  characterId?: string,
-  visualStyle?: string,
-): Promise<CreateImageResponse> {
-  const formData = new FormData();
-  formData.append('image', imageFile);
-  formData.append('guidance_prompt', guidancePrompt);
-  formData.append('model', model);
-  formData.append('provider', provider);
-  formData.append('aspect_ratio', '1:1');
-  formData.append('resolution', '1K'); // Capital K required by model
-  formData.append('project_id', projectId);
-  if (characterId) {
-    formData.append('character_id', characterId);
-  }
-  if (visualStyle) {
-    formData.append('visual_style', visualStyle);
-  }
-
-  const response = await fetch(`${getApiBaseUrl()}/api/image/generate-from-upload`, {
-    method: 'POST',
-    body: formData,
-  });
-
-  if (!response.ok) {
-    let message = 'Image generation from upload failed';
-    try {
-      const errorPayload = await response.json();
-      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
-        message = errorPayload.detail;
-      }
-    } catch {
-      message = `Image generation from upload failed with status ${response.status}`;
-    }
-    throw new Error(message);
-  }
-
-  return response.json() as Promise<CreateImageResponse>;
 }
 
 export async function generateEnvironmentImageFromUpload(
@@ -506,7 +401,7 @@ export function generateEntityReferences(projectId: string, entityType: Referenc
   return entityReferenceRequest('/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ project_id: projectId, entity_type: entityType, entity_id: entityId, angles, model: 'nanobanana', provider: 'replicate' }),
+    body: JSON.stringify({ project_id: projectId, entity_type: entityType, entity_id: entityId, angles, model: 'nanobanana', provider: 'wavespeed' }),
   }, 'Reference generation failed');
 }
 

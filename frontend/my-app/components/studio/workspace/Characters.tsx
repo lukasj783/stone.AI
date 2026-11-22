@@ -1,14 +1,20 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Image from 'next/image';
-import { AlertCircle, Download, Eye, EyeOff, FileText, Image as ImageIcon, LayoutPanelLeft, Pencil, RefreshCw, RotateCcw, Save, ScanFace, Users, Wand2 } from 'lucide-react';
-import ImagePreviewModal, { ImagePreview } from '@/components/ui/ImagePreviewModal';
+import { AlertCircle, CheckCircle2, Clapperboard, X, Download, Expand, Eye, EyeOff, FileText, LayoutPanelLeft, MessageSquare, Pencil, RefreshCw, RotateCcw, Save, Users } from 'lucide-react';
+import { CharacterFact, CharacterSheetModal, downloadImage } from '@/components/characters/CharacterSheetModal';
 import { characterTags, characterTheme } from '@/lib/characterTheme';
-import { createCharacterSheet, generateImageFromUpload, generateScriptCharacterImages } from '@/lib/api/image-generation';
+import { approveCharacterSheet, generateCharacterSheet } from '@/lib/api/image-generation';
+import { CharacterSheetReference, CharacterSheetReview } from '@/lib/types/image-generation';
+import { SheetReviewBadge } from '@/components/characters/SheetReviewBadge';
 import {
   CharacterProfileUpdate,
   CharacterRanking,
+  CoreProfileField,
+  PHYSICAL_FIELDS,
+  PhysicalField,
+  ProfileField as ProfileFieldName,
   ObjectTier,
   rankCharacters,
   CharacterScriptSyncPreview,
@@ -18,6 +24,7 @@ import {
   updateCharacterProfile,
 } from '@/lib/api/story';
 import { supabase } from '@/lib/supabaseClient';
+import { CharacterSheetCreator } from './CharacterSheetCreator';
 import { RankingStat, TierBadge } from './ImportanceTier';
 
 interface CharactersProps {
@@ -25,13 +32,11 @@ interface CharactersProps {
   onSelect: (item: Record<string, unknown>) => void;
 }
 
-type CharacterView = 'front' | 'left_three_quarter' | 'left_profile' | 'back' | 'right_profile' | 'right_three_quarter';
-type GenerationMode = 'text' | 'image';
-type EditableField = 'role' | 'age' | 'gender' | 'race' | 'appearance' | 'personality';
+type EditableField = ProfileFieldName;
 type ProfileForm = Record<EditableField, string>;
 
-interface ViewAsset { assetId: string; imageUrl: string; view: CharacterView; }
-interface StudioCharacter {
+/** Physical facts are flattened onto the character, script value with manual override applied. */
+interface StudioCharacter extends Record<PhysicalField, string | null> {
   id: string;
   name: string;
   /** A character_types key: main, supporting, presenter, narrator, interviewee... */
@@ -45,24 +50,60 @@ interface StudioCharacter {
   tags: string[];
   metadata: Record<string, unknown> | null;
   primaryImageUrl: string | null;
-  latestGenerationJobId: string | null;
   manualOverrideFields: EditableField[];
-  views: ViewAsset[];
+  /** The approved model sheet storyboards use. */
   sheet: CharacterSheetInfo | null;
+  /** Every generated sheet version, newest first (includes the approved one). */
+  sheetVersions: SheetVersion[];
   ranking: CharacterRanking | null;
 }
 interface CharacterSheetInfo {
+  assetId: string;
   url: string;
+  /** Face close-up cut from the sheet's face panel. */
   faceUrl: string | null;
-  createdAt: string | null;
-  /** The turnaround was regenerated after this sheet was composed. */
-  isStale: boolean;
+  approvedAt: string | null;
+  review: CharacterSheetReview | null;
+}
+interface SheetVersion { assetId: string; url: string; createdAt: string | null; }
+/** Outcome of the last sheet generation, shown in the panel where the user clicked. */
+interface SheetResult {
+  characterId: string;
+  status: 'success' | 'error';
+  message: string;
+  url?: string;
+  approved?: boolean;
+  review?: CharacterSheetReview | null;
+  seconds: number;
+}
+
+const formatElapsed = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+
+/** Success with the produced image, or the failure reason; stays until dismissed or regenerated. */
+function SheetResultCard({ result, characterName, onPreview, onDismiss }: { result: SheetResult; characterName: string; onPreview: (url: string, label: string) => void; onDismiss: () => void }) {
+  const success = result.status === 'success';
+  return <div role={success ? 'status' : 'alert'} className={`mb-3 border p-3 ${success ? 'border-emerald-500/40 bg-emerald-500/10' : 'border-red-500/40 bg-red-500/10'}`}>
+    <div className="flex items-start gap-2">
+      {success ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" /> : <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />}
+      <div className="min-w-0 flex-1">
+        <p className={`text-xs font-semibold ${success ? 'text-emerald-200' : 'text-red-200'}`}>{success ? 'Character sheet generated' : 'Character sheet failed'} <span className="font-mono font-normal text-zinc-400">· {formatElapsed(result.seconds)}</span></p>
+        <p className={`mt-0.5 text-[11px] leading-relaxed ${success ? 'text-emerald-100/80' : 'text-red-100/90'}`}>{result.message}</p>
+      </div>
+      <button type="button" onClick={onDismiss} aria-label="Dismiss" className="shrink-0 text-zinc-500 hover:text-zinc-200"><X className="h-3.5 w-3.5" /></button>
+    </div>
+    {success && result.url && <>
+      <button type="button" onClick={() => onPreview(result.url!, `${characterName} - New character sheet`)} aria-label={`Preview the new ${characterName} character sheet`} className="relative mt-2 block aspect-video w-full cursor-zoom-in overflow-hidden border border-emerald-500/30 bg-zinc-900">
+        <Image src={result.url} alt={`New ${characterName} character sheet`} fill sizes="416px" unoptimized className="object-contain" />
+      </button>
+      <SheetReviewBadge review={result.review} className="mt-2" />
+    </>}
+  </div>;
 }
 
 const TIER_ADVICE: Record<ObjectTier, string> = {
-  major: 'Lead: generate the full turnaround and a character sheet with face close-up.',
-  medium: 'Supporting: front and 3/4 views plus a face close-up are usually enough.',
-  minor: 'Extra: one front view is enough; storyboards send a single image of them.',
+  major: 'Major: shots send the character sheet and its face close-up, so it is worth refining the sheet until it is right.',
+  medium: 'Medium: shots send the sheet and face close-up when there is room for both.',
+  minor: 'Minor: shots send one image (the sheet, or the face in close-ups); a quick prompt-only sheet is enough.',
 };
 
 /** Why a character got its rank: scenes, dialogue lines, and who they share scenes with. */
@@ -76,25 +117,50 @@ function CharacterImportance({ ranking }: { ranking: CharacterRanking | null }) 
   </section>;
 }
 
-/** Read the composed sheet recorded in character metadata by the sheet endpoint. */
-const sheetFromMetadata = (metadata: Record<string, unknown>, latestGenerationJobId: string | null): CharacterSheetInfo | null => {
-  const sheet = metadata.character_sheet as Record<string, unknown> | undefined;
-  if (!sheet || typeof sheet.url !== 'string') return null;
-  const face = metadata.face_closeup as Record<string, unknown> | undefined;
+/** Read the approved model sheet recorded in character metadata by the approve endpoint. */
+const sheetFromMetadata = (metadata: Record<string, unknown>): CharacterSheetInfo | null => {
+  const sheet = metadata.model_sheet as Record<string, unknown> | undefined;
+  if (!sheet || typeof sheet.url !== 'string' || typeof sheet.asset_id !== 'string') return null;
   return {
+    assetId: sheet.asset_id,
     url: sheet.url,
-    faceUrl: typeof face?.url === 'string' ? face.url : null,
-    createdAt: typeof sheet.created_at === 'string' ? sheet.created_at : null,
-    isStale: Boolean(latestGenerationJobId && sheet.source_generation_job_id !== latestGenerationJobId),
+    faceUrl: typeof sheet.face_url === 'string' ? sheet.face_url : null,
+    approvedAt: typeof sheet.approved_at === 'string' ? sheet.approved_at : null,
+    review: sheet.review && typeof sheet.review === 'object' && Array.isArray((sheet.review as CharacterSheetReview).views) ? sheet.review as CharacterSheetReview : null,
   };
 };
 
-const VIEWS: CharacterView[] = ['front', 'left_three_quarter', 'left_profile', 'back', 'right_profile', 'right_three_quarter'];
-const VIEW_LABELS: Record<CharacterView, string> = {
-  front: 'Front', left_three_quarter: 'Left 3/4', left_profile: 'Left profile', back: 'Back', right_profile: 'Right profile', right_three_quarter: 'Right 3/4',
+/** Core identity; the "details aren't in the script yet" prompt counts only these. */
+const CORE_FIELDS: CoreProfileField[] = ['role', 'age', 'gender', 'race', 'appearance', 'personality'];
+const EDITABLE_FIELDS: EditableField[] = [...CORE_FIELDS, ...PHYSICAL_FIELDS];
+const isPhysicalField = (field: EditableField): field is PhysicalField => (PHYSICAL_FIELDS as readonly string[]).includes(field);
+const FIELD_LABELS: Record<EditableField, string> = {
+  role: 'Role', age: 'Age', gender: 'Gender', race: 'Race', appearance: 'Other appearance', personality: 'Personality',
+  height: 'Height', build: 'Build', skin_tone: 'Skin tone', face: 'Face', eyes: 'Eyes', hair: 'Hair',
+  facial_hair: 'Facial hair', distinguishing_marks: 'Distinguishing marks', glasses: 'Glasses', demeanor: 'Demeanor',
 };
-const EDITABLE_FIELDS: EditableField[] = ['role', 'age', 'gender', 'race', 'appearance', 'personality'];
-const EMPTY_FORM: ProfileForm = { role: '', age: '', gender: '', race: '', appearance: '', personality: '' };
+/** Multi-line inputs; everything else is a single line. */
+const MULTILINE_FIELDS: EditableField[] = ['appearance', 'personality', 'face', 'distinguishing_marks', 'demeanor'];
+/** Hints in empty fields: what helps the character sheet and storyboard most. All optional. */
+const PROFILE_PLACEHOLDERS: Record<EditableField, string> = {
+  role: 'Optional, e.g. station engineer',
+  age: 'Optional',
+  gender: 'Optional',
+  race: 'Optional',
+  appearance: 'Anything not covered above, e.g. usual clothing',
+  personality: 'Optional; barely changes the image',
+  height: 'e.g. tall, about 180 cm',
+  build: 'e.g. athletic, broad shoulders',
+  skin_tone: 'e.g. dark brown, warm undertone',
+  face: 'e.g. oval face, high cheekbones, wide nose',
+  eyes: 'e.g. dark brown, heavy-lidded',
+  hair: 'e.g. short black hair, tight fade',
+  facial_hair: 'e.g. trimmed beard, or none',
+  distinguishing_marks: 'Scars, tattoos, birthmarks, jewelry always worn',
+  glasses: 'e.g. thin gold frames, or none',
+  demeanor: 'How they carry themselves, e.g. guarded, slight slouch',
+};
+const EMPTY_FORM = Object.fromEntries(EDITABLE_FIELDS.map((field) => [field, ''])) as ProfileForm;
 const displayValue = (value: string | number | null) => value === null || value === '' ? 'Not specified' : String(value);
 
 /** Split a comma or newline separated tag draft into unique, trimmed tags. */
@@ -125,10 +191,7 @@ function TagBadges({ character }: { character: StudioCharacter }) {
 }
 
 function formFromCharacter(character: StudioCharacter): ProfileForm {
-  return {
-    role: character.role ?? '', age: character.age === null ? '' : String(character.age), gender: character.gender ?? '', race: character.race ?? '',
-    appearance: character.appearance ?? '', personality: character.personality ?? '',
-  };
+  return Object.fromEntries(EDITABLE_FIELDS.map((field) => [field, String(character[field] ?? '')])) as ProfileForm;
 }
 
 interface ProfileFieldProps {
@@ -146,58 +209,157 @@ interface ProfileFieldProps {
 function ProfileField({ field, label, multiline = false, selected, isEditingProfile, profileForm, isSavingProfile, onChange, onReset }: ProfileFieldProps) {
   const manual = selected.manualOverrideFields.includes(field);
   const value = selected[field];
+  // Ten physical slots would mostly read "Not specified"; show only the known ones until editing.
+  if (!isEditingProfile && isPhysicalField(field) && !value) return null;
   if (isEditingProfile) {
-    const inputClass = "w-full border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-200 outline-none focus:border-violet-400";
-    return <label className={multiline ? 'col-span-2 block' : 'block'}><span className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wide text-zinc-600">{label}</span>{multiline ? <textarea required value={profileForm[field]} onChange={(event) => onChange(field, event.target.value)} className={`${inputClass} min-h-18 resize-y`} /> : <input required type={field === 'age' ? 'number' : 'text'} min={field === 'age' ? 0 : undefined} step={field === 'age' ? 1 : undefined} value={profileForm[field]} onChange={(event) => onChange(field, event.target.value)} className={`${inputClass} ${field === 'age' ? 'appearance-textfield [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none' : ''}`} />}</label>;
+    const inputClass = "w-full border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-violet-400";
+    return <label className={multiline ? 'col-span-2 block' : 'block'}><span className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wide text-zinc-600">{label}</span>{multiline ? <textarea value={profileForm[field]} placeholder={PROFILE_PLACEHOLDERS[field]} onChange={(event) => onChange(field, event.target.value)} className={`${inputClass} min-h-18 resize-y`} /> : <input placeholder={PROFILE_PLACEHOLDERS[field]} type={field === 'age' ? 'number' : 'text'} min={field === 'age' ? 0 : undefined} step={field === 'age' ? 1 : undefined} value={profileForm[field]} onChange={(event) => onChange(field, event.target.value)} className={`${inputClass} ${field === 'age' ? 'appearance-textfield [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none' : ''}`} />}</label>;
   }
   return <div className={multiline ? 'col-span-2' : ''}><dt className="flex items-center gap-1 text-zinc-600">{label}<span className={`border px-1 text-[9px] font-semibold uppercase ${manual ? 'border-violet-400/30 text-violet-300' : 'border-zinc-700 text-zinc-500'}`}>{manual ? 'Manual' : 'From script'}</span></dt><dd className="mt-1 text-zinc-300">{displayValue(value as string | number | null)}</dd>{manual && <button type="button" onClick={() => onReset(field)} disabled={isSavingProfile} className="mt-1 inline-flex items-center gap-1 text-[10px] text-zinc-500 hover:text-zinc-200"><RotateCcw className="h-3 w-3" />Reset to script</button>}</div>;
 }
 
 interface CharacterSheetPanelProps {
   character: StudioCharacter;
-  action: 'create' | 'face' | null;
-  disabled: boolean;
-  onBuild: (regenerateFace: boolean) => void;
-  onPreview: () => void;
+  busy: boolean;
+  approvingId: string | null;
+  onApprove: (assetId: string) => void;
+  onPreview: (url: string, label: string) => void;
   onDownload: () => void;
 }
 
-/** One-image character sheet: large face close-up, six-view turnaround, palette, and profile. */
-function CharacterSheetPanel({ character, action, disabled, onBuild, onPreview, onDownload }: CharacterSheetPanelProps) {
-  const { sheet } = character;
-  const hasFront = character.views.some((asset) => asset.view === 'front');
-  const buttonClass = 'inline-flex h-8 items-center justify-center gap-1.5 border px-2 text-[11px] font-semibold disabled:cursor-not-allowed disabled:opacity-50';
-  return <div className="mt-4 border-t border-zinc-800 pt-4">
-    <div className="mb-2 flex items-center justify-between"><span className="text-xs font-semibold text-zinc-300">Character sheet</span>{sheet?.isStale ? <span className="border border-amber-400/30 px-1 text-[9px] font-semibold uppercase text-amber-300">Views changed</span> : sheet?.createdAt ? <span className="font-mono text-[10px] text-zinc-600">{new Date(sheet.createdAt).toLocaleDateString()}</span> : null}</div>
-    {sheet ? <button type="button" onClick={onPreview} aria-label={`Preview ${character.name} character sheet`} className="relative block aspect-video w-full cursor-zoom-in overflow-hidden border border-zinc-800 bg-zinc-900 hover:border-zinc-600"><Image src={sheet.url} alt={`${character.name} character sheet`} fill sizes="416px" unoptimized className="object-contain" /></button>
-      : <p className="border border-dashed border-zinc-800 px-3 py-3 text-[11px] leading-relaxed text-zinc-500">{hasFront ? 'Combine a large face close-up, the six turnaround views, the color palette and the profile into one image.' : 'Generate the turnaround views first. The sheet is built from them.'}</p>}
-    {action && <p role="status" aria-live="polite" className="mt-2 flex items-center gap-2 text-[11px] text-violet-300"><RefreshCw className="h-3 w-3 animate-spin" />{action === 'face' || !character.sheet?.faceUrl ? 'Generating face close-up and composing sheet...' : 'Composing sheet...'}</p>}
-    <div className={`mt-2 grid gap-2 ${sheet ? 'grid-cols-3' : 'grid-cols-1'}`}>
-      <button type="button" onClick={() => onBuild(false)} disabled={disabled || !hasFront} className={`${buttonClass} border-violet-400/40 bg-violet-500/10 text-violet-200 hover:bg-violet-500/20`}><LayoutPanelLeft className="h-3.5 w-3.5" />{sheet ? 'Rebuild' : 'Create character sheet'}</button>
-      {sheet && <button type="button" onClick={() => onBuild(true)} disabled={disabled || !hasFront} title="Generate a new face close-up, then rebuild the sheet" className={`${buttonClass} border-zinc-700 text-zinc-200 hover:bg-zinc-900`}><ScanFace className="h-3.5 w-3.5" />New face</button>}
-      {sheet && <button type="button" onClick={onDownload} className={`${buttonClass} border-zinc-700 text-zinc-200 hover:bg-zinc-900`}><Download className="h-3.5 w-3.5" />Download</button>}
-    </div>
+/** The approved model sheet, its face crop, and earlier versions to switch between. */
+function CharacterSheetPanel({ character, busy, approvingId, onApprove, onPreview, onDownload }: CharacterSheetPanelProps) {
+  const { sheet, sheetVersions } = character;
+  if (!sheet && sheetVersions.length === 0) {
+    return <div className="mb-3 flex flex-col items-center border border-dashed border-zinc-800 px-4 py-6 text-center">
+      <LayoutPanelLeft className="mb-2 h-5 w-5 text-zinc-600" />
+      <p className="text-xs font-semibold text-zinc-300">No character sheet yet</p>
+      <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">One image with a face close-up and a full-body turnaround. Storyboards use it as {character.name}&apos;s reference in every shot.</p>
+      {character.primaryImageUrl && <p className="mt-2 text-[11px] leading-relaxed text-amber-300/80">Storyboards still use the older separate views until a sheet is generated.</p>}
+    </div>;
+  }
+  return <div className="mb-3">
+    {sheet && <>
+      <button type="button" onClick={() => onPreview(sheet.url, `${character.name} - Character sheet`)} aria-label={`Preview ${character.name} character sheet`} className="relative block aspect-video w-full cursor-zoom-in overflow-hidden border border-zinc-800 bg-zinc-900 hover:border-zinc-600">
+        <Image src={sheet.url} alt={`${character.name} character sheet`} fill sizes="416px" unoptimized className="object-contain" />
+        <span className="absolute left-2 top-2 inline-flex items-center gap-1 bg-zinc-950/85 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300"><CheckCircle2 className="h-3 w-3" />Used in storyboards</span>
+      </button>
+      <SheetReviewBadge review={sheet.review} className="mt-2" />
+      <div className="mt-2 flex items-stretch gap-2">
+        {sheet.faceUrl && <button type="button" onClick={() => onPreview(sheet.faceUrl!, `${character.name} - Face close-up`)} title="Face close-up cut from the sheet; close-up shots send it with the sheet" className="relative aspect-3/4 w-14 shrink-0 cursor-zoom-in overflow-hidden border border-zinc-800 bg-zinc-900 hover:border-zinc-600"><Image src={sheet.faceUrl} alt={`${character.name} face close-up`} fill sizes="56px" unoptimized className="object-cover" /></button>}
+        <div className="flex min-w-0 flex-1 flex-col justify-between">
+          <p className="text-[11px] leading-relaxed text-zinc-500">Shots send this sheet{sheet.faceUrl ? ' and the face close-up cut from it' : ''}.{sheet.approvedAt ? ` Approved ${new Date(sheet.approvedAt).toLocaleDateString()}.` : ''}</p>
+          <button type="button" onClick={onDownload} className="inline-flex h-7 items-center justify-center gap-1.5 self-start border border-zinc-700 px-2 text-[11px] font-semibold text-zinc-200 hover:bg-zinc-900"><Download className="h-3.5 w-3.5" />Download</button>
+        </div>
+      </div>
+    </>}
+    {(sheetVersions.length > 1 || (!sheet && sheetVersions.length > 0)) && <div className="mt-3">
+      <p className="mb-1.5 text-[10px] uppercase tracking-wide text-zinc-600">Versions</p>
+      <div className="grid grid-cols-3 gap-1.5">{sheetVersions.map((version, index) => {
+        const active = version.assetId === sheet?.assetId;
+        const label = `${character.name} sheet version ${sheetVersions.length - index}`;
+        return <div key={version.assetId} className={`border ${active ? 'border-emerald-400/50' : 'border-zinc-800'}`}>
+          <button type="button" onClick={() => onPreview(version.url, label)} className="relative block aspect-video w-full cursor-zoom-in overflow-hidden bg-zinc-900"><Image src={version.url} alt={label} fill sizes="128px" unoptimized className="object-cover" /></button>
+          {active ? <span className="flex h-6 items-center justify-center text-[10px] font-semibold text-emerald-300">In use</span>
+            : <button type="button" onClick={() => onApprove(version.assetId)} disabled={busy} className="flex h-6 w-full items-center justify-center text-[10px] font-semibold text-violet-200 hover:bg-violet-500/15 disabled:opacity-50">{approvingId === version.assetId ? 'Switching...' : 'Use this'}</button>}
+        </div>;
+      })}</div>
+    </div>}
   </div>;
 }
 
+type PanelTab = 'profile' | 'sheet';
+
+const TIER_GROUPS: { key: ObjectTier | 'unranked'; label: string; hint: string }[] = [
+  { key: 'major', label: 'Major', hint: 'Carry the story' },
+  { key: 'medium', label: 'Medium', hint: 'Recurring presence' },
+  { key: 'minor', label: 'Minor', hint: 'Brief appearances' },
+  { key: 'unranked', label: 'Unranked', hint: 'Not found in the current script' },
+];
+
+const initials = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2).map((word) => word[0]).join('').toUpperCase() || '?';
+const portraitUrl = (character: StudioCharacter) => character.sheet?.faceUrl ?? character.primaryImageUrl;
+const missingFields = (character: StudioCharacter) => CORE_FIELDS.filter((field) => character[field] === null || character[field] === '');
+/** Profile lines for the preview modal, skipping anything not known yet. */
+const characterFacts = (character: StudioCharacter): CharacterFact[] => (
+  [
+    ['Role', character.role], ['Age', character.age === null ? null : String(character.age)], ['Gender', character.gender], ['Race', character.race],
+    ...PHYSICAL_FIELDS.map((field) => [FIELD_LABELS[field], character[field]] as const),
+    ['Appearance', character.appearance], ['Personality', character.personality],
+  ] as const
+).flatMap(([label, value]) => value ? [{ label, value: String(value) }] : []);
+const quickFacts = (character: StudioCharacter) => [character.age === null ? null : `${character.age} yrs`, character.gender, character.race].filter(Boolean).join(' · ');
+
+/** Generated portrait, or the character's initials on an accent glow when nothing is generated yet. */
+function Portrait({ character, className, initialsClassName, sizes }: { character: StudioCharacter; className: string; initialsClassName: string; sizes: string }) {
+  const { accent } = characterTheme(character);
+  const url = portraitUrl(character);
+  return <div className={`relative overflow-hidden bg-zinc-900 ${className}`} style={url ? undefined : { background: `radial-gradient(circle at 50% 38%, ${accent}33, transparent 70%), #18181b` }}>
+    {url ? <Image src={url} alt="" fill sizes={sizes} unoptimized className="object-cover object-top" />
+      : <span className={`absolute inset-0 flex items-center justify-center font-bold tracking-wide ${initialsClassName}`} style={{ color: accent }}>{initials(character.name)}</span>}
+  </div>;
+}
+
+interface CastItemProps { character: StudioCharacter; selected: boolean; onSelect: () => void; }
+
+/** Portrait card for major and medium characters. */
+function CastCard({ character, selected, onSelect }: CastItemProps) {
+  const { accent } = characterTheme(character);
+  const facts = quickFacts(character);
+  const missing = missingFields(character).length;
+  return <button type="button" onClick={onSelect} aria-pressed={selected} className={`group flex flex-col overflow-hidden border bg-zinc-900/40 text-left transition hover:-translate-y-0.5 hover:bg-zinc-900 ${selected ? '' : 'border-zinc-800 hover:border-zinc-600'}`} style={selected ? { borderColor: accent, boxShadow: `0 0 0 1px ${accent}` } : undefined}>
+    <div className="relative">
+      <Portrait character={character} className="aspect-4/5 w-full" initialsClassName="text-4xl" sizes="240px" />
+      <span className="absolute left-2 top-2 bg-zinc-950/80 px-1.5 py-0.5 font-mono text-[10px] text-zinc-300">#{character.ranking?.rank ?? '–'}</span>
+      <span className={`absolute right-2 top-2 bg-zinc-950/80 px-1.5 py-0.5 text-[10px] font-semibold ${character.sheet ? 'text-emerald-300' : 'text-zinc-500'}`} title={character.sheet ? 'Character sheet approved' : 'No character sheet yet'}>{character.sheet ? 'Sheet' : 'No sheet'}</span>
+      <div className="absolute bottom-0 left-0 right-0 h-0.5" style={{ backgroundColor: character.sheet ? accent : '#27272a' }} />
+    </div>
+    <div className="flex flex-1 flex-col p-3">
+      <span className="truncate text-sm font-semibold" style={{ color: accent }}>{character.name}</span>
+      <span className={`mt-0.5 truncate text-xs ${character.role ? 'text-zinc-400' : 'italic text-zinc-600'}`}>{character.role ?? 'No role yet'}</span>
+      {facts && <span className="mt-1 truncate text-[11px] text-zinc-500">{facts}</span>}
+      <div className="mt-auto flex items-center gap-3 pt-3 text-[11px] text-zinc-500">
+        <span className="inline-flex items-center gap-1" title="Scenes"><Clapperboard className="h-3 w-3" />{character.ranking?.scene_count ?? 0}</span>
+        <span className="inline-flex items-center gap-1" title="Dialogue lines"><MessageSquare className="h-3 w-3" />{character.ranking?.dialogue_lines ?? 0}</span>
+        {missing > 0 && <span className="ml-auto text-amber-400/80" title="Profile details not in the script">{missing} to fill</span>}
+      </div>
+    </div>
+  </button>;
+}
+
+/** Compact row for minor characters, so brief roles don't take as much room as major ones. */
+function CastRow({ character, selected, onSelect }: CastItemProps) {
+  const { accent } = characterTheme(character);
+  return <button type="button" onClick={onSelect} aria-pressed={selected} className={`flex items-center gap-3 border bg-zinc-900/40 p-2 text-left transition hover:bg-zinc-900 ${selected ? '' : 'border-zinc-800 hover:border-zinc-600'}`} style={selected ? { borderColor: accent, boxShadow: `0 0 0 1px ${accent}` } : undefined}>
+    <Portrait character={character} className="h-12 w-10 shrink-0" initialsClassName="text-sm" sizes="40px" />
+    <div className="min-w-0 flex-1">
+      <span className="block truncate text-sm font-semibold" style={{ color: accent }}>{character.name}</span>
+      <span className={`block truncate text-[11px] ${character.role ? 'text-zinc-500' : 'italic text-zinc-600'}`}>{character.role ?? 'No role yet'}</span>
+    </div>
+    <div className="flex shrink-0 items-center gap-2.5 font-mono text-[11px] text-zinc-500">
+      <span className="inline-flex items-center gap-1" title="Scenes"><Clapperboard className="h-3 w-3" />{character.ranking?.scene_count ?? 0}</span>
+      <span className="inline-flex items-center gap-1" title="Dialogue lines"><MessageSquare className="h-3 w-3" />{character.ranking?.dialogue_lines ?? 0}</span>
+    </div>
+  </button>;
+}
+
 export function Characters({ projectId, onSelect }: CharactersProps) {
-  const referenceImageInputRef = useRef<HTMLInputElement>(null);
   const [characters, setCharacters] = useState<StudioCharacter[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isProfileVisible, setIsProfileVisible] = useState(true);
+  const [panelTab, setPanelTab] = useState<PanelTab>('profile');
   const [isLoading, setIsLoading] = useState(false);
   const [isExtracting, setIsExtracting] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [isSyncingScript, setIsSyncingScript] = useState(false);
   const [generationProgress, setGenerationProgress] = useState(0);
-  const [selectedView, setSelectedView] = useState<CharacterView>('front');
-  const [generationMode, setGenerationMode] = useState<GenerationMode | null>(null);
-  const [referenceImage, setReferenceImage] = useState<File | null>(null);
-  const [referenceGuidance, setReferenceGuidance] = useState('');
-  const [isImagePreviewOpen, setIsImagePreviewOpen] = useState(false);
-  const [previewOverride, setPreviewOverride] = useState<ImagePreview[] | null>(null);
-  const [sheetAction, setSheetAction] = useState<'create' | 'face' | null>(null);
+  /** The character preview modal; ``initialUrl`` is the sheet version (or face) to open on. */
+  const [sheetModal, setSheetModal] = useState<{ initialUrl: string | null } | null>(null);
+  const [approvingId, setApprovingId] = useState<string | null>(null);
+  const [sheetResult, setSheetResult] = useState<SheetResult | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [generatingModel, setGeneratingModel] = useState<string | null>(null);
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [profileForm, setProfileForm] = useState<ProfileForm>(EMPTY_FORM);
   const [tagDraft, setTagDraft] = useState('');
@@ -211,7 +373,7 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
     setError(null);
     try {
       const { data: rows, error: charactersError } = await supabase.from('characters')
-        .select('id, name, character_type, role, age, gender, race, appearance, personality, tags, primary_asset_id, metadata')
+        .select('id, name, character_type, role, age, gender, race, appearance, personality, physical, tags, primary_asset_id, metadata')
         .eq('project_id', projectId).eq('metadata->>source', 'script').order('name');
       if (charactersError) throw charactersError;
       const characterRows = rows ?? [];
@@ -222,7 +384,8 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
       const primaryUrls = new Map((primaryAssets ?? []).map((asset) => [asset.id as string, asset.url as string]));
       const ids = characterRows.map((row) => row.id as string);
       const { data: links, error: linksError } = ids.length ? await supabase.from('asset_links')
-        .select('target_id, asset_id, metadata').eq('project_id', projectId).eq('target_type', 'character').eq('role', 'keyframe').in('target_id', ids) : { data: [], error: null };
+        .select('target_id, asset_id, created_at').eq('project_id', projectId).eq('target_type', 'character').eq('role', 'model_sheet_candidate')
+        .in('target_id', ids).order('created_at', { ascending: false }) : { data: [], error: null };
       if (linksError) throw linksError;
       const assetIds = (links ?? []).map((link) => link.asset_id as string);
       const { data: assets, error: assetsError } = assetIds.length ? await supabase.from('assets').select('id, url').in('id', assetIds) : { data: [], error: null };
@@ -235,29 +398,29 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
         const metadata = (row.metadata ?? {}) as Record<string, unknown>;
         const overrides = (metadata.manual_overrides ?? {}) as Record<string, unknown>;
         const effective = <T,>(field: EditableField, scriptValue: T): T => overrides[field] === undefined ? scriptValue : overrides[field] as T;
-        const latestGenerationJobId = typeof metadata.latest_generation_job_id === 'string' ? metadata.latest_generation_job_id : null;
         const manualOverrideFields = EDITABLE_FIELDS.filter((field) => overrides[field] !== undefined);
-        const characterLinks = (links ?? []).filter((link) => link.target_id === row.id);
-        const latestLinks = latestGenerationJobId ? characterLinks.filter((link) => {
-          const linkMetadata = (link.metadata ?? {}) as Record<string, unknown>;
-          return linkMetadata.generation_job_id === latestGenerationJobId;
-        }) : characterLinks;
-        const views = (latestLinks.length > 0 ? latestLinks : characterLinks).flatMap((link): ViewAsset[] => {
-          const view = ((link.metadata ?? {}) as Record<string, unknown>).view as CharacterView;
-          const imageUrl = urls.get(link.asset_id as string);
-          return imageUrl && VIEWS.includes(view) ? [{ assetId: link.asset_id as string, imageUrl, view }] : [];
+        const scriptPhysical = (row.physical ?? {}) as Partial<Record<PhysicalField, unknown>>;
+        const physical = Object.fromEntries(PHYSICAL_FIELDS.map((field) => {
+          const raw = scriptPhysical[field];
+          return [field, effective(field, typeof raw === 'string' && raw.trim() ? raw.trim() : null)];
+        })) as Record<PhysicalField, string | null>;
+        const sheetVersions = (links ?? []).filter((link) => link.target_id === row.id).flatMap((link): SheetVersion[] => {
+          const url = urls.get(link.asset_id as string);
+          return url ? [{ assetId: link.asset_id as string, url, createdAt: (link.created_at as string | null) ?? null }] : [];
         });
         return {
           id: row.id as string, name: row.name as string, characterType: (row.character_type as string | null) || 'supporting',
           role: effective('role', row.role as string | null), age: effective('age', row.age as number | null), gender: effective('gender', row.gender as string | null),
           race: effective('race', row.race as string | null), appearance: effective('appearance', row.appearance as string | null), personality: effective('personality', row.personality as string | null),
-          tags: (row.tags as string[] | null) ?? [], metadata, primaryImageUrl: primaryUrls.get(row.primary_asset_id as string) ?? null, latestGenerationJobId, manualOverrideFields, views,
-          sheet: sheetFromMetadata(metadata, latestGenerationJobId),
+          ...physical,
+          tags: (row.tags as string[] | null) ?? [], metadata, primaryImageUrl: primaryUrls.get(row.primary_asset_id as string) ?? null, manualOverrideFields,
+          sheet: sheetFromMetadata(metadata), sheetVersions,
           ranking: rankingById.get(row.id as string) ?? null,
         };
       }).sort((a, b) => (a.ranking?.rank ?? Number.MAX_SAFE_INTEGER) - (b.ranking?.rank ?? Number.MAX_SAFE_INTEGER));
       setCharacters(loaded);
-      setSelectedId((current) => loaded.some((character) => character.id === current) ? current : null);
+      // Keep the current pick; otherwise open the top-ranked character so the panel is never blank.
+      setSelectedId((current) => loaded.some((character) => character.id === current) ? current : loaded[0]?.id ?? null);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Failed to load script characters.');
     } finally { setIsLoading(false); }
@@ -275,34 +438,43 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
     return () => window.clearInterval(interval);
   }, [isGenerating]);
 
-  const selected = characters.find((character) => character.id === selectedId) ?? null;
-  const selectedPreviewAsset = selected?.views.find((asset) => asset.view === selectedView) ?? selected?.views.find((asset) => asset.view === 'front');
-  const selectedPreview: ImagePreview[] = selected && (selectedPreviewAsset?.imageUrl ?? selected.primaryImageUrl) ? [{
-    id: selectedPreviewAsset?.assetId ?? selected.id, url: selectedPreviewAsset?.imageUrl ?? selected.primaryImageUrl!,
-    prompt: `${selected.name} - ${VIEW_LABELS[selectedPreviewAsset?.view ?? selectedView]}`, model: 'Character reference', aspect_ratio: '2:3',
-  }] : [];
+  useEffect(() => {
+    if (!isGenerating) return;
+    const started = Date.now();
+    const interval = window.setInterval(() => setElapsedSeconds(Math.round((Date.now() - started) / 1000)), 1000);
+    return () => window.clearInterval(interval);
+  }, [isGenerating]);
 
+  const selected = characters.find((character) => character.id === selectedId) ?? null;
   const selectCharacter = (character: StudioCharacter) => {
-    setSelectedId(character.id); setSelectedView('front'); setGenerationMode(null); setReferenceImage(null); setReferenceGuidance('');
+    setSelectedId(character.id);
     setIsProfileVisible(true); setIsEditingProfile(false); setScriptPreview(null); setProfileForm(formFromCharacter(character)); setTagDraft(character.tags.join(', ')); onSelect(character as unknown as Record<string, unknown>);
   };
-  const beginProfileEdit = () => { if (selected) { setProfileForm(formFromCharacter(selected)); setTagDraft(selected.tags.join(', ')); setIsEditingProfile(true); setNotice(null); } };
+  const beginProfileEdit = () => { if (selected) { setPanelTab('profile'); setProfileForm(formFromCharacter(selected)); setTagDraft(selected.tags.join(', ')); setIsEditingProfile(true); setNotice(null); } };
   const updateForm = (field: EditableField, value: string) => setProfileForm((current) => ({ ...current, [field]: value }));
 
   const saveProfile = async () => {
     if (!projectId || !selected) return;
     const update: CharacterProfileUpdate = {};
+    const clearFields: EditableField[] = [];
     for (const field of EDITABLE_FIELDS) {
       const current = field === 'age' ? (selected.age === null ? '' : String(selected.age)) : String(selected[field] ?? '');
       const next = profileForm[field].trim();
-      if (!next) { setError(`${field[0].toUpperCase()}${field.slice(1)} is required. Use Reset to script to remove a manual value.`); return; }
       if (next === current) continue;
+      if (!next) {
+        // Every field is optional. Emptying your own value removes it (the script value, if any,
+        // returns); a value that comes from the script can be replaced but not blanked here.
+        if (selected.manualOverrideFields.includes(field)) { clearFields.push(field); continue; }
+        setError(`${FIELD_LABELS[field]} comes from the script. Replace it with another value, or leave it as it is.`);
+        return;
+      }
       if (field === 'age') {
         const age = Number(next);
         if (!Number.isInteger(age) || age < 0) { setError('Age must be a non-negative whole number.'); return; }
         update.age = age;
       } else update[field] = next;
     }
+    if (clearFields.length) update.clear_fields = clearFields;
     if (Object.keys(update).length === 0) {
       if (!tagsDiffer(selected.tags, tagDraft)) { setIsEditingProfile(false); return; }
       setIsSavingProfile(true); setError(null);
@@ -335,54 +507,48 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
     setIsSavingProfile(true); setError(null);
     try {
       await updateCharacterProfile(projectId, selected.id, { clear_fields: [field] });
-      await loadCharacters(); setNotice(`${field[0].toUpperCase()}${field.slice(1)} restored to its script value.`);
+      await loadCharacters(); setNotice(`${FIELD_LABELS[field]} restored to its script value.`);
     } catch (resetError) { setError(resetError instanceof Error ? resetError.message : 'Failed to reset profile field.'); }
     finally { setIsSavingProfile(false); }
   };
 
-  const generateViews = async (mode: GenerationMode) => {
-    if (!projectId || !selected) return;
-    if (mode === 'image' && !referenceImage) { setError('Choose a reference image before generating views.'); return; }
-    setIsGenerating(true); setError(null);
+  const generateSheet = async (prompt: string, references: CharacterSheetReference[], model: string): Promise<boolean> => {
+    if (!projectId || !selected) return false;
+    const { id: characterId, name } = selected;
+    const started = Date.now();
+    const seconds = () => Math.round((Date.now() - started) / 1000);
+    setIsGenerating(true); setElapsedSeconds(0); setGeneratingModel(model); setSheetResult(null); setError(null); setNotice(null);
     try {
-      if (mode === 'image' && referenceImage) await generateImageFromUpload(referenceImage, referenceGuidance, 'nanobanana', 'replicate', projectId, selected.id);
-      else await generateScriptCharacterImages({ project_id: projectId, character_id: selected.id, model: 'nanobanana', provider: 'replicate' });
-      setGenerationProgress(100); await loadCharacters(); setGenerationMode(null); setReferenceImage(null); setReferenceGuidance('');
-    } catch (generationError) { setError(generationError instanceof Error ? generationError.message : 'Failed to generate character views.'); }
-    finally { setIsGenerating(false); }
-  };
-
-  const buildSheet = async (regenerateFace: boolean) => {
-    if (!projectId || !selected) return;
-    setSheetAction(regenerateFace ? 'face' : 'create'); setError(null); setNotice(null);
-    try {
-      const result = await createCharacterSheet({ project_id: projectId, character_id: selected.id, model: 'nanobanana', provider: 'replicate', regenerate_face: regenerateFace });
+      const result = await generateCharacterSheet({ project_id: projectId, character_id: characterId, prompt, references, model });
+      setGenerationProgress(100);
+      setSheetResult({
+        characterId, status: 'success', url: result.sheet_url, approved: result.approved, review: result.review, seconds: seconds(),
+        message: result.approved ? `Storyboards now use this sheet for ${name}.` : `Saved as a new version. Choose "Use this" under Versions to make storyboards use it.`,
+      });
       await loadCharacters();
-      const missing = result.missing_views.length ? ` Missing views shown as placeholders: ${result.missing_views.length}.` : '';
-      setNotice(`Character sheet ${regenerateFace ? 'rebuilt with a new face close-up' : 'created'} for ${selected.name}.${missing}`);
-    } catch (sheetError) { setError(sheetError instanceof Error ? sheetError.message : 'Failed to create the character sheet.'); }
-    finally { setSheetAction(null); }
+      return true;
+    } catch (generationError) {
+      const reason = generationError instanceof Error ? generationError.message : 'Failed to generate the character sheet.';
+      setSheetResult({ characterId, status: 'error', message: `${reason} Nothing was saved; adjust the inputs below and try again.`, seconds: seconds() });
+      return false;
+    } finally { setIsGenerating(false); setGeneratingModel(null); }
   };
 
-  const openSheetPreview = (character: StudioCharacter) => {
-    if (!character.sheet) return;
-    setPreviewOverride([{ id: `${character.id}-sheet`, url: character.sheet.url, prompt: `${character.name} - Character sheet`, model: 'Character sheet', aspect_ratio: '16:9' }]);
-    setIsImagePreviewOpen(true);
+  const approveSheet = async (assetId: string) => {
+    if (!projectId || !selected) return;
+    setApprovingId(assetId); setError(null); setNotice(null);
+    try {
+      await approveCharacterSheet(projectId, selected.id, assetId);
+      await loadCharacters(); setNotice(`Storyboards now use this sheet for ${selected.name}.`);
+    } catch (approveError) { setError(approveError instanceof Error ? approveError.message : 'Failed to switch the character sheet.'); }
+    finally { setApprovingId(null); }
   };
+
+  const openPreview = (url: string | null = null) => setSheetModal({ initialUrl: url });
 
   const downloadSheet = async (character: StudioCharacter) => {
     if (!character.sheet) return;
-    const filename = `${character.name.trim().replace(/[^\w-]+/g, '_') || 'character'}_sheet.jpg`;
-    try {
-      const response = await fetch(character.sheet.url);
-      if (!response.ok) throw new Error(`Download failed with status ${response.status}`);
-      const objectUrl = URL.createObjectURL(await response.blob());
-      const link = Object.assign(document.createElement('a'), { href: objectUrl, download: filename });
-      document.body.appendChild(link); link.click(); link.remove();
-      URL.revokeObjectURL(objectUrl);
-    } catch {
-      window.open(character.sheet.url, '_blank', 'noopener');
-    }
+    await downloadImage(character.sheet.url, `${character.name.trim().replace(/[^\w-]+/g, '_') || 'character'}_sheet.jpg`);
   };
 
   const extractCharacters = async () => {
@@ -418,7 +584,86 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
     {error && <div className="mb-5 flex items-center gap-2 border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300"><AlertCircle className="h-4 w-4" />{error}</div>}
     {notice && <div className="mb-5 border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">{notice}</div>}
     {isLoading ? <div className="flex min-h-72 items-center justify-center gap-3 text-sm text-zinc-500"><RefreshCw className="h-5 w-5 animate-spin" />Loading script characters...</div> : characters.length === 0 ? <div className="flex min-h-72 flex-col items-center justify-center border border-dashed border-zinc-800 px-6 text-center"><FileText className="mb-3 h-7 w-7 text-zinc-600" /><h2 className="text-sm font-semibold text-zinc-300">No extracted characters yet</h2><p className="mt-1 max-w-sm text-sm text-zinc-500">Extract named characters and supported metadata from the script already saved in this project.</p><button type="button" onClick={() => void extractCharacters()} disabled={isExtracting} className="mt-4 inline-flex h-9 items-center justify-center gap-2 bg-violet-600 px-3 text-xs font-semibold text-white hover:bg-violet-500 disabled:opacity-50">{isExtracting ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Users className="h-3.5 w-3.5" />}{isExtracting ? 'Extracting characters...' : 'Extract from current script'}</button></div> : <div className={`grid gap-6 ${isProfileVisible ? 'xl:grid-cols-[minmax(0,1fr)_26rem]' : ''}`}>
-      <div className="overflow-x-auto border border-zinc-800 bg-zinc-950"><table className="w-full min-w-260 text-left text-sm"><thead className="border-b border-zinc-800 bg-zinc-900/50 text-xs font-semibold uppercase tracking-wide text-zinc-500"><tr><th className="w-12 px-4 py-3 text-right">#</th><th className="px-4 py-3">Character</th><th className="px-4 py-3">Tier</th><th className="px-4 py-3 text-right" title="Scenes the character appears in">Scenes</th><th className="px-4 py-3 text-right" title="Dialogue lines spoken">Lines</th><th className="px-4 py-3">Role</th><th className="px-4 py-3">Age</th><th className="px-4 py-3">Gender</th><th className="px-4 py-3">Race</th><th className="px-4 py-3 text-right">Views</th></tr></thead><tbody className="divide-y divide-zinc-800/80">{characters.map((character) => { const cell = (field: EditableField) => character[field] === null || character[field] === '' ? <button type="button" onClick={(event) => { event.stopPropagation(); selectCharacter(character); setProfileForm(formFromCharacter(character)); setIsEditingProfile(true); }} className="text-xs text-violet-300 hover:text-violet-200">Add value</button> : <span className="text-zinc-400">{String(character[field])}</span>; return <tr key={character.id} onClick={() => selectCharacter(character)} className={`cursor-pointer hover:bg-zinc-900/70 ${selectedId === character.id ? 'bg-violet-500/10' : ''}`}><td className="px-4 py-3 text-right font-mono text-xs text-zinc-500">{character.ranking?.rank ?? '–'}</td><td className="px-4 py-3"><div className="flex items-center gap-3"><div className="relative h-10 w-8 overflow-hidden bg-zinc-900">{character.primaryImageUrl ? <Image src={character.primaryImageUrl} alt="" fill sizes="32px" unoptimized className="object-cover" /> : <ImageIcon className="m-2 h-4 w-4 text-zinc-700" />}</div><div className="min-w-0"><span className="font-semibold" style={{ color: characterTheme(character).accent }}>{character.name}</span><TagBadges character={character} /></div></div></td><td className="px-4 py-3"><TierBadge ranking={character.ranking} emptyLabel="Unranked" /></td><td className="px-4 py-3 text-right font-mono text-xs text-zinc-400">{character.ranking?.scene_count ?? 0}</td><td className="px-4 py-3 text-right font-mono text-xs text-zinc-400">{character.ranking?.dialogue_lines ?? 0}</td><td className="px-4 py-3">{cell('role')}</td><td className="px-4 py-3">{cell('age')}</td><td className="px-4 py-3">{cell('gender')}</td><td className="px-4 py-3">{cell('race')}</td><td className="px-4 py-3 text-right font-mono text-xs text-zinc-400">{character.views.length}/6</td></tr>; })}</tbody></table></div>
-      {isProfileVisible && <aside className="border border-zinc-800 bg-zinc-950">{selected ? <div><div className="relative aspect-[2/3] overflow-hidden border-b border-zinc-800 bg-zinc-900">{selectedPreview.length ? <button type="button" onClick={() => setIsImagePreviewOpen(true)} aria-label={`Preview ${selected.name}`} className="absolute inset-0 block w-full cursor-zoom-in"><Image src={selectedPreview[0].url} alt={selectedPreview[0].prompt} fill sizes="416px" unoptimized className="object-contain" /></button> : <div className="flex h-full flex-col items-center justify-center gap-2 text-zinc-600"><ImageIcon className="h-7 w-7" /><span className="text-xs">Views not generated</span></div>}<div className="absolute bottom-0 left-0 right-0 flex items-center justify-between bg-zinc-950/85 px-3 py-2 text-xs"><span className="font-semibold text-zinc-200">{VIEW_LABELS[selectedPreviewAsset?.view ?? selectedView]}</span><span className="font-mono text-zinc-500">{selected.views.length}/6</span></div></div><div className="p-4"><div className="flex items-center justify-between gap-3"><div><h2 className="text-base font-bold" style={{ color: characterTheme(selected).accent }}>{selected.name}</h2><p className="mt-0.5 text-sm text-violet-300">{displayValue(selected.role)}</p><TagBadges character={selected} /></div><button type="button" onClick={beginProfileEdit} className="inline-flex h-8 w-8 items-center justify-center border border-zinc-700 text-zinc-300 hover:bg-zinc-900" title="Edit character profile"><Pencil className="h-3.5 w-3.5" /></button></div>{isEditingProfile && <label className="mt-3 block"><span className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wide text-zinc-600">Tags / aliases<span className="normal-case tracking-normal text-zinc-600">Comma separated</span></span><input value={tagDraft} onChange={(event) => setTagDraft(event.target.value)} placeholder="VOSS, Detective" className="w-full border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-200 outline-none focus:border-violet-400" /></label>}<dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 border-y border-zinc-800 py-3 text-xs"><ProfileField field="age" label="Age" selected={selected} isEditingProfile={isEditingProfile} profileForm={profileForm} isSavingProfile={isSavingProfile} onChange={updateForm} onReset={(field) => void resetField(field)} /><ProfileField field="gender" label="Gender" selected={selected} isEditingProfile={isEditingProfile} profileForm={profileForm} isSavingProfile={isSavingProfile} onChange={updateForm} onReset={(field) => void resetField(field)} /><ProfileField field="race" label="Race" selected={selected} isEditingProfile={isEditingProfile} profileForm={profileForm} isSavingProfile={isSavingProfile} onChange={updateForm} onReset={(field) => void resetField(field)} /><ProfileField field="role" label="Role" selected={selected} isEditingProfile={isEditingProfile} profileForm={profileForm} isSavingProfile={isSavingProfile} onChange={updateForm} onReset={(field) => void resetField(field)} /><ProfileField field="appearance" label="Appearance" multiline selected={selected} isEditingProfile={isEditingProfile} profileForm={profileForm} isSavingProfile={isSavingProfile} onChange={updateForm} onReset={(field) => void resetField(field)} /><ProfileField field="personality" label="Personality" multiline selected={selected} isEditingProfile={isEditingProfile} profileForm={profileForm} isSavingProfile={isSavingProfile} onChange={updateForm} onReset={(field) => void resetField(field)} /></dl>{isEditingProfile && <div className="mt-3 flex gap-2"><button type="button" onClick={() => void saveProfile()} disabled={isSavingProfile} className="inline-flex h-9 flex-1 items-center justify-center gap-2 bg-violet-600 text-xs font-semibold text-white hover:bg-violet-500 disabled:opacity-50"><Save className="h-3.5 w-3.5" />{isSavingProfile ? 'Saving...' : 'Save profile'}</button><button type="button" onClick={() => setIsEditingProfile(false)} className="h-9 border border-zinc-700 px-3 text-xs text-zinc-300 hover:bg-zinc-900">Cancel</button></div>}<CharacterImportance ranking={selected.ranking} /><div className="mt-4"><div className="mb-2 flex items-center justify-between"><span className="text-xs font-semibold text-zinc-300">Turnaround views</span><span className="font-mono text-[10px] text-zinc-600">Select an angle</span></div><div className="grid grid-cols-3 gap-2">{VIEWS.map((view) => { const asset = selected.views.find((candidate) => candidate.view === view); const active = selectedView === view; return <button key={view} type="button" onClick={() => { setSelectedView(view); if (asset) setIsImagePreviewOpen(true); }} aria-pressed={active} className={`relative aspect-[2/3] overflow-hidden border text-left ${active ? 'border-violet-400 ring-1 ring-violet-400/50' : 'border-zinc-800 hover:border-zinc-600'}`}>{asset ? <Image src={asset.imageUrl} alt={`${selected.name} ${VIEW_LABELS[view]}`} fill sizes="128px" unoptimized className="object-contain bg-zinc-900" /> : <div className="absolute inset-0 flex items-center justify-center bg-zinc-900 text-zinc-600"><ImageIcon className="h-4 w-4" /></div>}<span className="absolute bottom-0 left-0 right-0 bg-zinc-950/85 px-1.5 py-1 text-center text-[10px] font-medium text-zinc-300">{VIEW_LABELS[view]}</span></button>; })}</div></div><CharacterSheetPanel character={selected} action={sheetAction} disabled={isGenerating || sheetAction !== null} onBuild={(regenerateFace) => void buildSheet(regenerateFace)} onPreview={() => openSheetPreview(selected)} onDownload={() => void downloadSheet(selected)} /><div className="mt-4 border-t border-zinc-800 pt-4"><button type="button" onClick={() => void openScriptPreview()} disabled={isSyncingScript || selected.manualOverrideFields.length === 0} title={selected.manualOverrideFields.length ? 'Preview a controlled update to the first character appearance' : 'Save a manual profile value before updating the script'} className="flex h-9 w-full items-center justify-center gap-2 border border-zinc-700 text-xs font-semibold text-zinc-200 hover:bg-zinc-900 disabled:cursor-not-allowed disabled:opacity-50"><FileText className="h-3.5 w-3.5" />{isSyncingScript ? 'Preparing script update...' : 'Update script'}</button></div><input ref={referenceImageInputRef} type="file" accept="image/*" className="hidden" onChange={(event) => setReferenceImage(event.target.files?.[0] ?? null)} />{isGenerating ? <div className="mt-4" role="status" aria-live="polite"><div className="mb-1.5 flex items-center justify-between text-xs"><span className="text-zinc-400">Generating views</span><span className="font-mono text-violet-300">{generationProgress}%</span></div><div className="h-1.5 overflow-hidden bg-zinc-800"><div className="h-full bg-violet-500 transition-[width] duration-500" style={{ width: `${generationProgress}%` }} /></div></div> : generationMode === 'image' ? <div className="mt-4 border border-zinc-800 bg-zinc-900/50 p-3"><div className="mb-3 flex items-center justify-between"><span className="text-xs font-semibold text-zinc-200">Reference image</span><button type="button" onClick={() => { setGenerationMode(null); setReferenceImage(null); setReferenceGuidance(''); }} className="text-xs text-zinc-500 hover:text-zinc-200">Back</button></div><button type="button" onClick={() => referenceImageInputRef.current?.click()} className="flex h-10 w-full items-center justify-between border border-dashed border-zinc-700 bg-zinc-950 px-3 text-xs text-zinc-400 hover:border-zinc-500"><span className="truncate">{referenceImage?.name ?? 'Choose image'}</span><ImageIcon className="h-4 w-4 shrink-0" /></button><textarea value={referenceGuidance} onChange={(event) => setReferenceGuidance(event.target.value)} placeholder="Optional visual direction" className="mt-2 min-h-20 w-full resize-none border border-zinc-700 bg-zinc-950 p-2 text-xs text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-violet-400" /><button type="button" onClick={() => void generateViews('image')} disabled={!referenceImage} className="mt-2 flex h-10 w-full items-center justify-center gap-2 bg-violet-600 text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-50"><ImageIcon className="h-4 w-4" />Generate from image</button></div> : <div className="mt-4 grid grid-cols-2 gap-2"><button type="button" onClick={() => void generateViews('text')} className="flex min-h-20 flex-col items-start justify-center border border-violet-400/40 bg-violet-500/10 px-3 text-left text-violet-200 hover:bg-violet-500/20"><Wand2 className="mb-2 h-4 w-4" /><span className="text-xs font-semibold">Create from text</span><span className="mt-0.5 text-[10px] text-violet-300/80">Use effective character profile</span></button><button type="button" onClick={() => setGenerationMode('image')} className="flex min-h-20 flex-col items-start justify-center border border-zinc-700 bg-zinc-900 px-3 text-left text-zinc-200 hover:border-zinc-500"><ImageIcon className="mb-2 h-4 w-4" /><span className="text-xs font-semibold">Use reference image</span><span className="mt-0.5 text-[10px] text-zinc-500">Preserve visual likeness</span></button></div>}</div></div> : <div className="flex min-h-96 flex-col items-center justify-center px-6 text-center text-sm text-zinc-600"><Users className="mb-3 h-6 w-6" />Select a character to inspect its script profile.</div>}</aside>}</div>}
-  </div>{scriptPreview && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"><div role="dialog" aria-modal="true" aria-labelledby="script-sync-title" className="w-full max-w-lg border border-zinc-700 bg-zinc-950 p-5 shadow-2xl"><h2 id="script-sync-title" className="text-base font-semibold text-zinc-100">Review script update</h2><p className="mt-2 text-sm text-zinc-400">{scriptPreview.action === 'insert' ? 'Insert' : 'Replace'} one managed action line before the first appearance in <span className="text-zinc-200">{scriptPreview.scene_slugline ?? 'the selected scene'}</span>.</p><pre className="mt-4 whitespace-pre-wrap border border-zinc-800 bg-zinc-900/50 p-3 font-sans text-sm leading-6 text-zinc-200">{scriptPreview.content}</pre><div className="mt-5 flex justify-end gap-2"><button type="button" onClick={() => setScriptPreview(null)} disabled={isSyncingScript} className="h-9 border border-zinc-700 px-3 text-xs font-semibold text-zinc-300 hover:bg-zinc-900">Cancel</button><button type="button" onClick={() => void confirmScriptUpdate()} disabled={isSyncingScript} className="h-9 bg-violet-600 px-3 text-xs font-semibold text-white hover:bg-violet-500 disabled:opacity-50">{isSyncingScript ? 'Updating...' : 'Confirm update'}</button></div></div></div>}<ImagePreviewModal isOpen={isImagePreviewOpen} onClose={() => { setIsImagePreviewOpen(false); setPreviewOverride(null); }} images={previewOverride ?? selectedPreview}selectedIndex={0} onNavigate={() => undefined} /></div>;
+      <div className="space-y-7">
+        {TIER_GROUPS.map((group) => {
+          const members = characters.filter((character) => (character.ranking?.tier ?? 'unranked') === group.key);
+          if (members.length === 0) return null;
+          const compact = group.key === 'minor' || group.key === 'unranked';
+          return <section key={group.key}>
+            <div className="mb-3 flex items-baseline gap-2">
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-300">{group.label}</h2>
+              <span className="font-mono text-xs text-zinc-500">{members.length}</span>
+              <span className="text-xs text-zinc-600">· {group.hint}</span>
+            </div>
+            {compact
+              ? <div className="grid gap-2 sm:grid-cols-2 2xl:grid-cols-3">{members.map((character) => <CastRow key={character.id} character={character} selected={character.id === selectedId} onSelect={() => selectCharacter(character)} />)}</div>
+              : <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5">{members.map((character) => <CastCard key={character.id} character={character} selected={character.id === selectedId} onSelect={() => selectCharacter(character)} />)}</div>}
+          </section>;
+        })}
+      </div>
+      {isProfileVisible && <aside className="self-start border border-zinc-800 bg-zinc-950 xl:sticky xl:top-0 xl:max-h-[calc(100vh-9rem)] xl:overflow-y-auto">{selected ? (() => {
+        const theme = characterTheme(selected);
+        const missing = missingFields(selected);
+        const fieldProps = { selected, isEditingProfile, profileForm, isSavingProfile, onChange: updateForm, onReset: (field: EditableField) => void resetField(field) };
+        return <div>
+          <div className="flex items-start gap-3 border-b border-zinc-800 p-4">
+            <Portrait character={selected} className="h-20 w-16 shrink-0 border border-zinc-800" initialsClassName="text-xl" sizes="64px" />
+            <div className="min-w-0 flex-1">
+              <h2 className="truncate text-base font-bold" style={{ color: theme.accent }}>{selected.name}</h2>
+              <p className={`truncate text-sm ${selected.role ? 'text-zinc-300' : 'italic text-zinc-600'}`}>{selected.role ?? 'Role not set'}</p>
+              <div className="mt-1.5 flex items-center gap-2 text-[11px] text-zinc-500"><TierBadge ranking={selected.ranking} emptyLabel="Unranked" />{selected.ranking && <span className="font-mono">#{selected.ranking.rank}</span>}</div>
+              <TagBadges character={selected} />
+              <button type="button" onClick={() => openPreview()} className="mt-2 inline-flex h-7 items-center gap-1.5 border px-2 text-[11px] font-semibold hover:bg-zinc-900" style={{ borderColor: theme.border, color: theme.accent }} title={selected.sheet || selected.sheetVersions.length ? 'Open the character sheet' : 'No character sheet yet'}><Expand className="h-3.5 w-3.5" />Preview character</button>
+            </div>
+            <button type="button" onClick={beginProfileEdit} className="inline-flex h-8 w-8 shrink-0 items-center justify-center border border-zinc-700 text-zinc-300 hover:bg-zinc-900" title="Edit character profile"><Pencil className="h-3.5 w-3.5" /></button>
+          </div>
+          <div role="tablist" className="grid grid-cols-2 border-b border-zinc-800 text-xs font-semibold">
+            {(['profile', 'sheet'] as PanelTab[]).map((tab) => <button key={tab} type="button" role="tab" aria-selected={panelTab === tab} onClick={() => setPanelTab(tab)} className={`-mb-px border-b-2 py-2.5 ${panelTab === tab ? 'text-zinc-100' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`} style={panelTab === tab ? { borderColor: theme.accent } : undefined}>
+              {tab === 'profile' ? 'Profile' : <>Character sheet {selected.sheet ? <CheckCircle2 className="ml-1 inline h-3 w-3 text-emerald-400" /> : <span className="ml-1 font-normal text-zinc-500">none</span>}</>}
+            </button>)}
+          </div>
+          <div className="p-4">{panelTab === 'profile' ? <>
+            {!isEditingProfile && missing.length > 0 && <button type="button" onClick={beginProfileEdit} className="mb-4 flex w-full items-center justify-between gap-3 border border-amber-400/25 bg-amber-400/5 px-3 py-2 text-left text-xs text-amber-200 hover:bg-amber-400/10"><span>{missing.length} detail{missing.length === 1 ? ' isn’t' : 's aren’t'} in the script yet</span><span className="shrink-0 font-semibold">Fill in</span></button>}
+            {isEditingProfile && <label className="mb-3 block"><span className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wide text-zinc-600">Tags / aliases<span className="normal-case tracking-normal text-zinc-600">Comma separated</span></span><input value={tagDraft} onChange={(event) => setTagDraft(event.target.value)} placeholder="VOSS, Detective" className="w-full border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-200 outline-none focus:border-violet-400" /></label>}
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-xs">
+              <ProfileField field="role" label="Role" {...fieldProps} />
+              <ProfileField field="age" label="Age" {...fieldProps} />
+              <ProfileField field="gender" label="Gender" {...fieldProps} />
+              <ProfileField field="race" label="Race" {...fieldProps} />
+              {(isEditingProfile || PHYSICAL_FIELDS.some((field) => selected[field])) && <p className="col-span-2 -mb-1 mt-1 border-t border-zinc-800 pt-3 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Look &amp; build <span className="font-normal normal-case tracking-normal text-zinc-600">· stays the same in every shot</span></p>}
+              {PHYSICAL_FIELDS.map((field) => <ProfileField key={field} field={field} label={FIELD_LABELS[field]} multiline={MULTILINE_FIELDS.includes(field)} {...fieldProps} />)}
+              <ProfileField field="appearance" label={FIELD_LABELS.appearance} multiline {...fieldProps} />
+              <ProfileField field="personality" label="Personality" multiline {...fieldProps} />
+            </dl>
+            {isEditingProfile && <div className="mt-3 flex gap-2"><button type="button" onClick={() => void saveProfile()} disabled={isSavingProfile} className="inline-flex h-9 flex-1 items-center justify-center gap-2 bg-violet-600 text-xs font-semibold text-white hover:bg-violet-500 disabled:opacity-50"><Save className="h-3.5 w-3.5" />{isSavingProfile ? 'Saving...' : 'Save profile'}</button><button type="button" onClick={() => setIsEditingProfile(false)} className="h-9 border border-zinc-700 px-3 text-xs text-zinc-300 hover:bg-zinc-900">Cancel</button></div>}
+            <div className="mt-4 border-t border-zinc-800 pt-1"><CharacterImportance ranking={selected.ranking} /></div>
+            <div className="mt-4 border-t border-zinc-800 pt-4"><button type="button" onClick={() => void openScriptPreview()} disabled={isSyncingScript || selected.manualOverrideFields.length === 0} title={selected.manualOverrideFields.length ? 'Preview a controlled update to the first character appearance' : 'Save a manual profile value before updating the script'} className="flex h-9 w-full items-center justify-center gap-2 border border-zinc-700 text-xs font-semibold text-zinc-200 hover:bg-zinc-900 disabled:cursor-not-allowed disabled:opacity-50"><FileText className="h-3.5 w-3.5" />{isSyncingScript ? 'Preparing script update...' : 'Update script'}</button></div>
+          </> : <>
+            {sheetResult?.characterId === selected.id && <SheetResultCard result={sheetResult} characterName={selected.name} onPreview={openPreview} onDismiss={() => setSheetResult(null)} />}
+            <CharacterSheetPanel character={selected} busy={isGenerating || approvingId !== null} approvingId={approvingId} onApprove={(assetId) => void approveSheet(assetId)} onPreview={openPreview} onDownload={() => void downloadSheet(selected)} />
+            {isGenerating ? <div className="border border-violet-500/30 bg-violet-500/5 p-3" role="status" aria-live="polite"><div className="mb-1.5 flex items-center justify-between text-xs"><span className="flex items-center gap-2 text-zinc-200"><RefreshCw className="h-3.5 w-3.5 animate-spin text-violet-300" />Generating character sheet</span><span className="font-mono text-violet-300">{formatElapsed(elapsedSeconds)}</span></div><div className="h-1.5 overflow-hidden bg-zinc-800"><div className="h-full bg-violet-500 transition-[width] duration-500" style={{ width: `${generationProgress}%` }} /></div><p className="mt-2 text-[10px] leading-relaxed text-zinc-500">{generatingModel && <span className="font-mono text-zinc-400">{generatingModel}</span>}{generatingModel ? ' · ' : ''}Each result is checked for the face close-up and all four views and redrawn if one is missing (up to 3 tries), so this can take a few minutes. The result appears here.</p></div>
+              : <CharacterSheetCreator key={selected.id} projectId={projectId} characterName={selected.name} hasSheet={Boolean(selected.sheet)} busy={approvingId !== null} onGenerate={generateSheet} />}
+          </>}</div>
+        </div>;
+      })() : <div className="flex min-h-72 flex-col items-center justify-center px-6 text-center text-sm text-zinc-600"><Users className="mb-3 h-6 w-6" />Select a character to inspect its script profile.</div>}</aside>}</div>}
+  </div>{scriptPreview && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"><div role="dialog" aria-modal="true" aria-labelledby="script-sync-title" className="w-full max-w-lg border border-zinc-700 bg-zinc-950 p-5 shadow-2xl"><h2 id="script-sync-title" className="text-base font-semibold text-zinc-100">Review script update</h2><p className="mt-2 text-sm text-zinc-400">{scriptPreview.action === 'insert' ? 'Insert' : 'Replace'} one managed action line before the first appearance in <span className="text-zinc-200">{scriptPreview.scene_slugline ?? 'the selected scene'}</span>.</p><pre className="mt-4 whitespace-pre-wrap border border-zinc-800 bg-zinc-900/50 p-3 font-sans text-sm leading-6 text-zinc-200">{scriptPreview.content}</pre><div className="mt-5 flex justify-end gap-2"><button type="button" onClick={() => setScriptPreview(null)} disabled={isSyncingScript} className="h-9 border border-zinc-700 px-3 text-xs font-semibold text-zinc-300 hover:bg-zinc-900">Cancel</button><button type="button" onClick={() => void confirmScriptUpdate()} disabled={isSyncingScript} className="h-9 bg-violet-600 px-3 text-xs font-semibold text-white hover:bg-violet-500 disabled:opacity-50">{isSyncingScript ? 'Updating...' : 'Confirm update'}</button></div></div></div>}{selected && <CharacterSheetModal
+      open={sheetModal !== null}
+      onClose={() => setSheetModal(null)}
+      name={selected.name}
+      subtitle={selected.role}
+      accent={characterTheme(selected).accent}
+      badges={[
+        ...(selected.ranking ? [TIER_GROUPS.find((group) => group.key === selected.ranking?.tier)?.label ?? selected.ranking.tier] : []),
+        ...(selected.sheet ? ['Used in storyboards'] : []),
+      ]}
+      sheetUrl={selected.sheet?.url ?? selected.sheetVersions[0]?.url ?? null}
+      faceUrl={selected.sheet?.faceUrl}
+      review={selected.sheet?.review}
+      initialUrl={sheetModal?.initialUrl}
+      facts={characterFacts(selected)}
+      versions={selected.sheetVersions.map((version, index) => ({
+        id: version.assetId, url: version.url, label: `v${selected.sheetVersions.length - index}`, active: version.assetId === selected.sheet?.assetId,
+      }))}
+      emptyMessage={`Open the Character sheet tab to generate ${selected.name}'s sheet from a prompt or reference images.`}
+    />}</div>;
 }

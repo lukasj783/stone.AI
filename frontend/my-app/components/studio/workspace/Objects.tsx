@@ -137,7 +137,7 @@ export function Objects({ projectId, onSelect }: ObjectsProps) {
     if (!projectId || !selected) return;
     setIsGenerating(true); setError(null);
     try {
-      await generateObjectReferenceImage({ project_id: projectId, object_id: selected.id, model: 'nanobanana', provider: 'replicate' });
+      await generateObjectReferenceImage({ project_id: projectId, object_id: selected.id, model: 'nanobanana', provider: 'wavespeed' });
       await loadObjects(); setGalleryRefreshKey((key) => key + 1); setNotice('Object reference image created.');
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Failed to generate object reference image.'); }
     finally { setIsGenerating(false); }

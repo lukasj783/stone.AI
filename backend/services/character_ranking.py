@@ -1,8 +1,8 @@
 """Rank a project's characters by how many scenes they appear in and how much they speak.
 
-The cast equivalent of ``object_ranking`` and ``environment_ranking``: leads appear
-across many scenes and carry the dialogue, so they need full references (turnaround,
-face close-up); a one-line extra needs very little.
+The cast equivalent of ``object_ranking`` and ``environment_ranking``: major characters
+appear across many scenes and carry the dialogue, so shots send more of their references
+(character sheet and face close-up); a minor one-line character needs very little.
 
 Scoring (0-4):
 - Scenes: appears in 1 scene -> 0, 2 scenes -> 1, 3 or more -> 2
@@ -21,7 +21,7 @@ from core.supabase_records import as_records
 from services.environment_ranking import characters_by_scene
 from services.object_ranking import TIER_MINOR, _score, character_patterns, tier_for
 
-LEAD_DIALOGUE_LINES = 5
+MAJOR_DIALOGUE_LINES = 5
 
 
 @dataclass
@@ -85,7 +85,7 @@ def rank_characters(
             mentioned_by_others=mentioned.get(name, 0),
         )
         ranking.scene_score = _score(ranking.scene_count, two_at=3, one_at=2)
-        ranking.dialogue_score = _score(ranking.dialogue_lines, two_at=LEAD_DIALOGUE_LINES, one_at=1)
+        ranking.dialogue_score = _score(ranking.dialogue_lines, two_at=MAJOR_DIALOGUE_LINES, one_at=1)
         ranking.score = ranking.scene_score + ranking.dialogue_score
         ranking.tier = tier_for(ranking.score)
         rankings[character_id] = ranking

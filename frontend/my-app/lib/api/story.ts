@@ -165,17 +165,25 @@ export async function deleteObject(projectId: string, objectId: string): Promise
   if (!response.ok) return readApiError(response, 'Failed to delete object');
 }
 
-export interface CharacterProfileUpdate {
+/** Permanent physical identity, stored in characters.physical. Keep in sync with PHYSICAL_FIELDS in the backend. */
+export const PHYSICAL_FIELDS = [
+  'height', 'build', 'skin_tone', 'face', 'eyes', 'hair', 'facial_hair', 'distinguishing_marks', 'glasses', 'demeanor',
+] as const;
+export type PhysicalField = typeof PHYSICAL_FIELDS[number];
+export type CoreProfileField = 'role' | 'age' | 'gender' | 'race' | 'appearance' | 'personality';
+export type ProfileField = CoreProfileField | PhysicalField;
+
+export type CharacterProfileUpdate = {
   role?: string | null;
   age?: number | null;
   gender?: string | null;
   race?: string | null;
   appearance?: string | null;
   personality?: string | null;
-  clear_fields?: Array<'role' | 'age' | 'gender' | 'race' | 'appearance' | 'personality'>;
-}
+  clear_fields?: ProfileField[];
+} & Partial<Record<PhysicalField, string | null>>;
 
-export interface CharacterProfile {
+export type CharacterProfile = {
   id: string;
   name: string;
   role: string | null;
@@ -185,7 +193,7 @@ export interface CharacterProfile {
   appearance: string | null;
   personality: string | null;
   manual_override_fields: string[];
-}
+} & Record<PhysicalField, string | null>;
 
 export interface CharacterScriptSyncPreview {
   character_id: string;

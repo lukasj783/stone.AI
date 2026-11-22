@@ -46,7 +46,12 @@ from schemas.image_generation import (
 )
 from services.storyboard_generation import generate_scene_storyboard, regenerate_single_shot_frame
 from services.storyboard_models import DEFAULT_STORYBOARD_MODEL, STORYBOARD_MODELS
-from services.character_views import EDITABLE_CHARACTER_FIELDS, effective_character_profile
+from services.character_views import (
+    EDITABLE_CHARACTER_FIELDS,
+    clean_physical,
+    effective_character_profile,
+    physical_fact_lines,
+)
 from services.character_ranking import rank_characters_from_script
 from services.environment_ranking import rank_environments_from_script
 from services.object_ranking import ObjectRanking, rank_objects_from_script, rank_project_objects
@@ -157,6 +162,7 @@ def _character_profile_response(character: dict) -> CharacterProfileResponse:
         race=effective.get("race") if isinstance(effective.get("race"), str) else None,
         appearance=effective.get("appearance") if isinstance(effective.get("appearance"), str) else None,
         personality=effective.get("personality") if isinstance(effective.get("personality"), str) else None,
+        **clean_physical(effective.get("physical")),
         manual_override_fields=_manual_override_fields(character.get("metadata")),
     )
 
@@ -171,6 +177,7 @@ def _build_character_script_description(character: dict) -> str:
         value = effective.get(field)
         if isinstance(value, str) and value.strip():
             details.append(value.strip())
+    details.extend(f"{label.lower()}: {value}" for label, value in physical_fact_lines(effective))
     appearance = effective.get("appearance")
     personality = effective.get("personality")
     description = ", ".join(details)
@@ -185,7 +192,7 @@ def _build_character_script_description(character: dict) -> str:
 
 def _load_script_character_for_profile(supabase: Client, project_id: str, character_id: str) -> dict:
     result = supabase.table("characters").select(
-        "id, name, role, age, gender, race, appearance, personality, metadata"
+        "id, name, role, age, gender, race, appearance, personality, physical, metadata"
     ).eq("id", character_id).eq("project_id", project_id).maybe_single().execute()
     character = maybe_single_record(result)
     metadata = (character or {}).get("metadata") or {}
@@ -432,6 +439,7 @@ def _persist_script_objects(supabase: Client, project_id: str, objects: list[Ext
 
 
 DEFAULT_CHARACTER_TYPES = ("main", "supporting")
+PHYSICAL_FACT_MAX_CHARS = 300
 
 
 def _normalize_extracted_character(raw_character: dict, allowed_types: tuple[str, ...] = DEFAULT_CHARACTER_TYPES) -> dict:
@@ -444,6 +452,10 @@ def _normalize_extracted_character(raw_character: dict, allowed_types: tuple[str
         normalized["age"] = None
     character_type = str(normalized.get("character_type") or "").strip().lower()
     normalized["character_type"] = character_type if character_type in allowed_types else "supporting"
+    # Unknown keys are dropped and long answers trimmed so one verbose fact cannot fail the character.
+    normalized["physical"] = {
+        key: value[:PHYSICAL_FACT_MAX_CHARS] for key, value in clean_physical(normalized.get("physical")).items()
+    }
     return normalized
 
 
@@ -460,9 +472,9 @@ Script JSON:
 {json.dumps(screenplay)}
 
 Return ONLY valid JSON in this shape:
-{{"characters":[{{"name":"", "character_type":{type_choices}, "role":null, "age":null, "gender":null, "race":null, "appearance":null, "personality":null, "tags":[], "image_prompt":""}}]}}
+{{"characters":[{{"name":"", "character_type":{type_choices}, "role":null, "age":null, "gender":null, "race":null, "appearance":null, "personality":null, "physical":{{"height":null, "build":null, "skin_tone":null, "face":null, "eyes":null, "hair":null, "facial_hair":null, "distinguishing_marks":null, "glasses":null, "demeanor":null}}, "tags":[], "image_prompt":""}}]}}
 
-Include every named speaking person or explicitly named character, including narrators, presenters, interviewees and spokespeople. Set `character_type` to `main` only for characters central to a story's main plot; use `presenter`, `host`, `narrator`, `interviewee`, `interviewer`, `spokesperson` or `instructor` when the script shows that function and the type is allowed; otherwise use `supporting`. Do not infer, guess, or stereotype age, gender, race, visual traits, role, or personality. `age` must be an exact whole number or null; do not use ranges or labels such as "40s". Use null when the screenplay does not explicitly establish a fact. `image_prompt` must be a concise visual description composed only from explicit screenplay facts; use an empty string when no visual facts are present."""
+Include every named speaking person or explicitly named character, including narrators, presenters, interviewees and spokespeople. Set `character_type` to `main` only for characters central to a story's main plot; use `presenter`, `host`, `narrator`, `interviewee`, `interviewer`, `spokesperson` or `instructor` when the script shows that function and the type is allowed; otherwise use `supporting`. Do not infer, guess, or stereotype age, gender, race, visual traits, role, or personality. `age` must be an exact whole number or null; do not use ranges or labels such as "40s". Use null when the screenplay does not explicitly establish a fact. `physical` holds permanent body and face facts only (height, build, skin tone, face, eyes, hair, facial hair, scars/tattoos/birthmarks as `distinguishing_marks`, glasses, and habitual posture or bearing as `demeanor`), each a short phrase; never put clothing, a passing expression or a scene-specific state there. `appearance` holds any other explicit visual detail, such as usual clothing. `image_prompt` must be a concise visual description composed only from explicit screenplay facts; use an empty string when no visual facts are present."""
     parsed = _parse_json_object(_run_gemini(client, prompt, thinking_level="low"))
     raw_characters = parsed.get("characters", []) if isinstance(parsed, dict) else parsed
     if not isinstance(raw_characters, list):
@@ -494,6 +506,7 @@ def _persist_script_characters(supabase: Client, project_id: str, characters: li
         normalized_name = _normalize_character_name(character.name)
         values = character.model_dump(exclude={"image_prompt"})
         values["tags"] = values.get("tags") or []
+        values["physical"] = clean_physical(values.get("physical"))
         existing = existing_by_name.get(normalized_name)
         existing_metadata = existing.get("metadata") if existing and isinstance(existing.get("metadata"), dict) else {}
         values["metadata"] = {

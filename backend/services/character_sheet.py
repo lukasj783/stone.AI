@@ -1,472 +1,323 @@
-"""Character sheet: one composed image with a large face close-up and the six-view turnaround.
+"""Character model sheet: one generated image per character, for people and for storyboards.
 
-The six turnaround views are reused pixel for pixel, so the sheet never drifts from the
-approved character. Only the face close-up is newly generated, conditioned on the front
-and three-quarter views, and it is reused until those views change.
+The image model draws the whole sheet in one pass, so the face and every angle of the body
+come from the same render and agree with each other. Layout asked of the model (16:9,
+plain neutral background, flat light, no text):
 
-Layout (3840 x 2160):
+    ┌──────────────┬────────────────────────────────────────────────┐
+    │              │                                                │
+    │  FACE        │  FRONT     LEFT 3/4     LEFT PROFILE     BACK    │
+    │  CLOSE-UP    │  full body, same scale, feet on one baseline    │
+    │              │                                                │
+    └──────────────┴────────────────────────────────────────────────┘
 
-    ┌──────────────────────────────────────────────────────────────────┐
-    │ NAME                                            CHARACTER SHEET  │
-    │ Main character · Role · Age · Gender · Race          Style · date │
-    ├────────────────────┬─────────────────────────────────────────────┤
-    │ FACE CLOSE-UP      │ TURNAROUND                                  │
-    │                    │ Front | L 3/4 | L side | Back | R side | R 3/4 │
-    │   (large face      ├───────────────┬─────────────────────────────┤
-    │    portrait)       │ COLOR PALETTE │ PROFILE / APPEARANCE /      │
-    │                    │ swatches+hex  │ PERSONALITY                 │
-    └────────────────────┴───────────────┴─────────────────────────────┘
+A sheet can come from a prompt, or from up to four reference images (each tagged face,
+outfit or style) plus a prompt. Script characters always add their script profile. On the
+Character page the sheet is drafted before the character exists, and saving creates the
+character with the chosen draft.
+
+Sheets are drawn by the same WaveSpeed image-edit models as storyboard frames
+(services/storyboard_models.py), never Replicate. Edit models need an input image, so
+image 1 is always a blank 16:9 grey canvas the sheet is drawn on; reference images follow
+it. That keeps the chosen model in use for prompt-only sheets and fixes the sheet's shape
+and plain background.
+
+Every sheet the model returns is checked (services/sheet_review.py) for a face close-up
+and all four full-body views of one person; a sheet that fails is regenerated with the
+problems named, and after the last attempt the request fails instead of keeping an
+incomplete sheet.
+
+Every generation is kept as a candidate. A character uses exactly one approved sheet; its
+first candidate is approved automatically. Approving cuts the face panel out of the sheet
+(no new generation, so nothing about the character changes) and stores it as the face
+close-up: storyboards send the sheet for identity and costume, and the face crop so
+close-ups keep a sharp likeness.
 """
 
 from __future__ import annotations
 
 import io
+import random
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from functools import lru_cache
 from typing import Any
 
+import logging
+import os
+
 import httpx
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 from supabase import Client
 
 from core.supabase_client import require_supabase_client
 from core.supabase_records import as_record, as_records, maybe_single_record
-from schemas.image_generation import CharacterView, CreateImageRequest
-from services.character_views import CHARACTER_VIEW_SPECS, build_script_character_profile, effective_character_profile
+from schemas.image_generation import CreateImageRequest
+from services.character_views import build_script_character_profile, effective_character_profile
 from services.image_generation_service import generate_provider_images
-from services.visual_style import resolve_character_visual_style
+from services.storyboard_models import DEFAULT_STORYBOARD_MODEL, storyboard_model
+from services.sheet_review import (
+    FACE_PANEL_SHARE,
+    SheetReview,
+    background_color,
+    column_runs,
+    foreground_mask,
+    review_sheet,
+)
+from services.visual_style import resolve_character_visual_style, resolve_visual_style
 
-SHEET_WIDTH = 3840
-SHEET_HEIGHT = 2160
-MARGIN = 96
-FACE_WIDTH = 1180
-COLUMN_GAP = 80
-SECTION_LABEL_HEIGHT = 56
+logger = logging.getLogger(__name__)
 
-BACKGROUND = (245, 243, 239)
-PANEL = (255, 255, 255)
-INK = (28, 27, 31)
-MUTED = (107, 104, 112)
-RULE = (217, 213, 206)
-ACCENT = (109, 40, 217)
-
+SHEET_ROLE = "model_sheet"
+CANDIDATE_ROLE = "model_sheet_candidate"
 FACE_ROLE = "face_closeup"
-SHEET_ROLE = "character_sheet"
 STORAGE_BUCKET = "output-images"
 
-VIEW_SHORT_LABELS: dict[str, str] = {
-    CharacterView.front.value: "Front",
-    CharacterView.left_three_quarter.value: "Left 3/4",
-    CharacterView.left_profile.value: "Left profile",
-    CharacterView.back.value: "Back",
-    CharacterView.right_profile.value: "Right profile",
-    CharacterView.right_three_quarter.value: "Right 3/4",
+SHEET_ASPECT_RATIO = "16:9"
+SHEET_RESOLUTION = "2k"
+MAX_REFERENCE_IMAGES = 4
+REFERENCE_TAGS = ("face", "outfit", "style")
+# Generations per request before giving up on a sheet that fails the check.
+DEFAULT_SHEET_ATTEMPTS = 3
+DEFAULT_SHEET_MODEL = DEFAULT_STORYBOARD_MODEL
+SHEET_PROVIDER = "wavespeed"
+# Blank drawing surface sent as image 1: plain light grey, the sheet's requested background.
+CANVAS_SIZE = (1920, 1080)
+CANVAS_COLOR = (214, 214, 212)
+CANVAS_PATH = "character-sheets/canvas/blank_16x9_v1.png"
+FACE_CROP_ASPECT = 3 / 4  # width / height
+
+REFERENCE_TAG_INSTRUCTIONS = {
+    "face": "use this person's face and identity: facial structure, skin tone, eyes, nose, lips, hair and any marks",
+    "outfit": "use this clothing, footwear and accessories, fitted to the character",
+    "style": "use only the art style, medium, rendering and color treatment; do not copy the subject",
 }
-VIEW_ORDER = [view.value for view, _, _ in CHARACTER_VIEW_SPECS]
 
-FACE_CLOSEUP_PROMPT = """\
-You are a professional character designer creating the face reference for a character sheet.
+MODEL_SHEET_PROMPT = """\
+You are a senior character designer making the production model sheet for a film.
 
-The attached reference images show one character: {reference_list}.
-Create a head-and-shoulders close-up portrait of exactly this character.
+{character}
+{references}
+Create ONE character model sheet image, landscape, showing this ONE character only:
+- Left third: a large head-and-shoulders face close-up, looking straight into the camera
+  with a calm neutral expression, eyes open and in sharp focus.
+- Right two thirds: a full-body turnaround in one horizontal row, left to right:
+  front view; left three-quarter view (turned 45 degrees toward their left);
+  left side profile; back view.
+  All four figures at the same scale and height, feet on the same baseline, neutral
+  standing pose with relaxed arms, the complete body visible from head to feet.
 
-{profile}
+Every figure and the close-up is the same person: identical face, hairstyle, body
+proportions, clothing, accessories, footwear and colors. Do not mirror or flip the
+character; keep asymmetric details on the same side of the body.
 
-Framing: the face fills most of the frame, cropped from just above the top of the hair to the
-upper chest. The character looks directly into the camera with a calm, neutral expression,
-eyes open and in sharp focus. Soft, even studio lighting with no harsh shadows across the face,
-on the same clean uniform studio background as the references.
+One plain, uniform, neutral light-grey studio background across the whole sheet. Flat,
+even, soft front lighting with no dramatic shadows or colored light, so the character can
+be relit in any scene. Leave clear empty background between the close-up and the figures
+and between neighbouring figures so nothing touches or overlaps.
 
-Preserve the identity exactly: facial structure, skin tone and texture, eye shape and color,
-eyebrows, nose, lips, hairstyle and hair color, facial hair, makeup, scars, marks, piercings,
-glasses, and any visible clothing or accessories at the neckline. Match the art style, medium,
-and rendering of the reference images. Do not mirror or flip the character.
-
-Do not create a collage, grid, sheet, panels, labels, text, or multiple faces. Output only one image.
+No text, names, labels, numbers, arrows, color swatches, panels, borders, divider lines,
+floor shadows, props or other people.
 """
 
 
 @dataclass(frozen=True)
-class SheetProfile:
-    name: str
-    character_type: str | None = None
-    role: str | None = None
-    age: int | str | None = None
-    gender: str | None = None
-    race: str | None = None
-    appearance: str | None = None
-    personality: str | None = None
-    visual_style: str | None = None
+class SheetReference:
+    url: str
+    tag: str
 
 
-# --------------------------------------------------------------------------- rendering
+def normalize_reference_tag(tag: object) -> str:
+    value = str(tag or "").strip().casefold()
+    return value if value in REFERENCE_TAGS else "face"
 
 
-FONT_CANDIDATES = {
-    False: ("DejaVuSans.ttf", "arial.ttf", "Arial.ttf", "LiberationSans-Regular.ttf", "Helvetica.ttc"),
-    True: ("DejaVuSans-Bold.ttf", "arialbd.ttf", "Arial Bold.ttf", "LiberationSans-Bold.ttf", "Helvetica.ttc"),
-}
+CANVAS_NOTE = (
+    "Image 1 is an empty grey canvas, not a reference: draw the whole model sheet on it, "
+    "filling the canvas, and keep its plain grey background."
+)
 
 
-@lru_cache(maxsize=32)
-def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    for candidate in FONT_CANDIDATES[bold]:
-        try:
-            return ImageFont.truetype(candidate, size)
-        except OSError:
-            continue
-    return ImageFont.load_default(size=size)
+def _references_block(references: list[SheetReference]) -> str:
+    """Images after the canvas, numbered as the model receives them (the canvas is image 1)."""
+    if not references:
+        return ""
+    lines = ["\nReference images (attached in this order, after the canvas):"]
+    lines.extend(
+        f"- Image {index}: {REFERENCE_TAG_INSTRUCTIONS[reference.tag]}."
+        for index, reference in enumerate(references, start=2)
+    )
+    lines.append("Where a reference and the character facts disagree on identity, follow the reference image.")
+    lines.append(
+        "Do not return or retouch a reference image: draw a NEW model sheet in the layout below, "
+        "with the face close-up AND all four full-body views."
+    )
+    return "\n".join(lines) + "\n"
 
 
-def _background_color(image: Image.Image) -> tuple[int, int, int]:
-    """Average the corners, which are the studio background for every generated view."""
+def build_model_sheet_prompt(character_block: str, direction: str = "", references: list[SheetReference] | None = None) -> str:
+    character = character_block.strip()
+    if direction.strip():
+        character += f"\n\nDirection from the filmmaker (follow it):\n{direction.strip()}"
+    references_block = _references_block(list(references or []))
+    return MODEL_SHEET_PROMPT.format(character=character, references=f"\n{CANVAS_NOTE}\n{references_block}")
+
+
+def retry_note(problems: list[str]) -> str:
+    """Prompt addition after a rejected attempt, naming what was wrong."""
+    return (
+        "\n\nIMPORTANT: a previous attempt was rejected because it "
+        + "; ".join(problems)
+        + ". This image MUST contain the large face close-up on the left AND four full-body figures "
+        "on the right: front, three-quarter, side profile and back, each from head to feet."
+    )
+
+
+PROFILE_DETAIL_FIELDS = ("role", "age", "gender", "race", "appearance", "personality")
+
+
+def character_block_for(character: dict[str, Any], visual_style: Any, direction: str, has_references: bool) -> str:
+    """Script facts and style for the prompt. A character known only by name can still be
+    designed from a direction prompt or reference images, but not from the name alone."""
+    effective = effective_character_profile(character)
+    stored = effective.get("metadata")
+    metadata: dict[str, Any] = stored if isinstance(stored, dict) else {}
+    has_details = (
+        any(effective.get(field) not in (None, "") for field in PROFILE_DETAIL_FIELDS)
+        or bool(effective.get("physical"))
+        or bool(str(metadata.get("image_prompt") or "").strip())
+    )
+    if not has_details and not direction.strip() and not has_references:
+        raise ValueError(
+            "The script has no visual details for this character. Describe them in the prompt or add a reference image."
+        )
+    return build_script_character_profile(character, visual_style)
+
+
+# --------------------------------------------------------------------------- face crop
+
+
+def face_panel_box(image: Image.Image, face_box: list[int] | None = None) -> tuple[int, int, int, int]:
+    """Box around the face close-up of a model sheet, as a 3:4 portrait.
+
+    ``face_box`` is where the sheet review saw the close-up ([ymin, xmin, ymax, xmax] on a
+    0-1000 scale). Without it the close-up is found from the background in the left third,
+    and failing that the whole left panel is used, which still holds the face.
+    """
     rgb = image.convert("RGB")
     width, height = rgb.size
-    points = [(0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1), (width // 2, 0)]
-    samples = [rgb.getpixel(point) for point in points]
-    return tuple(sum(int(sample[channel]) for sample in samples) // len(samples) for channel in range(3))  # type: ignore[return-value]
+    if face_box:
+        ymin, xmin, ymax, xmax = face_box
+        box = (xmin * width // 1000, ymin * height // 1000, xmax * width // 1000, ymax * height // 1000)
+        bounds_width = width
+    else:
+        bounds_width = max(1, int(width * FACE_PANEL_SHARE))
+        mask = foreground_mask(rgb.crop((0, 0, bounds_width, height)), background_color(rgb))
+        box = (0, 0, bounds_width, height)
+        runs = column_runs(mask, max(2, int(bounds_width * 0.25)))
+        if runs:
+            start, end = runs[0]
+            bbox = mask.crop((start, 0, end, height)).getbbox()
+            if bbox and bbox[3] - bbox[1] >= height * 0.3:
+                box = (start + bbox[0], bbox[1], start + bbox[2], bbox[3])
 
-
-def _distance(first: tuple[int, int, int], second: tuple[int, int, int]) -> float:
-    return sum((a - b) ** 2 for a, b in zip(first, second)) ** 0.5
-
-
-def extract_palette(image: Image.Image, count: int = 6) -> list[tuple[int, int, int]]:
-    """Return the character's dominant colors, ignoring the studio background."""
-    rgb = image.convert("RGB")
-    rgb.thumbnail((256, 256))
-    background = _background_color(rgb)
-    quantized = rgb.quantize(colors=16, method=Image.Quantize.MEDIANCUT)
-    palette = quantized.getpalette() or []
-    colors = sorted(quantized.getcolors() or [], reverse=True)
-    minimum_pixels = rgb.width * rgb.height * 0.004
-    chosen: list[tuple[int, int, int]] = []
-    for pixels, index in colors:
-        if pixels < minimum_pixels:
-            continue
-        color = (palette[index * 3], palette[index * 3 + 1], palette[index * 3 + 2])
-        if _distance(color, background) < 48 or any(_distance(color, other) < 40 for other in chosen):
-            continue
-        chosen.append(color)
-        if len(chosen) == count:
-            break
-    return chosen
-
-
-def _hex(color: tuple[int, int, int]) -> str:
-    return "#{:02X}{:02X}{:02X}".format(*color)
-
-
-def _paste_contain(canvas: Image.Image, image: Image.Image, box: tuple[int, int, int, int]) -> None:
-    """Fit the whole image inside the box, filling the margins with its own background."""
     left, top, right, bottom = box
-    width, height = right - left, bottom - top
-    canvas.paste(Image.new("RGB", (width, height), _background_color(image)), (left, top))
-    scale = min(width / image.width, height / image.height)
-    resized = image.convert("RGB").resize((max(1, round(image.width * scale)), max(1, round(image.height * scale))), Image.Resampling.LANCZOS)
-    canvas.paste(resized, (left + (width - resized.width) // 2, top + (height - resized.height) // 2))
+    pad = int(max(right - left, bottom - top) * 0.06)
+    left, top, right, bottom = max(0, left - pad), max(0, top - pad), min(bounds_width, right + pad), min(height, bottom + pad)
+    # Make it a 3:4 portrait around the same center without leaving the face panel, so the
+    # first turnaround figure never ends up in the crop.
+    crop_width, crop_height = max(1, right - left), max(1, bottom - top)
+    if crop_width / crop_height < FACE_CROP_ASPECT:
+        crop_width = int(crop_height * FACE_CROP_ASPECT)
+    else:
+        crop_height = int(crop_width / FACE_CROP_ASPECT)
+    if crop_width > bounds_width:
+        crop_width, crop_height = bounds_width, int(bounds_width / FACE_CROP_ASPECT)
+    if crop_height > height:
+        crop_width, crop_height = int(height * FACE_CROP_ASPECT), height
+    center_x, center_y = (left + right) // 2, (top + bottom) // 2
+    left = min(max(0, center_x - crop_width // 2), bounds_width - crop_width)
+    top = min(max(0, center_y - crop_height // 2), height - crop_height)
+    return left, top, left + crop_width, top + crop_height
 
 
-def _paste_cover(canvas: Image.Image, image: Image.Image, box: tuple[int, int, int, int], vertical_focus: float = 0.35) -> None:
-    """Fill the box completely, cropping the excess with the focus kept near the face."""
-    left, top, right, bottom = box
-    width, height = right - left, bottom - top
-    scale = max(width / image.width, height / image.height)
-    resized = image.convert("RGB").resize((max(width, round(image.width * scale)), max(height, round(image.height * scale))), Image.Resampling.LANCZOS)
-    crop_left = (resized.width - width) // 2
-    crop_top = round((resized.height - height) * vertical_focus)
-    canvas.paste(resized.crop((crop_left, crop_top, crop_left + width, crop_top + height)), (left, top))
+def crop_face_panel(image: Image.Image, face_box: list[int] | None = None) -> Image.Image:
+    return image.convert("RGB").crop(face_panel_box(image, face_box))
 
 
-def _wrap(draw: ImageDraw.ImageDraw, text: str, font: Any, width: int) -> list[str]:
-    lines: list[str] = []
-    for paragraph in text.splitlines():
-        line = ""
-        for word in paragraph.split():
-            candidate = f"{line} {word}".strip()
-            if not line or draw.textlength(candidate, font=font) <= width:
-                line = candidate
-            else:
-                lines.append(line)
-                line = word
-        if line:
-            lines.append(line)
-    return lines
+# --------------------------------------------------------------------------- storage
 
 
-def _section_label(draw: ImageDraw.ImageDraw, text: str, x: int, y: int) -> None:
-    draw.text((x, y), text.upper(), font=_font(28, bold=True), fill=ACCENT)
+def _download(url: str, tries: int = 2) -> bytes:
+    """Fetch a generated image; one slow read is retried before giving up."""
+    for attempt in range(1, tries + 1):
+        try:
+            response = httpx.get(url, timeout=httpx.Timeout(30.0, read=120.0), follow_redirects=True)
+            response.raise_for_status()
+            return response.content
+        except httpx.TimeoutException:
+            if attempt == tries:
+                raise RuntimeError("Downloading the generated image from WaveSpeed timed out") from None
+    raise AssertionError("unreachable")
 
 
-def _text_block(draw: ImageDraw.ImageDraw, label: str, text: str, x: int, y: int, width: int, max_y: int) -> int:
-    """Draw a labeled paragraph, truncating with an ellipsis at max_y. Returns the next y."""
-    font = _font(32)
-    line_height = 46
-    if y + SECTION_LABEL_HEIGHT + line_height > max_y:
-        return y
-    _section_label(draw, label, x, y)
-    y += SECTION_LABEL_HEIGHT - 8
-    lines = _wrap(draw, text, font, width)
-    visible = max(1, (max_y - y) // line_height)
-    if len(lines) > visible:
-        lines = lines[:visible]
-        last = lines[-1]
-        while last and draw.textlength(f"{last}…", font=font) > width:
-            last = last[:-1]
-        lines[-1] = f"{last.rstrip(' ,.;')}…"
-    for line in lines:
-        draw.text((x, y), line, font=font, fill=INK)
-        y += line_height
-    return y + 36
-
-
-def _type_label(character_type: str | None) -> str | None:
-    if not character_type:
-        return None
-    return {"main": "Main character", "supporting": "Supporting character"}.get(
-        character_type, character_type.replace("_", " ").title()
-    )
-
-
-def _present(value: object) -> bool:
-    return value is not None and str(value).strip() != ""
-
-
-def render_character_sheet(
-    profile: SheetProfile,
-    face: Image.Image,
-    views: dict[str, Image.Image],
-    palette: list[tuple[int, int, int]] | None = None,
-    created_at: datetime | None = None,
-) -> Image.Image:
-    """Compose the sheet. Pure function: no network or database access."""
-    canvas = Image.new("RGB", (SHEET_WIDTH, SHEET_HEIGHT), BACKGROUND)
-    draw = ImageDraw.Draw(canvas)
-    right_edge = SHEET_WIDTH - MARGIN
-
-    # Header
-    draw.text((MARGIN, MARGIN - 8), profile.name.upper(), font=_font(104, bold=True), fill=INK)
-    age = f"{profile.age} years" if _present(profile.age) else None
-    subtitle = " · ".join(
-        str(part) for part in (_type_label(profile.character_type), profile.role, age, profile.gender, profile.race) if _present(part)
-    )
-    if subtitle:
-        draw.text((MARGIN, MARGIN + 128), subtitle, font=_font(40), fill=MUTED)
-    title_font = _font(36, bold=True)
-    title = "CHARACTER SHEET"
-    draw.text((right_edge - draw.textlength(title, font=title_font), MARGIN + 6), title, font=title_font, fill=ACCENT)
-    meta = " · ".join(
-        part for part in (
-            f"Style: {profile.visual_style}" if profile.visual_style else None,
-            (created_at or datetime.now(UTC)).strftime("%d %b %Y"),
-        ) if part
-    )
-    meta_font = _font(30)
-    draw.text((right_edge - draw.textlength(meta, font=meta_font), MARGIN + 70), meta, font=meta_font, fill=MUTED)
-    header_bottom = MARGIN + 214
-    draw.line((MARGIN, header_bottom, right_edge, header_bottom), fill=RULE, width=3)
-
-    body_top = header_bottom + 56
-    body_bottom = SHEET_HEIGHT - MARGIN
-
-    # Face close-up (large, left column)
-    _section_label(draw, "Face close-up", MARGIN, body_top)
-    face_box = (MARGIN, body_top + SECTION_LABEL_HEIGHT, MARGIN + FACE_WIDTH, body_bottom)
-    _paste_cover(canvas, face, face_box)
-    draw.rectangle(face_box, outline=RULE, width=3)
-
-    # Turnaround row
-    right_x = MARGIN + FACE_WIDTH + COLUMN_GAP
-    right_width = right_edge - right_x
-    _section_label(draw, "Turnaround", right_x, body_top)
-    cell_gap = 20
-    cell_width = (right_width - cell_gap * (len(VIEW_ORDER) - 1)) // len(VIEW_ORDER)
-    cell_height = round(cell_width * 1.5)
-    cell_top = body_top + SECTION_LABEL_HEIGHT
-    label_font = _font(28, bold=True)
-    for index, view in enumerate(VIEW_ORDER):
-        left = right_x + index * (cell_width + cell_gap)
-        box = (left, cell_top, left + cell_width, cell_top + cell_height)
-        image = views.get(view)
-        if image is not None:
-            _paste_contain(canvas, image, box)
-        else:
-            draw.rectangle(box, fill=PANEL)
-            missing = "Not generated"
-            missing_font = _font(26)
-            draw.text(
-                (left + (cell_width - draw.textlength(missing, font=missing_font)) / 2, cell_top + cell_height / 2 - 14),
-                missing, font=missing_font, fill=MUTED,
-            )
-        draw.rectangle(box, outline=RULE, width=2)
-        label = VIEW_SHORT_LABELS[view]
-        draw.text((left + (cell_width - draw.textlength(label, font=label_font)) / 2, cell_top + cell_height + 16), label, font=label_font, fill=INK)
-
-    lower_top = cell_top + cell_height + 84
-    draw.line((right_x, lower_top, right_edge, lower_top), fill=RULE, width=3)
-    lower_top += 40
-
-    # Color palette
-    palette = palette if palette is not None else extract_palette(views.get(CharacterView.front.value) or face)
-    _section_label(draw, "Color palette", right_x, lower_top)
-    swatch = 104
-    swatch_y = lower_top + SECTION_LABEL_HEIGHT
-    hex_font = _font(32, bold=True)
-    for color in palette:
-        if swatch_y + swatch > body_bottom:
-            break
-        draw.rectangle((right_x, swatch_y, right_x + swatch, swatch_y + swatch), fill=color, outline=RULE, width=2)
-        draw.text((right_x + swatch + 28, swatch_y + swatch / 2 - 18), _hex(color), font=hex_font, fill=INK)
-        swatch_y += swatch + 24
-    if not palette:
-        draw.text((right_x, swatch_y), "No palette available", font=_font(30), fill=MUTED)
-
-    # Profile text
-    text_x = right_x + 640
-    text_width = right_edge - text_x
-    y = lower_top
-    _section_label(draw, "Profile", text_x, y)
-    y += SECTION_LABEL_HEIGHT - 8
-    facts = [(label, value) for label, value in (
-        ("Role", profile.role), ("Age", profile.age), ("Gender", profile.gender), ("Race", profile.race),
-    ) if _present(value)]
-    fact_label_font, fact_font = _font(30, bold=True), _font(30)
-    column_width = text_width // 2
-    for index, (label, value) in enumerate(facts):
-        fx = text_x + (index % 2) * column_width
-        fy = y + (index // 2) * 50
-        draw.text((fx, fy), f"{label}:", font=fact_label_font, fill=MUTED)
-        offset = draw.textlength(f"{label}: ", font=fact_label_font)
-        value_text = str(value)
-        while value_text and draw.textlength(value_text, font=fact_font) > column_width - offset - 24:
-            value_text = value_text[:-1]
-        if value_text != str(value):
-            value_text = f"{value_text.rstrip()}…"
-        draw.text((fx + offset, fy), value_text, font=fact_font, fill=INK)
-    y += ((len(facts) + 1) // 2) * 50 + 40
-    if _present(profile.appearance):
-        y = _text_block(draw, "Appearance", str(profile.appearance), text_x, y, text_width, body_bottom)
-    if _present(profile.personality):
-        _text_block(draw, "Personality", str(profile.personality), text_x, y, text_width, body_bottom)
-
-    return canvas
-
-
-# --------------------------------------------------------------------------- data access
-
-
-def _download_image(url: str) -> Image.Image:
-    response = httpx.get(url, timeout=60.0, follow_redirects=True)
-    response.raise_for_status()
-    image = Image.open(io.BytesIO(response.content))
-    image.load()
-    return image
-
-
-def load_sheet_character(project_id: str, character_id: str) -> dict[str, Any]:
+def upload_reference_image(content: bytes, content_type: str | None) -> str:
+    """Store an uploaded reference so the image provider can fetch it by public URL."""
     supabase = require_supabase_client()
-    character = maybe_single_record(supabase.table("characters").select(
-        "id, name, character_type, role, age, gender, race, appearance, personality, tags, metadata"
-    ).eq("id", character_id).eq("project_id", project_id).maybe_single().execute())
-    if not character:
-        raise ValueError("Character was not found in this project")
-    return character
+    extension = {"image/jpeg": "jpg", "image/webp": "webp"}.get(content_type or "", "png")
+    path = f"uploaded-references/{uuid.uuid4().hex}.{extension}"
+    supabase.storage.from_(STORAGE_BUCKET).upload(
+        file=content, path=path, file_options={"content-type": content_type or "image/png"},
+    )
+    return supabase.storage.from_(STORAGE_BUCKET).get_public_url(path)
 
 
-def load_character_view_urls(project_id: str, character: dict[str, Any]) -> dict[str, str]:
-    """Return the current URL of each turnaround view, including repaired keyframes."""
+_canvas_url: str | None = None
+
+
+def blank_canvas_url() -> str:
+    """Public URL of the blank canvas, uploaded once (overwriting is harmless: same pixels)."""
+    global _canvas_url
+    if _canvas_url:
+        return _canvas_url
     supabase = require_supabase_client()
-    metadata = character.get("metadata") if isinstance(character.get("metadata"), dict) else {}
-    job_id = metadata.get("latest_generation_job_id")
-    view_assets: dict[str, str] = {}
-
-    if isinstance(job_id, str) and job_id:
-        outputs = as_records(supabase.table("generation_outputs").select("asset_id, metadata").eq(
-            "generation_job_id", job_id
-        ).eq("is_active", True).execute().data)
-        for output in outputs:
-            output_metadata = output.get("metadata") if isinstance(output.get("metadata"), dict) else {}
-            view = output_metadata.get("view")
-            if view in VIEW_ORDER and output.get("asset_id"):
-                view_assets[view] = str(output["asset_id"])
-
-    if not view_assets:
-        links = as_records(supabase.table("asset_links").select("asset_id, metadata").eq("project_id", project_id).eq(
-            "target_type", "character"
-        ).eq("target_id", character["id"]).eq("role", "keyframe").order("created_at").execute().data)
-        for link in links:
-            link_metadata = link.get("metadata") if isinstance(link.get("metadata"), dict) else {}
-            view = link_metadata.get("view")
-            if view in VIEW_ORDER and link.get("asset_id"):
-                view_assets[view] = str(link["asset_id"])  # later links win
-
-    if not view_assets:
-        return {}
-    assets = as_records(supabase.table("assets").select("id, url").in_("id", list(view_assets.values())).execute().data)
-    urls = {str(asset["id"]): str(asset["url"]) for asset in assets}
-    return {view: urls[asset_id] for view, asset_id in view_assets.items() if asset_id in urls}
-
-
-def _views_signature(view_urls: dict[str, str]) -> str:
-    """Identify the exact set of reference views a face close-up was generated from."""
-    return "|".join(view_urls.get(view, "") for view in (CharacterView.front.value, CharacterView.left_three_quarter.value, CharacterView.right_three_quarter.value))
-
-
-def build_face_closeup_prompt(character: dict[str, Any], reference_views: list[str]) -> str:
+    buffer = io.BytesIO()
+    Image.new("RGB", CANVAS_SIZE, CANVAS_COLOR).save(buffer, "PNG")
     try:
-        profile = build_script_character_profile(character, resolve_character_visual_style(character, None))
-    except ValueError:
-        profile = f"Character name: {character.get('name')}"
-    reference_list = ", ".join(f"image {index + 1} is the {VIEW_SHORT_LABELS[view].lower()} view" for index, view in enumerate(reference_views))
-    return FACE_CLOSEUP_PROMPT.format(reference_list=reference_list, profile=profile)
+        supabase.storage.from_(STORAGE_BUCKET).upload(
+            file=buffer.getvalue(), path=CANVAS_PATH, file_options={"content-type": "image/png", "upsert": "true"},
+        )
+    except Exception as error:  # already uploaded by another worker is fine
+        logger.info("Canvas upload skipped: %s", error)
+    _canvas_url = supabase.storage.from_(STORAGE_BUCKET).get_public_url(CANVAS_PATH)
+    return _canvas_url
 
 
-def generate_face_closeup(character: dict[str, Any], view_urls: dict[str, str], model: str, provider: str, project_id: str) -> str:
-    reference_views = [
-        view for view in (CharacterView.front.value, CharacterView.left_three_quarter.value, CharacterView.right_three_quarter.value)
-        if view_urls.get(view)
-    ][:2]
-    if not reference_views:
-        raise ValueError("Generate the character's front view before creating a character sheet")
-    response = generate_provider_images(CreateImageRequest(
-        model=model,
-        provider=provider,
-        prompt=build_face_closeup_prompt(character, reference_views),
-        aspect_ratio="3:4",
-        num_images=1,
-        output_format="png",
-        image_mapping={f"image{index + 1}": view_urls[view] for index, view in enumerate(reference_views)},
-        project_id=project_id,
-    ))
-    if not response.images:
-        raise RuntimeError("No image returned for the face close-up")
-    return response.images[0]
+def sheet_model_id(model: str | None) -> str:
+    """A WaveSpeed storyboard model ID; anything else (old Replicate names) is rejected."""
+    return storyboard_model(model or DEFAULT_SHEET_MODEL).id
 
 
-def _store_linked_image(
+def _store_image_asset(
     supabase: Client,
     project_id: str,
     character_id: str,
     image: Image.Image,
     *,
-    role: str,
+    kind: str,
     name: str,
-    file_format: str,
     metadata: dict[str, Any],
 ) -> tuple[str, str]:
-    """Upload an image, create its asset, and make it the character's only link for the role."""
+    # JPEG at high quality: a 2K sheet is ~5x smaller than PNG, so it uploads (and is fetched
+    # again as a storyboard reference) much faster, with no visible loss.
     buffer = io.BytesIO()
-    if file_format == "jpeg":
-        image.convert("RGB").save(buffer, "JPEG", quality=92)
-        extension, mime_type = "jpg", "image/jpeg"
-    else:
-        image.save(buffer, "PNG")
-        extension, mime_type = "png", "image/png"
+    image.convert("RGB").save(buffer, "JPEG", quality=92, optimize=True)
     content = buffer.getvalue()
-    storage_path = f"character-sheets/{character_id}/{role}_{uuid.uuid4().hex}.{extension}"
-    supabase.storage.from_(STORAGE_BUCKET).upload(file=content, path=storage_path, file_options={"content-type": mime_type})
+    storage_path = f"character-sheets/{character_id}/{kind}_{uuid.uuid4().hex}.jpg"
+    try:
+        supabase.storage.from_(STORAGE_BUCKET).upload(file=content, path=storage_path, file_options={"content-type": "image/jpeg"})
+    except httpx.TimeoutException:
+        raise RuntimeError("Saving the character sheet to storage timed out; check the connection and try again") from None
     url = supabase.storage.from_(STORAGE_BUCKET).get_public_url(storage_path)
     try:
         created = as_records(supabase.table("assets").insert({
@@ -476,118 +327,388 @@ def _store_linked_image(
             "name": name,
             "url": url,
             "storage_path": storage_path,
-            "mime_type": mime_type,
+            "mime_type": "image/jpeg",
             "size_bytes": len(content),
             "width": image.width,
             "height": image.height,
-            "metadata": {**metadata, "character_id": character_id, "kind": role},
+            "metadata": {**metadata, "character_id": character_id, "kind": kind},
         }).execute().data)
         if not created:
-            raise RuntimeError(f"Failed to create the {role.replace('_', ' ')} asset")
-        asset_id = str(created[0]["id"])
-        supabase.table("asset_links").delete().eq("project_id", project_id).eq("target_type", "character").eq(
-            "target_id", character_id
-        ).eq("role", role).execute()
-        supabase.table("asset_links").insert({
-            "project_id": project_id,
-            "asset_id": asset_id,
-            "target_type": "character",
-            "target_id": character_id,
-            "role": role,
-            "sort_order": 0,
-            "metadata": metadata,
-        }).execute()
+            raise RuntimeError(f"Failed to create the {kind.replace('_', ' ')} asset")
     except Exception:
         supabase.storage.from_(STORAGE_BUCKET).remove([storage_path])
         raise
-    return asset_id, url
+    return str(created[0]["id"]), url
 
 
-def _save_character_metadata(supabase: Client, project_id: str, character_id: str, key: str, value: dict[str, Any]) -> None:
+def _link(
+    supabase: Client,
+    project_id: str,
+    character_id: str,
+    asset_id: str,
+    role: str,
+    metadata: dict[str, Any],
+    *,
+    replace: bool,
+) -> None:
+    """Link an asset to the character; ``replace`` makes it the only link for the role."""
+    if replace:
+        supabase.table("asset_links").delete().eq("project_id", project_id).eq("target_type", "character").eq(
+            "target_id", character_id
+        ).eq("role", role).execute()
+    supabase.table("asset_links").insert({
+        "project_id": project_id,
+        "asset_id": asset_id,
+        "target_type": "character",
+        "target_id": character_id,
+        "role": role,
+        "sort_order": 0,
+        "metadata": metadata,
+    }).execute()
+
+
+def _update_character_metadata(supabase: Client, project_id: str, character_id: str, changes: dict[str, Any], **columns: Any) -> None:
     row = as_record(supabase.table("characters").select("metadata").eq("id", character_id).eq(
         "project_id", project_id
     ).single().execute().data)
     stored = row.get("metadata") if row else None
     metadata = dict(stored) if isinstance(stored, dict) else {}
-    metadata[key] = value
-    supabase.table("characters").update({"metadata": metadata}).eq("id", character_id).eq("project_id", project_id).execute()
+    metadata.update(changes)
+    supabase.table("characters").update({**columns, "metadata": metadata}).eq("id", character_id).eq("project_id", project_id).execute()
+
+
+def _has_approved_sheet(supabase: Client, project_id: str, character_id: str) -> bool:
+    links = supabase.table("asset_links").select("id").eq("project_id", project_id).eq("target_type", "character").eq(
+        "target_id", character_id
+    ).eq("role", SHEET_ROLE).limit(1).execute()
+    return bool(as_records(links.data))
 
 
 # --------------------------------------------------------------------------- orchestration
 
 
-def create_character_sheet(
+def load_project_character(project_id: str, character_id: str) -> dict[str, Any]:
+    """Any character in the project: script-extracted or created on the Character page."""
+    supabase = require_supabase_client()
+    character = maybe_single_record(supabase.table("characters").select(
+        "id, name, role, age, gender, race, appearance, personality, physical, tags, metadata"
+    ).eq("id", character_id).eq("project_id", project_id).maybe_single().execute())
+    if not character:
+        raise ValueError("Character was not found in this project")
+    return character
+
+
+class SheetIncompleteError(ValueError):
+    """Every attempt lacked the face close-up or part of the turnaround."""
+
+
+def sheet_attempts() -> int:
+    try:
+        return max(1, min(5, int(os.getenv("CHARACTER_SHEET_ATTEMPTS", str(DEFAULT_SHEET_ATTEMPTS)))))
+    except ValueError:
+        return DEFAULT_SHEET_ATTEMPTS
+
+
+def _render_sheet(
+    project_id: str,
+    owner_id: str,
+    owner_name: str,
+    prompt: str,
+    references: list[SheetReference],
+    *,
+    model: str,
+    style_label: str,
+    settings: dict[str, Any],
+) -> tuple[str, str, Image.Image, dict[str, Any]]:
+    """Generate one sheet image, check it, and store it as an asset tracked by a generation job.
+
+    A sheet that fails the check is regenerated with the problems named, up to
+    ``CHARACTER_SHEET_ATTEMPTS`` times; then ``SheetIncompleteError`` is raised.
+    Returns the asset id, its URL, the image, and the metadata recorded on the asset
+    (the generation inputs and the review, so the sheet can be redrawn and cropped later).
+    """
+    model = sheet_model_id(model)
+    seed = random.SystemRandom().randint(0, 2_147_483_647)
+    payload = CreateImageRequest(
+        model=model,
+        provider=SHEET_PROVIDER,
+        prompt=prompt,
+        aspect_ratio=SHEET_ASPECT_RATIO,
+        resolution=SHEET_RESOLUTION,
+        num_images=1,
+        output_format="png",
+        image_input=[blank_canvas_url(), *(reference.url for reference in references)],
+        project_id=project_id,
+        seed=seed,
+        visual_style=style_label,
+    )
+    settings = {
+        **settings,
+        "kind": SHEET_ROLE,
+        "references": [{"url": reference.url, "tag": reference.tag} for reference in references],
+        "seed": seed,
+        "visual_style": style_label,
+        "model": model,
+    }
+    supabase = require_supabase_client()
+    jobs = as_records(supabase.table("generation_jobs").insert({
+        "project_id": project_id,
+        "kind": "character",
+        "model": model,
+        "prompt": prompt,
+        "settings": settings,
+        "status": "running",
+    }).execute().data)
+    if not jobs:
+        raise RuntimeError("Failed to create the character sheet generation job")
+    job_id = str(jobs[0]["id"])
+    reference_pairs = [(reference.url, reference.tag) for reference in references]
+    attempts: list[dict[str, Any]] = []
+    try:
+        sheet: Image.Image | None = None
+        review: SheetReview | None = None
+        attempt_prompt = prompt
+        for attempt in range(1, sheet_attempts() + 1):
+            response = generate_provider_images(payload.model_copy(update={"prompt": attempt_prompt}))
+            if not response.images:
+                raise RuntimeError("The image model returned no character sheet")
+            with Image.open(io.BytesIO(_download(response.images[0]))) as generated:
+                sheet = generated.convert("RGB")
+            review = review_sheet(sheet, response.images[0], reference_pairs)
+            attempts.append({"attempt": attempt, **review.as_record()})
+            if review.ok:
+                break
+            logger.info("Character sheet attempt %s rejected: %s", attempt, "; ".join(review.problems))
+            attempt_prompt = prompt + retry_note(review.problems)
+        if sheet is None or review is None or not review.ok:
+            problems = "; ".join(review.problems) if review else "no image"
+            raise SheetIncompleteError(
+                f"The image model did not return a complete character sheet after {len(attempts)} tries ({problems}). "
+                "Try again, or simplify the prompt or reference images."
+            )
+        metadata = {**settings, "generation_job_id": job_id, "review": review.as_record(), "attempts": len(attempts)}
+        asset_id, url = _store_image_asset(
+            supabase, project_id, owner_id, sheet,
+            kind=SHEET_ROLE, name=f"{owner_name} - Character sheet", metadata=metadata,
+        )
+        supabase.table("generation_jobs").update({
+            "status": "complete",
+            "completed_at": datetime.now(UTC).isoformat(),
+            "settings": {**settings, "review_attempts": attempts},
+        }).eq("id", job_id).execute()
+    except Exception as error:
+        supabase.table("generation_jobs").update({
+            "status": "failed",
+            "error_message": str(error),
+            "completed_at": datetime.now(UTC).isoformat(),
+            "settings": {**settings, "review_attempts": attempts},
+        }).eq("id", job_id).execute()
+        raise
+    return asset_id, url, sheet, metadata
+
+
+def generate_model_sheet(
     project_id: str,
     character_id: str,
-    model: str = "nanobanana",
-    provider: str = "replicate",
-    regenerate_face: bool = False,
+    *,
+    direction: str = "",
+    references: list[SheetReference] | None = None,
+    model: str | None = None,
+    visual_style: str | None = None,
+    approve: bool | None = None,
 ) -> dict[str, Any]:
-    """Generate (or reuse) the face close-up, compose the sheet, and attach both to the character."""
+    """Generate one model sheet for an existing character and keep it as a candidate.
+
+    ``approve`` True makes it the character's sheet, False never does, and None (default)
+    approves it only when the character has no approved sheet yet.
+    """
+    references = list(references or [])[:MAX_REFERENCE_IMAGES]
+    sheet_model_id(model)  # reject an unknown model before any work
+    character = load_project_character(project_id, character_id)
+    style = resolve_character_visual_style(character, visual_style)
+    prompt = build_model_sheet_prompt(
+        character_block_for(character, style, direction, bool(references)), direction, references,
+    )
+    asset_id, url, sheet, metadata = _render_sheet(
+        project_id, character_id, str(character.get("name") or "Character"), prompt, references,
+        model=model or DEFAULT_SHEET_MODEL, style_label=style.label,
+        settings={"character_id": character_id, "direction": direction},
+    )
     supabase = require_supabase_client()
-    raw_character = load_sheet_character(project_id, character_id)
-    character = effective_character_profile(raw_character)
-    view_urls = load_character_view_urls(project_id, raw_character)
-    if CharacterView.front.value not in view_urls:
-        raise ValueError("Generate the character's turnaround views before creating a character sheet")
+    _link(supabase, project_id, character_id, asset_id, CANDIDATE_ROLE, metadata, replace=False)
 
-    metadata = raw_character.get("metadata") if isinstance(raw_character.get("metadata"), dict) else {}
-    signature = _views_signature(view_urls)
-    stored_face = metadata.get(FACE_ROLE) if isinstance(metadata.get(FACE_ROLE), dict) else {}
-    face_url = stored_face.get("url") if stored_face.get("views_signature") == signature else None
-    face_asset_id = stored_face.get("asset_id") if face_url else None
-    face_image: Image.Image | None = None
-
-    if regenerate_face or not face_url:
-        generated_url = generate_face_closeup(character, view_urls, model, provider, project_id)
-        face_image = _download_image(generated_url)
-        face_metadata = {"views_signature": signature, "model": model, "provider": provider}
-        face_asset_id, face_url = _store_linked_image(
-            supabase, project_id, character_id, face_image,
-            role=FACE_ROLE, name=f"{character.get('name') or 'Character'} - Face close-up", file_format="png", metadata=face_metadata,
-        )
-        _save_character_metadata(supabase, project_id, character_id, FACE_ROLE, {
-            **face_metadata, "asset_id": face_asset_id, "url": face_url, "created_at": datetime.now(UTC).isoformat(),
-        })
-    if face_image is None:
-        face_image = _download_image(str(face_url))
-
-    views = {view: _download_image(url) for view, url in view_urls.items()}
-    palette = extract_palette(views[CharacterView.front.value])
-    created_at = datetime.now(UTC)
-    profile = SheetProfile(
-        name=str(character.get("name") or "Character"),
-        character_type=character.get("character_type"),
-        role=character.get("role"),
-        age=character.get("age"),
-        gender=character.get("gender"),
-        race=character.get("race"),
-        appearance=character.get("appearance"),
-        personality=character.get("personality"),
-        visual_style=metadata.get("visual_style") if isinstance(metadata.get("visual_style"), str) else None,
-    )
-    sheet = render_character_sheet(profile, face_image, views, palette, created_at)
-    sheet_metadata = {
-        "views_signature": signature,
-        "face_asset_id": face_asset_id,
-        "source_generation_job_id": metadata.get("latest_generation_job_id"),
-        "palette": [_hex(color) for color in palette],
-    }
-    sheet_asset_id, sheet_url = _store_linked_image(
-        supabase, project_id, character_id, sheet,
-        role=SHEET_ROLE, name=f"{profile.name} - Character sheet", file_format="jpeg", metadata=sheet_metadata,
-    )
-    _save_character_metadata(supabase, project_id, character_id, SHEET_ROLE, {
-        **sheet_metadata, "asset_id": sheet_asset_id, "url": sheet_url, "created_at": created_at.isoformat(),
-    })
-    return {
+    should_approve = approve if approve is not None else not _has_approved_sheet(supabase, project_id, character_id)
+    result: dict[str, Any] = {
         "character_id": character_id,
-        "sheet_asset_id": sheet_asset_id,
-        "sheet_url": sheet_url,
+        "sheet_asset_id": asset_id,
+        "sheet_url": url,
+        "generation_job_id": metadata["generation_job_id"],
+        "review": metadata["review"],
+        "approved": False,
+        "face_closeup_asset_id": None,
+        "face_closeup_url": None,
+    }
+    if should_approve:
+        result.update(approve_model_sheet(project_id, character_id, asset_id, sheet=sheet))
+    return result
+
+
+DRAFT_OWNER = "drafts"
+
+
+def draft_model_sheet(
+    project_id: str,
+    *,
+    description: str = "",
+    references: list[SheetReference] | None = None,
+    model: str | None = None,
+    visual_style: str | None = None,
+) -> dict[str, Any]:
+    """Generate a sheet before the character exists (the Character page).
+
+    The sheet is stored as a project asset; ``create_character_from_sheet`` later creates
+    the character, links the chosen draft and approves it.
+    """
+    references = list(references or [])[:MAX_REFERENCE_IMAGES]
+    sheet_model_id(model)
+    description = description.strip()
+    if not description and not references:
+        raise ValueError("Describe the character or add a reference image.")
+    style = resolve_visual_style(visual_style)
+    character_block = "\n\n".join(part for part in (
+        f"Character description:\n{description}" if description else "",
+        style.prompt_block(),
+    ) if part)
+    prompt = build_model_sheet_prompt(character_block, "", references)
+    asset_id, url, _, metadata = _render_sheet(
+        project_id, DRAFT_OWNER, "New character", prompt, references,
+        model=model or DEFAULT_SHEET_MODEL, style_label=style.label,
+        settings={"draft": True, "direction": description},
+    )
+    return {
+        "sheet_asset_id": asset_id,
+        "sheet_url": url,
+        "generation_job_id": metadata["generation_job_id"],
+        "review": metadata["review"],
+    }
+
+
+def create_character_from_sheet(
+    project_id: str,
+    sheet_asset_id: str,
+    name: str,
+    role: str | None = None,
+    description: str | None = None,
+) -> dict[str, Any]:
+    """Create a character from a draft sheet and make that sheet its approved one."""
+    supabase = require_supabase_client()
+    assets = as_records(supabase.table("assets").select("id, metadata").eq("id", sheet_asset_id).eq(
+        "project_id", project_id
+    ).limit(1).execute().data)
+    stored = assets[0].get("metadata") if assets else None
+    metadata: dict[str, Any] = stored if isinstance(stored, dict) else {}
+    if not assets or metadata.get("kind") != SHEET_ROLE or not metadata.get("draft"):
+        raise ValueError("That draft character sheet was not found in this project")
+
+    created = as_records(supabase.table("characters").insert({
+        "project_id": project_id,
+        "name": name.strip(),
+        "role": (role or "").strip() or None,
+        "appearance": (description or "").strip() or None,
+        "metadata": {"source": "manual", "visual_style": metadata.get("visual_style")},
+    }).execute().data)
+    if not created:
+        raise RuntimeError("Failed to create the character")
+    character_id = str(created[0]["id"])
+    link_metadata = {key: value for key, value in metadata.items() if key not in ("draft", "character_id", "kind")}
+    _link(supabase, project_id, character_id, sheet_asset_id, CANDIDATE_ROLE, link_metadata, replace=False)
+    result = approve_model_sheet(project_id, character_id, sheet_asset_id)
+    return {"character_id": character_id, **result}
+
+
+def approve_model_sheet(
+    project_id: str,
+    character_id: str,
+    asset_id: str,
+    *,
+    sheet: Image.Image | None = None,
+) -> dict[str, Any]:
+    """Make a candidate the character's sheet and cut its face close-up out of it."""
+    supabase = require_supabase_client()
+    candidates = as_records(supabase.table("asset_links").select("metadata").eq("project_id", project_id).eq(
+        "target_type", "character"
+    ).eq("target_id", character_id).eq("role", CANDIDATE_ROLE).eq("asset_id", asset_id).limit(1).execute().data)
+    if not candidates:
+        raise ValueError("That character sheet was not found for this character")
+    stored_metadata = candidates[0].get("metadata")
+    candidate_metadata: dict[str, Any] = stored_metadata if isinstance(stored_metadata, dict) else {}
+    assets = as_records(supabase.table("assets").select("url").eq("id", asset_id).limit(1).execute().data)
+    if not assets:
+        raise ValueError("The character sheet image no longer exists")
+    url = str(assets[0]["url"])
+    if sheet is None:
+        with Image.open(io.BytesIO(_download(url))) as stored:
+            sheet = stored.convert("RGB")
+
+    character = effective_character_profile(load_project_character(project_id, character_id))
+    name = str(character.get("name") or "Character")
+    stored_review = candidate_metadata.get("review")
+    review: dict[str, Any] = stored_review if isinstance(stored_review, dict) else {}
+    face_box = review.get("face_box") if isinstance(review.get("face_box"), list) else None
+    face_metadata = {"source_sheet_asset_id": asset_id, "crop_box": list(face_panel_box(sheet, face_box))}
+    face_asset_id, face_url = _store_image_asset(
+        supabase, project_id, character_id, crop_face_panel(sheet, face_box),
+        kind=FACE_ROLE, name=f"{name} - Face close-up", metadata=face_metadata,
+    )
+    _link(supabase, project_id, character_id, face_asset_id, FACE_ROLE, face_metadata, replace=True)
+    _link(supabase, project_id, character_id, asset_id, SHEET_ROLE, candidate_metadata, replace=True)
+
+    approved_at = datetime.now(UTC).isoformat()
+    changes: dict[str, Any] = {SHEET_ROLE: {
+        "asset_id": asset_id,
+        "url": url,
+        "face_asset_id": face_asset_id,
+        "face_url": face_url,
+        "approved_at": approved_at,
+        "generation_job_id": candidate_metadata.get("generation_job_id"),
+        "references": candidate_metadata.get("references") or [],
+        "direction": candidate_metadata.get("direction") or "",
+        "model": candidate_metadata.get("model"),
+        "review": review,
+    }}
+    if candidate_metadata.get("visual_style"):
+        changes["visual_style"] = candidate_metadata["visual_style"]
+    _update_character_metadata(supabase, project_id, character_id, changes, primary_asset_id=face_asset_id)
+    return {
+        "approved": True,
+        "review": review or None,
+        "sheet_asset_id": asset_id,
+        "sheet_url": url,
         "face_closeup_asset_id": face_asset_id,
         "face_closeup_url": face_url,
-        "width": sheet.width,
-        "height": sheet.height,
-        "palette": sheet_metadata["palette"],
-        "missing_views": [view for view in VIEW_ORDER if view not in view_urls],
     }
+
+
+def approved_sheet_model(character: dict[str, Any]) -> str:
+    """The WaveSpeed model the approved sheet was drawn with, or the default."""
+    stored = character.get("metadata")
+    sheet = stored.get(SHEET_ROLE) if isinstance(stored, dict) else None
+    model = sheet.get("model") if isinstance(sheet, dict) else None
+    try:
+        return sheet_model_id(model if isinstance(model, str) else None)
+    except ValueError:
+        return DEFAULT_SHEET_MODEL
+
+
+def approved_sheet_inputs(character: dict[str, Any]) -> tuple[str, list[SheetReference]]:
+    """Direction and references of the approved sheet, to regenerate it in another style."""
+    stored = character.get("metadata")
+    metadata: dict[str, Any] = stored if isinstance(stored, dict) else {}
+    stored_sheet = metadata.get(SHEET_ROLE)
+    sheet: dict[str, Any] = stored_sheet if isinstance(stored_sheet, dict) else {}
+    references = [
+        SheetReference(url=str(item["url"]), tag=normalize_reference_tag(item.get("tag")))
+        for item in sheet.get("references") or []
+        if isinstance(item, dict) and item.get("url")
+    ]
+    return str(sheet.get("direction") or ""), references

@@ -1,4 +1,5 @@
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -10,15 +11,6 @@ class ImageModel(str, Enum):
     qwen = "qwen"
     z_image = "z-image"
     flux_klein = "flux-klein"
-
-
-class CharacterView(str, Enum):
-    front = "front"
-    left_three_quarter = "left_three_quarter"
-    left_profile = "left_profile"
-    back = "back"
-    right_profile = "right_profile"
-    right_three_quarter = "right_three_quarter"
 
 
 class CreateImageRequest(BaseModel):
@@ -35,33 +27,6 @@ class CreateImageRequest(BaseModel):
     image_mapping: dict[str, str] | None = Field(default=None)  # Tag names (e.g., "[image1]") to image URLs
     project_id: str | None = Field(default=None)
     seed: int | None = Field(default=None)
-    visual_style: str | None = Field(default=None, max_length=40)
-
-
-class CharacterKeyframe(BaseModel):
-    view: CharacterView
-    image_url: str
-    prompt: str
-    seed: int | None = None
-    model: str
-    status: str = "complete"
-    asset_id: str | None = None
-
-
-class RegenerateCharacterKeyframeRequest(BaseModel):
-    project_id: str = Field(min_length=1)
-    correction: str = Field(default="", max_length=2_000)
-
-
-class GenerateScriptCharacterRequest(BaseModel):
-    project_id: str = Field(min_length=1)
-    character_id: str = Field(min_length=1)
-    model: str
-    provider: str = Field(default="replicate")
-    aspect_ratio: str = Field(default="2:3")
-    resolution: str | None = Field(default="1k")
-    output_format: str = Field(default="jpg")
-    seed: int | None = None
     visual_style: str | None = Field(default=None, max_length=40)
 
 
@@ -92,7 +57,6 @@ class GenerateObjectReferenceRequest(BaseModel):
 class CreateImageResponse(BaseModel):
     model: str
     images: list[str]
-    keyframes: list[CharacterKeyframe] | None = None
     generation_job_id: str | None = None
 
 
@@ -156,38 +120,40 @@ class GenerateStoryboardResponse(BaseModel):
     frames: list[StoryboardFrame]
 
 
-class FinalizeCharacterRequest(BaseModel):
+class DraftCharacterSheetResponse(BaseModel):
+    """A sheet generated before its character exists (Character page)."""
+    sheet_asset_id: str
+    sheet_url: str
+    generation_job_id: str | None = None
+    # What the sheet check found: face close-up, views, problems, and how it was checked.
+    review: dict[str, Any] | None = None
+
+
+class CreateCharacterFromSheetRequest(BaseModel):
     project_id: str = Field(min_length=1)
-    generation_job_id: str = Field(min_length=1)
-    name: str = Field(min_length=1)
-    role: str | None = None
-    description: str | None = None
-    primary_view: CharacterView = CharacterView.front
+    sheet_asset_id: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=200)
+    role: str | None = Field(default=None, max_length=200)
+    description: str | None = Field(default=None, max_length=4_000)
 
 
-class FinalizeCharacterResponse(BaseModel):
-    character_id: str
-    primary_asset_id: str
-
-
-class CreateCharacterSheetRequest(BaseModel):
+class ApproveCharacterSheetRequest(BaseModel):
     project_id: str = Field(min_length=1)
     character_id: str = Field(min_length=1)
-    model: str = Field(default="nanobanana")
-    provider: str = Field(default="replicate")
-    regenerate_face: bool = False
+    asset_id: str = Field(min_length=1)
 
 
 class CharacterSheetResponse(BaseModel):
+    """One generated model sheet (face close-up + turnaround) and whether it is the approved one."""
     character_id: str
     sheet_asset_id: str
     sheet_url: str
+    generation_job_id: str | None = None
+    approved: bool = False
     face_closeup_asset_id: str | None = None
-    face_closeup_url: str
-    width: int
-    height: int
-    palette: list[str] = Field(default_factory=list)
-    missing_views: list[str] = Field(default_factory=list)
+    face_closeup_url: str | None = None
+    # What the sheet check found: face close-up, views, problems, and how it was checked.
+    review: dict[str, Any] | None = None
 
 
 class SetCharacterStyleRequest(BaseModel):
