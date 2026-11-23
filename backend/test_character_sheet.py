@@ -89,6 +89,18 @@ class FaceCropTests(unittest.TestCase):
         self.assertAlmostEqual((right - left) / (bottom - top), 3 / 4, delta=0.02)
 
 
+_type_map_patch = patch.object(cs, "character_type_map", return_value={})
+
+
+def setUpModule() -> None:
+    # Keep the sheet tests offline: no character type configuration is read from Supabase.
+    _type_map_patch.start()
+
+
+def tearDownModule() -> None:
+    _type_map_patch.stop()
+
+
 PASSING_REVIEW = sr.SheetReview(ok=True, method="vision", face_closeup=True, views=list(sr.REQUIRED_VIEWS), face_box=[100, 50, 800, 300])
 
 

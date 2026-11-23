@@ -5,6 +5,7 @@
 // The computation is pure so it can be reasoned about (and tested) without data.
 
 import { isPacing, parseDurationSeconds, type Pacing } from '@/lib/duration';
+import { isCharacterOnCamera, loadCharacterTypes } from '@/lib/characterTypes';
 import { supabase } from '@/lib/supabaseClient';
 
 export type StageStatus = 'pending' | 'in_progress' | 'complete';
@@ -334,7 +335,7 @@ const entityCounts = (rows: EntityRow[]) => ({
 });
 
 export async function loadProjectSnapshot(projectId: string): Promise<ProjectSnapshot> {
-  const [docs, scenes, characters, environments, props, shots, videoLinks, timelineItems, exports, jobs] =
+  const [docs, scenes, characterRows, environments, props, shots, videoLinks, timelineItems, exports, jobs, characterTypes] =
     await Promise.all([
       fetchAll<{ type: string; metadata: Record<string, unknown> | null }>((from, to) =>
         supabase.from('project_documents').select('type, metadata').eq('project_id', projectId).range(from, to),
@@ -354,8 +355,8 @@ export async function loadProjectSnapshot(projectId: string): Promise<ProjectSna
           .order('sort_order')
           .range(from, to),
       ),
-      fetchAll<EntityRow>((from, to) =>
-        supabase.from('characters').select('primary_asset_id').eq('project_id', projectId).range(from, to),
+      fetchAll<EntityRow & { character_type: string | null; on_camera: boolean | null; metadata: Record<string, unknown> | null }>((from, to) =>
+        supabase.from('characters').select('primary_asset_id, character_type, on_camera, metadata').eq('project_id', projectId).range(from, to),
       ),
       fetchAll<EntityRow>((from, to) =>
         supabase
@@ -391,7 +392,11 @@ export async function loadProjectSnapshot(projectId: string): Promise<ProjectSna
         .order('created_at', { ascending: false })
         .limit(1),
       loadGenerationJobs(projectId),
+      // Optional: without the type list every character counts as on camera.
+      loadCharacterTypes(projectId).then(({ types }) => types).catch(() => new Map()),
     ]);
+  // Voice-only characters (narrators) are never drawn, so they need no image.
+  const characters = characterRows.filter((row) => isCharacterOnCamera(row, characterTypes));
 
   const sceneList = scenes.map((scene, index) => ({
     id: scene.id,

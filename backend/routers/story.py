@@ -48,8 +48,18 @@ from services.storyboard_generation import generate_scene_storyboard, regenerate
 from services.storyboard_models import DEFAULT_STORYBOARD_MODEL, STORYBOARD_MODELS
 from services.character_views import (
     EDITABLE_CHARACTER_FIELDS,
+    PROFILE_TEXT_MAX_CHARS,
+    TYPE_DETAILS_PREFIX,
+    VOICE_FIELD_NAMES,
+    VOICE_FIELDS,
+    VOICE_PREFIX,
+    DETAIL_KEY_PATTERN,
     clean_physical,
+    clean_type_details,
+    clean_voice,
     effective_character_profile,
+    is_on_camera,
+    is_override_field,
     physical_fact_lines,
 )
 from services.character_ranking import rank_characters_from_script
@@ -58,7 +68,7 @@ from services.object_ranking import ObjectRanking, rank_objects_from_script, ran
 from services.duration_budget import PACING_GUIDANCE, format_seconds, normalize_pacing, parse_duration_seconds
 from services.gemini_client import run_gemini
 from services.project_runtime import load_project_runtime
-from services.script_config import load_project_script_context
+from services.script_config import CharacterTypeConfig, character_type_map, load_project_script_context
 from services.script_generation import (
     blocks_context,
     build_block_prompt,
@@ -151,9 +161,22 @@ def _manual_override_fields(metadata: object) -> list[str]:
     return [field for field in EDITABLE_CHARACTER_FIELDS if field in overrides]
 
 
-def _character_profile_response(character: dict) -> CharacterProfileResponse:
+def _all_override_fields(metadata: object) -> list[str]:
+    """Every manual profile key: core and physical fields, type, presence, voice and details."""
+    overrides = metadata.get("manual_overrides") if isinstance(metadata, dict) else None
+    if not isinstance(overrides, dict):
+        return []
+    return [field for field in overrides if isinstance(field, str) and is_override_field(field)]
+
+
+def _character_profile_response(
+    character: dict, character_types: dict[str, CharacterTypeConfig] | None = None
+) -> CharacterProfileResponse:
     effective = effective_character_profile(character)
-    return CharacterProfileResponse(
+    types = character_types if character_types is not None else character_type_map()
+    voice = effective.get("voice")
+    type_details = effective.get("type_details")
+    response = CharacterProfileResponse(
         id=str(character["id"]),
         name=str(character["name"]),
         role=effective.get("role") if isinstance(effective.get("role"), str) else None,
@@ -162,12 +185,20 @@ def _character_profile_response(character: dict) -> CharacterProfileResponse:
         race=effective.get("race") if isinstance(effective.get("race"), str) else None,
         appearance=effective.get("appearance") if isinstance(effective.get("appearance"), str) else None,
         personality=effective.get("personality") if isinstance(effective.get("personality"), str) else None,
-        **clean_physical(effective.get("physical")),
-        manual_override_fields=_manual_override_fields(character.get("metadata")),
+        character_type=str(effective.get("character_type") or "supporting"),
+        on_camera=is_on_camera(character, types),
+        voice=voice if isinstance(voice, dict) else {},
+        type_details=type_details if isinstance(type_details, dict) else {},
+        manual_override_fields=_all_override_fields(character.get("metadata")),
     )
+    return response.model_copy(update=clean_physical(effective.get("physical")))
 
 
 def _build_character_script_description(character: dict) -> str:
+    if not is_on_camera(character, character_type_map()):
+        raise ValueError(
+            f"{character['name']} is only heard, so the script has no on-screen description of them to update"
+        )
     effective = effective_character_profile(character)
     details: list[str] = []
     age = effective.get("age")
@@ -192,7 +223,8 @@ def _build_character_script_description(character: dict) -> str:
 
 def _load_script_character_for_profile(supabase: Client, project_id: str, character_id: str) -> dict:
     result = supabase.table("characters").select(
-        "id, name, role, age, gender, race, appearance, personality, physical, metadata"
+        "id, name, character_type, on_camera, role, age, gender, race, appearance, personality, "
+        "physical, voice, type_details, metadata"
     ).eq("id", character_id).eq("project_id", project_id).maybe_single().execute()
     character = maybe_single_record(result)
     metadata = (character or {}).get("metadata") or {}
@@ -440,9 +472,25 @@ def _persist_script_objects(supabase: Client, project_id: str, objects: list[Ext
 
 DEFAULT_CHARACTER_TYPES = ("main", "supporting")
 PHYSICAL_FACT_MAX_CHARS = 300
+FALLBACK_CHARACTER_TYPE = "supporting"
 
 
-def _normalize_extracted_character(raw_character: dict, allowed_types: tuple[str, ...] = DEFAULT_CHARACTER_TYPES) -> dict:
+def _character_type_configs(
+    allowed_types: "tuple[str | CharacterTypeConfig, ...] | list[str | CharacterTypeConfig]",
+) -> dict[str, CharacterTypeConfig]:
+    """Allowed types by key; bare keys become plain on-camera types with no details."""
+    configs: dict[str, CharacterTypeConfig] = {}
+    for item in allowed_types or DEFAULT_CHARACTER_TYPES:
+        config = item if isinstance(item, CharacterTypeConfig) else CharacterTypeConfig(key=item, label=item.title())
+        configs[config.key] = config
+    return configs
+
+
+def _normalize_extracted_character(
+    raw_character: dict,
+    allowed_types: "tuple[str | CharacterTypeConfig, ...] | list[str | CharacterTypeConfig]" = DEFAULT_CHARACTER_TYPES,
+) -> dict:
+    types = _character_type_configs(allowed_types)
     normalized = dict(raw_character)
     age = normalized.get("age")
     if isinstance(age, str):
@@ -451,30 +499,62 @@ def _normalize_extracted_character(raw_character: dict, allowed_types: tuple[str
     elif isinstance(age, bool) or not isinstance(age, int):
         normalized["age"] = None
     character_type = str(normalized.get("character_type") or "").strip().lower()
-    normalized["character_type"] = character_type if character_type in allowed_types else "supporting"
+    if character_type not in types:
+        character_type = FALLBACK_CHARACTER_TYPE if FALLBACK_CHARACTER_TYPE in types else next(iter(types))
+    normalized["character_type"] = character_type
+    type_config = types[character_type]
+
+    # on_camera is stored only when the script contradicts the type's default.
+    on_camera = normalized.get("on_camera")
+    normalized["on_camera"] = on_camera if isinstance(on_camera, bool) and on_camera == type_config.voice_only else None
+    seen = normalized["on_camera"] if normalized["on_camera"] is not None else not type_config.voice_only
+
     # Unknown keys are dropped and long answers trimmed so one verbose fact cannot fail the character.
     normalized["physical"] = {
         key: value[:PHYSICAL_FACT_MAX_CHARS] for key, value in clean_physical(normalized.get("physical")).items()
-    }
+    } if seen else {}
+    normalized["voice"] = clean_voice(normalized.get("voice"))
+    normalized["type_details"] = clean_type_details(normalized.get("type_details"), type_config.detail_keys)
+    if not seen:
+        # Nobody sees a voice-only character, so there is nothing to draw.
+        normalized["image_prompt"] = ""
     return normalized
+
+
+def _character_type_guide(types: dict[str, CharacterTypeConfig]) -> str:
+    lines = []
+    for config in types.values():
+        presence = "voice only: heard, never seen" if config.voice_only else (
+            "on camera, speaks straight to the lens" if config.addresses_camera else "on camera"
+        )
+        details = f" type_details keys: {', '.join(config.detail_keys)}." if config.detail_keys else ""
+        description = f" {config.description}" if config.description else ""
+        lines.append(f'- "{config.key}" ({presence}).{description}{details}')
+    return "\n".join(lines)
 
 
 def _extract_script_characters(
     client: replicate.Client,
     screenplay: dict,
-    allowed_types: tuple[str, ...] = DEFAULT_CHARACTER_TYPES,
+    allowed_types: "tuple[str | CharacterTypeConfig, ...] | list[str | CharacterTypeConfig]" = DEFAULT_CHARACTER_TYPES,
 ) -> list[ExtractedCharacterSchema]:
-    allowed_types = tuple(allowed_types) or DEFAULT_CHARACTER_TYPES
-    type_choices = " | ".join(f'"{t}"' for t in allowed_types)
+    types = _character_type_configs(allowed_types)
+    type_choices = " | ".join(f'"{key}"' for key in types)
+    voice_shape = ", ".join(f'"{name}":null' for name in VOICE_FIELD_NAMES)
+    voice_labels = ", ".join(label.lower() for _, label in VOICE_FIELDS)
+    plain_type = FALLBACK_CHARACTER_TYPE if FALLBACK_CHARACTER_TYPE in types else next(iter(types))
     prompt = f"""You extract only explicitly supported character and people facts from a script.
 
 Script JSON:
 {json.dumps(screenplay)}
 
-Return ONLY valid JSON in this shape:
-{{"characters":[{{"name":"", "character_type":{type_choices}, "role":null, "age":null, "gender":null, "race":null, "appearance":null, "personality":null, "physical":{{"height":null, "build":null, "skin_tone":null, "face":null, "eyes":null, "hair":null, "facial_hair":null, "distinguishing_marks":null, "glasses":null, "demeanor":null}}, "tags":[], "image_prompt":""}}]}}
+Character types this production uses:
+{_character_type_guide(types)}
 
-Include every named speaking person or explicitly named character, including narrators, presenters, interviewees and spokespeople. Set `character_type` to `main` only for characters central to a story's main plot; use `presenter`, `host`, `narrator`, `interviewee`, `interviewer`, `spokesperson` or `instructor` when the script shows that function and the type is allowed; otherwise use `supporting`. Do not infer, guess, or stereotype age, gender, race, visual traits, role, or personality. `age` must be an exact whole number or null; do not use ranges or labels such as "40s". Use null when the screenplay does not explicitly establish a fact. `physical` holds permanent body and face facts only (height, build, skin tone, face, eyes, hair, facial hair, scars/tattoos/birthmarks as `distinguishing_marks`, glasses, and habitual posture or bearing as `demeanor`), each a short phrase; never put clothing, a passing expression or a scene-specific state there. `appearance` holds any other explicit visual detail, such as usual clothing. `image_prompt` must be a concise visual description composed only from explicit screenplay facts; use an empty string when no visual facts are present."""
+Return ONLY valid JSON in this shape:
+{{"characters":[{{"name":"", "character_type":{type_choices}, "on_camera":null, "role":null, "age":null, "gender":null, "race":null, "appearance":null, "personality":null, "physical":{{"height":null, "build":null, "skin_tone":null, "face":null, "eyes":null, "hair":null, "facial_hair":null, "distinguishing_marks":null, "glasses":null, "demeanor":null}}, "voice":{{{voice_shape}}}, "type_details":{{}}, "tags":[], "image_prompt":""}}]}}
+
+Include every named speaking person or explicitly named character, including narrators, announcers, presenters, hosts, interviewees and spokespeople. Pick the `character_type` from the list above that matches the function the script shows: an off-screen voice-over or announcer is a narrator-type voice, a person who represents the brand on screen is a spokesperson, a person who runs a show is a host. Use `main` only for characters central to a story's main plot; otherwise use `{plain_type}`. Leave `on_camera` null when the character behaves as their type says; set it to true or false only when the script clearly shows otherwise, such as a narrator who appears on screen or an interviewer who is only heard. Do not infer, guess, or stereotype age, gender, race, visual traits, role, or personality. `age` must be an exact whole number or null; do not use ranges or labels such as "40s". Use null when the screenplay does not explicitly establish a fact. `physical` holds permanent body and face facts only (height, build, skin tone, face, eyes, hair, facial hair, scars/tattoos/birthmarks as `distinguishing_marks`, glasses, and habitual posture or bearing as `demeanor`), each a short phrase; never put clothing, a passing expression or a scene-specific state there. Characters who are only heard have no physical facts and an empty `image_prompt`. `appearance` holds any other explicit visual detail, such as usual clothing. `voice` holds explicit facts about how the character sounds ({voice_labels}), for example from parentheticals such as (V.O., excited) or from a description of their voice; null when not stated. `type_details` holds only the keys listed for the chosen type, each a short phrase stated or clearly shown by the script; omit keys the script does not support. `image_prompt` must be a concise visual description composed only from explicit screenplay facts; use an empty string when no visual facts are present."""
     parsed = _parse_json_object(_run_gemini(client, prompt, thinking_level="low"))
     raw_characters = parsed.get("characters", []) if isinstance(parsed, dict) else parsed
     if not isinstance(raw_characters, list):
@@ -581,7 +661,7 @@ async def extract_characters_from_existing_script(
         context = await asyncio.to_thread(load_project_script_context, payload.project_id)
         client = replicate.Client(api_token=settings.replicate_api_token)
         characters = await asyncio.to_thread(
-            _extract_script_characters, client, screenplay, context.type_config.character_types
+            _extract_script_characters, client, screenplay, context.type_config.character_type_configs
         )
         await asyncio.to_thread(_persist_script_characters, supabase, payload.project_id, characters)
         return ExtractScriptCharactersResponse(count=len(characters))
@@ -597,6 +677,9 @@ async def update_character_profile(payload: UpdateCharacterProfilePayload) -> Ch
     supabase = get_supabase_client()
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase client not configured")
+    unknown = [field for field in payload.clear_fields if not is_override_field(field)]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown profile field: {', '.join(unknown)}")
     try:
         character = _load_script_character_for_profile(supabase, payload.project_id, payload.character_id)
         metadata = dict(character.get("metadata") or {})
@@ -609,19 +692,65 @@ async def update_character_profile(payload: UpdateCharacterProfilePayload) -> Ch
                         overrides[field] = value
                 elif isinstance(value, str) and value.strip():
                     overrides[field] = value.strip()
-            if field in payload.clear_fields:
-                overrides.pop(field, None)
+        _apply_role_overrides(payload, character, overrides)
+        for field in payload.clear_fields:
+            overrides.pop(field, None)
         metadata["manual_overrides"] = overrides
-        metadata["manual_override_fields"] = [field for field in EDITABLE_CHARACTER_FIELDS if field in overrides]
+        metadata["manual_override_fields"] = [field for field in overrides if is_override_field(field)]
         supabase.table("characters").update({"metadata": metadata}).eq(
             "id", payload.character_id
         ).eq("project_id", payload.project_id).execute()
         updated_character = _load_script_character_for_profile(supabase, payload.project_id, payload.character_id)
         return _character_profile_response(updated_character)
+    except HTTPException:
+        raise
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except Exception as error:
         raise HTTPException(status_code=400, detail=f"Character profile update failed: {error}") from error
+
+
+def _apply_role_overrides(payload: UpdateCharacterProfilePayload, character: dict, overrides: dict[str, Any]) -> None:
+    """Character type, on-camera choice, voice and type details from the payload.
+
+    A type equal to the script's, or an on-camera choice equal to the type's default, is
+    stored as no override, so the character keeps following the script and its type.
+    """
+    fields_set = payload.model_fields_set
+    if "character_type" in fields_set and payload.character_type:
+        offered = load_project_script_context(payload.project_id).type_config
+        if payload.character_type not in offered.character_types:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{payload.character_type!r} is not a character type for {offered.label} projects",
+            )
+        if payload.character_type == character.get("character_type"):
+            overrides.pop("character_type", None)
+        else:
+            overrides["character_type"] = payload.character_type
+    if "on_camera" in fields_set:
+        if payload.on_camera is None:
+            overrides.pop("on_camera", None)
+        else:
+            overrides["on_camera"] = payload.on_camera
+            # A choice that matches the type's own presence is not an override.
+            types = character_type_map()
+            follows_type = {**character, "on_camera": None, "metadata": {"manual_overrides": {
+                key: value for key, value in overrides.items() if key != "on_camera"
+            }}}
+            if is_on_camera(follows_type, types) == payload.on_camera:
+                overrides.pop("on_camera", None)
+    for prefix, values, valid in (
+        (VOICE_PREFIX, payload.voice, lambda key: key in VOICE_FIELD_NAMES),
+        (TYPE_DETAILS_PREFIX, payload.type_details, lambda key: bool(DETAIL_KEY_PATTERN.match(key))),
+    ):
+        for key, value in (values or {}).items():
+            if not valid(key):
+                raise HTTPException(status_code=400, detail=f"Unknown profile field: {prefix}{key}")
+            if isinstance(value, str) and value.strip():
+                overrides[f"{prefix}{key}"] = value.strip()[:PROFILE_TEXT_MAX_CHARS]
+            else:
+                overrides.pop(f"{prefix}{key}", None)
 
 
 @router.get("/storyboard/models", response_model=list[StoryboardModelOption])
@@ -1366,7 +1495,7 @@ async def progressive_generation_worker(
 
         try:
             extracted_characters = await asyncio.to_thread(
-                _extract_script_characters, client, consolidated_script, type_config.character_types
+                _extract_script_characters, client, consolidated_script, type_config.character_type_configs
             )
             await asyncio.to_thread(_persist_script_characters, supabase, project_id, extracted_characters)
         except Exception as extraction_error:

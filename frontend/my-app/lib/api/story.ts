@@ -173,6 +173,16 @@ export type PhysicalField = typeof PHYSICAL_FIELDS[number];
 export type CoreProfileField = 'role' | 'age' | 'gender' | 'race' | 'appearance' | 'personality';
 export type ProfileField = CoreProfileField | PhysicalField;
 
+/** How a character sounds, stored in characters.voice. Keep in sync with VOICE_FIELDS in the backend. */
+export const VOICE_FIELDS = ['tone', 'accent', 'pace', 'pitch', 'delivery'] as const;
+export type VoiceField = typeof VOICE_FIELDS[number];
+
+/**
+ * Keys a profile reset can clear: profile fields, plus "character_type", "on_camera",
+ * "voice.<field>" and "type_details.<field>".
+ */
+export type ProfileOverrideKey = ProfileField | 'character_type' | 'on_camera' | `voice.${VoiceField}` | `type_details.${string}`;
+
 export type CharacterProfileUpdate = {
   role?: string | null;
   age?: number | null;
@@ -180,7 +190,14 @@ export type CharacterProfileUpdate = {
   race?: string | null;
   appearance?: string | null;
   personality?: string | null;
-  clear_fields?: ProfileField[];
+  /** A character_types key the project type offers. */
+  character_type?: string;
+  /** Overrides the type's presence; null returns to it. */
+  on_camera?: boolean | null;
+  /** An empty value removes the manual value for that field. */
+  voice?: Partial<Record<VoiceField, string | null>>;
+  type_details?: Record<string, string | null>;
+  clear_fields?: ProfileOverrideKey[];
 } & Partial<Record<PhysicalField, string | null>>;
 
 export type CharacterProfile = {
@@ -192,6 +209,10 @@ export type CharacterProfile = {
   race: string | null;
   appearance: string | null;
   personality: string | null;
+  character_type: string;
+  on_camera: boolean;
+  voice: Partial<Record<VoiceField, string>>;
+  type_details: Record<string, string>;
   manual_override_fields: string[];
 } & Record<PhysicalField, string | null>;
 

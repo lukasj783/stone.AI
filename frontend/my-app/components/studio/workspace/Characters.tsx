@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import Image from 'next/image';
-import { AlertCircle, CheckCircle2, Clapperboard, X, Download, Expand, Eye, EyeOff, FileText, LayoutPanelLeft, MessageSquare, Pencil, RefreshCw, RotateCcw, Save, Users } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Clapperboard, X, Download, Expand, Eye, EyeOff, FileText, LayoutPanelLeft, MessageSquare, Mic, Pencil, RefreshCw, RotateCcw, Save, Users, Video } from 'lucide-react';
 import { CharacterFact, CharacterSheetModal, downloadImage } from '@/components/characters/CharacterSheetModal';
 import { characterTags, characterTheme } from '@/lib/characterTheme';
 import { approveCharacterSheet, generateCharacterSheet } from '@/lib/api/image-generation';
@@ -15,7 +15,10 @@ import {
   PHYSICAL_FIELDS,
   PhysicalField,
   ProfileField as ProfileFieldName,
+  ProfileOverrideKey,
   ObjectTier,
+  VOICE_FIELDS,
+  VoiceField,
   rankCharacters,
   CharacterScriptSyncPreview,
   confirmCharacterScriptSync,
@@ -23,6 +26,7 @@ import {
   previewCharacterScriptSync,
   updateCharacterProfile,
 } from '@/lib/api/story';
+import { CharacterDetailField, CharacterTypeInfo, CharacterTypeMap, effectiveCharacterType, isCharacterOnCamera, loadCharacterTypes } from '@/lib/characterTypes';
 import { supabase } from '@/lib/supabaseClient';
 import { CharacterSheetCreator } from './CharacterSheetCreator';
 import { RankingStat, TierBadge } from './ImportanceTier';
@@ -39,8 +43,14 @@ type ProfileForm = Record<EditableField, string>;
 interface StudioCharacter extends Record<PhysicalField, string | null> {
   id: string;
   name: string;
-  /** A character_types key: main, supporting, presenter, narrator, interviewee... */
+  /** A character_types key (main, supporting, narrator, spokesperson...), manual choice applied. */
   characterType: string;
+  /** False for voice-only characters (narrators): heard, never drawn, no character sheet. */
+  onCamera: boolean;
+  /** How they sound; script value with manual override applied. */
+  voice: Record<VoiceField, string | null>;
+  /** The type's own details (a spokesperson's brand...), manual overrides applied. */
+  typeDetails: Record<string, string>;
   role: string | null;
   age: number | null;
   gender: string | null;
@@ -50,7 +60,8 @@ interface StudioCharacter extends Record<PhysicalField, string | null> {
   tags: string[];
   metadata: Record<string, unknown> | null;
   primaryImageUrl: string | null;
-  manualOverrideFields: EditableField[];
+  /** Every manual key: profile fields, character_type, on_camera, voice.*, type_details.* */
+  manualOverrideFields: string[];
   /** The approved model sheet storyboards use. */
   sheet: CharacterSheetInfo | null;
   /** Every generated sheet version, newest first (includes the approved one). */
@@ -161,6 +172,28 @@ const PROFILE_PLACEHOLDERS: Record<EditableField, string> = {
   demeanor: 'How they carry themselves, e.g. guarded, slight slouch',
 };
 const EMPTY_FORM = Object.fromEntries(EDITABLE_FIELDS.map((field) => [field, ''])) as ProfileForm;
+
+const VOICE_LABELS: Record<VoiceField, string> = { tone: 'Tone', accent: 'Accent', pace: 'Pace', pitch: 'Pitch / vocal age', delivery: 'Delivery notes' };
+const VOICE_PLACEHOLDERS: Record<VoiceField, string> = {
+  tone: 'e.g. warm, upbeat, authoritative',
+  accent: 'e.g. Kenyan English, neutral American',
+  pace: 'e.g. brisk, slow and deliberate',
+  pitch: 'e.g. deep baritone, young and bright',
+  delivery: 'e.g. smiles through the lines, whispers the tagline',
+};
+/** Profile gaps worth flagging: voice-only characters need no look, only who they are. */
+const VOICE_ONLY_CORE_FIELDS: CoreProfileField[] = ['role', 'age', 'gender', 'personality'];
+
+/** Type, presence, voice and type details while editing. */
+interface RoleDraft { characterType: string; onCamera: boolean; voice: Record<VoiceField, string>; details: Record<string, string>; }
+const roleDraftFrom = (character: StudioCharacter): RoleDraft => ({
+  characterType: character.characterType,
+  onCamera: character.onCamera,
+  voice: Object.fromEntries(VOICE_FIELDS.map((field) => [field, character.voice[field] ?? ''])) as Record<VoiceField, string>,
+  details: { ...character.typeDetails },
+});
+const EMPTY_ROLE_DRAFT: RoleDraft = { characterType: 'supporting', onCamera: true, voice: Object.fromEntries(VOICE_FIELDS.map((field) => [field, ''])) as Record<VoiceField, string>, details: {} };
+const typeLabel = (types: CharacterTypeMap, key: string) => types.get(key)?.label ?? key.replace(/_/g, ' ').replace(/^\w/, (letter) => letter.toUpperCase());
 const displayValue = (value: string | number | null) => value === null || value === '' ? 'Not specified' : String(value);
 
 /** Split a comma or newline separated tag draft into unique, trimmed tags. */
@@ -216,6 +249,87 @@ function ProfileField({ field, label, multiline = false, selected, isEditingProf
     return <label className={multiline ? 'col-span-2 block' : 'block'}><span className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wide text-zinc-600">{label}</span>{multiline ? <textarea value={profileForm[field]} placeholder={PROFILE_PLACEHOLDERS[field]} onChange={(event) => onChange(field, event.target.value)} className={`${inputClass} min-h-18 resize-y`} /> : <input placeholder={PROFILE_PLACEHOLDERS[field]} type={field === 'age' ? 'number' : 'text'} min={field === 'age' ? 0 : undefined} step={field === 'age' ? 1 : undefined} value={profileForm[field]} onChange={(event) => onChange(field, event.target.value)} className={`${inputClass} ${field === 'age' ? 'appearance-textfield [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none' : ''}`} />}</label>;
   }
   return <div className={multiline ? 'col-span-2' : ''}><dt className="flex items-center gap-1 text-zinc-600">{label}<span className={`border px-1 text-[9px] font-semibold uppercase ${manual ? 'border-violet-400/30 text-violet-300' : 'border-zinc-700 text-zinc-500'}`}>{manual ? 'Manual' : 'From script'}</span></dt><dd className="mt-1 text-zinc-300">{displayValue(value as string | number | null)}</dd>{manual && <button type="button" onClick={() => onReset(field)} disabled={isSavingProfile} className="mt-1 inline-flex items-center gap-1 text-[10px] text-zinc-500 hover:text-zinc-200"><RotateCcw className="h-3 w-3" />Reset to script</button>}</div>;
+}
+
+interface TextFactProps {
+  label: string;
+  value: string | null;
+  manual: boolean;
+  isEditing: boolean;
+  draft: string;
+  placeholder: string;
+  multiline?: boolean;
+  /** Hide the read-only row when there is no value yet. */
+  hideWhenEmpty?: boolean;
+  busy: boolean;
+  onChange: (value: string) => void;
+  onReset: () => void;
+}
+
+/** A voice or type-detail field: read-only with its source, or an input while editing. */
+function TextFact({ label, value, manual, isEditing, draft, placeholder, multiline = false, hideWhenEmpty = true, busy, onChange, onReset }: TextFactProps) {
+  if (!isEditing && hideWhenEmpty && !value) return null;
+  if (isEditing) {
+    const inputClass = "w-full border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-violet-400";
+    return <label className={multiline ? 'col-span-2 block' : 'block'}><span className="mb-1 block text-[10px] uppercase tracking-wide text-zinc-600">{label}</span>{multiline
+      ? <textarea value={draft} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} className={`${inputClass} min-h-16 resize-y`} />
+      : <input value={draft} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} className={inputClass} />}</label>;
+  }
+  return <div className={multiline ? 'col-span-2' : ''}><dt className="flex items-center gap-1 text-zinc-600">{label}{value && <span className={`border px-1 text-[9px] font-semibold uppercase ${manual ? 'border-violet-400/30 text-violet-300' : 'border-zinc-700 text-zinc-500'}`}>{manual ? 'Manual' : 'From script'}</span>}</dt><dd className="mt-1 text-zinc-300">{displayValue(value)}</dd>{manual && <button type="button" onClick={onReset} disabled={busy} className="mt-1 inline-flex items-center gap-1 text-[10px] text-zinc-500 hover:text-zinc-200"><RotateCcw className="h-3 w-3" />Reset to script</button>}</div>;
+}
+
+const SectionHeading = ({ title, hint }: { title: string; hint?: string }) => <p className="col-span-2 -mb-1 mt-1 border-t border-zinc-800 pt-3 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">{title}{hint && <span className="font-normal normal-case tracking-normal text-zinc-600"> · {hint}</span>}</p>;
+
+/** "Narrator · Voice only" or "Spokesperson · Speaks to camera". */
+function PresenceBadge({ character, type }: { character: StudioCharacter; type: CharacterTypeInfo | undefined }) {
+  return <span className="inline-flex flex-wrap items-center gap-1">
+    <span className="border border-zinc-700 px-1.5 py-px text-[10px] font-semibold text-zinc-300">{type?.label ?? character.characterType}</span>
+    {character.onCamera
+      ? type?.addressesCamera && <span className="inline-flex items-center gap-1 border border-sky-400/30 px-1.5 py-px text-[10px] font-semibold text-sky-300"><Video className="h-3 w-3" />Speaks to camera</span>
+      : <span className="inline-flex items-center gap-1 border border-amber-400/30 px-1.5 py-px text-[10px] font-semibold text-amber-300"><Mic className="h-3 w-3" />Voice only</span>}
+  </span>;
+}
+
+interface RoleEditorProps {
+  draft: RoleDraft;
+  types: CharacterTypeMap;
+  offered: string[];
+  manual: string[];
+  onChange: (draft: RoleDraft) => void;
+}
+
+/** Character type and whether the character is seen, while editing the profile. */
+function RoleEditor({ draft, types, offered, manual, onChange }: RoleEditorProps) {
+  const options = offered.includes(draft.characterType) ? offered : [draft.characterType, ...offered];
+  const type = types.get(draft.characterType);
+  const typeDefault = type?.presence !== 'voice_only';
+  return <div className="mb-3 space-y-2 border border-zinc-800 bg-zinc-900/40 p-3">
+    <label className="block"><span className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wide text-zinc-600">Character type{manual.includes('character_type') && <span className="normal-case tracking-normal text-violet-300">Manual</span>}</span>
+      <select value={draft.characterType} onChange={(event) => {
+        const next = types.get(event.target.value);
+        // A new type brings its own presence; the checkbox can still override it.
+        onChange({ ...draft, characterType: event.target.value, onCamera: next?.presence !== 'voice_only' });
+      }} className="w-full border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-200 outline-none focus:border-violet-400">
+        {options.map((key) => <option key={key} value={key}>{typeLabel(types, key)}{types.get(key)?.presence === 'voice_only' ? ' (voice only)' : ''}</option>)}
+      </select></label>
+    {type?.description && <p className="text-[11px] leading-relaxed text-zinc-500">{type.description}</p>}
+    <label className="flex items-start gap-2 text-xs text-zinc-300">
+      <input type="checkbox" checked={draft.onCamera} onChange={(event) => onChange({ ...draft, onCamera: event.target.checked })} className="mt-0.5 accent-violet-500" />
+      <span>Appears on screen<span className="block text-[11px] leading-relaxed text-zinc-500">{draft.onCamera
+        ? 'Gets a character sheet and is drawn in storyboard frames.'
+        : 'Heard only: no character sheet, and storyboards never draw them.'}{draft.onCamera !== typeDefault ? ` Overrides the ${typeLabel(types, draft.characterType)} default.` : ''}</span></span>
+    </label>
+  </div>;
+}
+
+/** Shown on the sheet tab for narrators and other voice-only characters. */
+function VoiceOnlySheetNotice({ character, type }: { character: StudioCharacter; type: CharacterTypeInfo | undefined }) {
+  return <div className="flex flex-col items-center border border-dashed border-amber-400/25 px-4 py-6 text-center">
+    <Mic className="mb-2 h-5 w-5 text-amber-300" />
+    <p className="text-xs font-semibold text-zinc-200">{character.name} is voice only</p>
+    <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">{type?.label ?? 'This character'} is heard, never seen, so there is no character sheet and storyboards never draw them. Describe how they sound in the profile instead.</p>
+    <p className="mt-2 text-[11px] leading-relaxed text-zinc-500">On screen after all? Edit the profile and tick <span className="text-zinc-300">Appears on screen</span>, or change the type.</p>
+  </div>;
 }
 
 interface CharacterSheetPanelProps {
@@ -279,13 +393,21 @@ const TIER_GROUPS: { key: ObjectTier | 'unranked'; label: string; hint: string }
 
 const initials = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2).map((word) => word[0]).join('').toUpperCase() || '?';
 const portraitUrl = (character: StudioCharacter) => character.sheet?.faceUrl ?? character.primaryImageUrl;
-const missingFields = (character: StudioCharacter) => CORE_FIELDS.filter((field) => character[field] === null || character[field] === '');
+const missingFields = (character: StudioCharacter) => (character.onCamera ? CORE_FIELDS : VOICE_ONLY_CORE_FIELDS)
+  .filter((field) => character[field] === null || character[field] === '');
 /** Profile lines for the preview modal, skipping anything not known yet. */
-const characterFacts = (character: StudioCharacter): CharacterFact[] => (
+const characterFacts = (character: StudioCharacter, type: CharacterTypeInfo | undefined): CharacterFact[] => (
   [
-    ['Role', character.role], ['Age', character.age === null ? null : String(character.age)], ['Gender', character.gender], ['Race', character.race],
-    ...PHYSICAL_FIELDS.map((field) => [FIELD_LABELS[field], character[field]] as const),
-    ['Appearance', character.appearance], ['Personality', character.personality],
+    ['Type', `${type?.label ?? character.characterType}${character.onCamera ? '' : ' (voice only)'}`],
+    ['Role', character.role], ['Age', character.age === null ? null : String(character.age)], ['Gender', character.gender],
+    ...(character.onCamera ? [
+      ['Race', character.race] as const,
+      ...PHYSICAL_FIELDS.map((field) => [FIELD_LABELS[field], character[field]] as const),
+      ['Appearance', character.appearance] as const,
+    ] : []),
+    ['Personality', character.personality],
+    ...(type?.detailFields ?? []).map((field) => [field.label, character.typeDetails[field.key] ?? null] as const),
+    ...VOICE_FIELDS.map((field) => [`Voice: ${VOICE_LABELS[field].toLowerCase()}`, character.voice[field]] as const),
   ] as const
 ).flatMap(([label, value]) => value ? [{ label, value: String(value) }] : []);
 const quickFacts = (character: StudioCharacter) => [character.age === null ? null : `${character.age} yrs`, character.gender, character.race].filter(Boolean).join(' · ');
@@ -327,14 +449,17 @@ function CastCard({ character, selected, onSelect }: CastItemProps) {
   </button>;
 }
 
-/** Compact row for minor characters, so brief roles don't take as much room as major ones. */
-function CastRow({ character, selected, onSelect }: CastItemProps) {
+/** Compact row for minor and voice-only characters, so brief roles don't take as much room as major ones. */
+function CastRow({ character, selected, onSelect, typeName }: CastItemProps & { typeName?: string }) {
   const { accent } = characterTheme(character);
+  const subtitle = character.onCamera ? character.role : [typeName, character.role].filter(Boolean).join(' · ') || null;
   return <button type="button" onClick={onSelect} aria-pressed={selected} className={`flex items-center gap-3 border bg-zinc-900/40 p-2 text-left transition hover:bg-zinc-900 ${selected ? '' : 'border-zinc-800 hover:border-zinc-600'}`} style={selected ? { borderColor: accent, boxShadow: `0 0 0 1px ${accent}` } : undefined}>
-    <Portrait character={character} className="h-12 w-10 shrink-0" initialsClassName="text-sm" sizes="40px" />
+    {character.onCamera
+      ? <Portrait character={character} className="h-12 w-10 shrink-0" initialsClassName="text-sm" sizes="40px" />
+      : <span className="flex h-12 w-10 shrink-0 items-center justify-center bg-zinc-900" style={{ color: accent }} title="Voice only"><Mic className="h-4 w-4" /></span>}
     <div className="min-w-0 flex-1">
       <span className="block truncate text-sm font-semibold" style={{ color: accent }}>{character.name}</span>
-      <span className={`block truncate text-[11px] ${character.role ? 'text-zinc-500' : 'italic text-zinc-600'}`}>{character.role ?? 'No role yet'}</span>
+      <span className={`block truncate text-[11px] ${subtitle ? 'text-zinc-500' : 'italic text-zinc-600'}`}>{subtitle ?? 'No role yet'}</span>
     </div>
     <div className="flex shrink-0 items-center gap-2.5 font-mono text-[11px] text-zinc-500">
       <span className="inline-flex items-center gap-1" title="Scenes"><Clapperboard className="h-3 w-3" />{character.ranking?.scene_count ?? 0}</span>
@@ -362,6 +487,10 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
   const [generatingModel, setGeneratingModel] = useState<string | null>(null);
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [profileForm, setProfileForm] = useState<ProfileForm>(EMPTY_FORM);
+  const [roleDraft, setRoleDraft] = useState<RoleDraft>(EMPTY_ROLE_DRAFT);
+  const [characterTypes, setCharacterTypes] = useState<CharacterTypeMap>(() => new Map());
+  /** Character types the project's type offers, in display order. */
+  const [offeredTypes, setOfferedTypes] = useState<string[]>([]);
   const [tagDraft, setTagDraft] = useState('');
   const [scriptPreview, setScriptPreview] = useState<CharacterScriptSyncPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -373,9 +502,12 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
     setError(null);
     try {
       const { data: rows, error: charactersError } = await supabase.from('characters')
-        .select('id, name, character_type, role, age, gender, race, appearance, personality, physical, tags, primary_asset_id, metadata')
+        .select('id, name, character_type, on_camera, role, age, gender, race, appearance, personality, physical, voice, type_details, tags, primary_asset_id, metadata')
         .eq('project_id', projectId).eq('metadata->>source', 'script').order('name');
       if (charactersError) throw charactersError;
+      // Without the type list every character is treated as on camera, as before types had a presence.
+      const typeConfig = await loadCharacterTypes(projectId).catch(() => ({ types: new Map() as CharacterTypeMap, offered: [] as string[] }));
+      setCharacterTypes(typeConfig.types); setOfferedTypes(typeConfig.offered);
       const characterRows = rows ?? [];
       const primaryIds = characterRows.map((row) => row.primary_asset_id as string | null).filter(Boolean) as string[];
       const { data: primaryAssets, error: primaryError } = primaryIds.length
@@ -398,7 +530,14 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
         const metadata = (row.metadata ?? {}) as Record<string, unknown>;
         const overrides = (metadata.manual_overrides ?? {}) as Record<string, unknown>;
         const effective = <T,>(field: EditableField, scriptValue: T): T => overrides[field] === undefined ? scriptValue : overrides[field] as T;
-        const manualOverrideFields = EDITABLE_FIELDS.filter((field) => overrides[field] !== undefined);
+        const manualOverrideFields = Object.keys(overrides).filter((field) => overrides[field] !== undefined && overrides[field] !== null);
+        const text = (value: unknown) => typeof value === 'string' && value.trim() ? value.trim() : null;
+        const scriptVoice = (row.voice ?? {}) as Record<string, unknown>;
+        const voice = Object.fromEntries(VOICE_FIELDS.map((field) => [field, text(overrides[`voice.${field}`]) ?? text(scriptVoice[field])])) as Record<VoiceField, string | null>;
+        const typeDetails: Record<string, string> = {};
+        for (const [key, value] of Object.entries((row.type_details ?? {}) as Record<string, unknown>)) { const known = text(value); if (known) typeDetails[key] = known; }
+        for (const [key, value] of Object.entries(overrides)) { const known = text(value); if (key.startsWith('type_details.') && known) typeDetails[key.slice('type_details.'.length)] = known; }
+        const presenceRow = { character_type: row.character_type as string | null, on_camera: row.on_camera as boolean | null, metadata };
         const scriptPhysical = (row.physical ?? {}) as Partial<Record<PhysicalField, unknown>>;
         const physical = Object.fromEntries(PHYSICAL_FIELDS.map((field) => {
           const raw = scriptPhysical[field];
@@ -409,7 +548,8 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
           return url ? [{ assetId: link.asset_id as string, url, createdAt: (link.created_at as string | null) ?? null }] : [];
         });
         return {
-          id: row.id as string, name: row.name as string, characterType: (row.character_type as string | null) || 'supporting',
+          id: row.id as string, name: row.name as string, characterType: effectiveCharacterType(presenceRow),
+          onCamera: isCharacterOnCamera(presenceRow, typeConfig.types), voice, typeDetails,
           role: effective('role', row.role as string | null), age: effective('age', row.age as number | null), gender: effective('gender', row.gender as string | null),
           race: effective('race', row.race as string | null), appearance: effective('appearance', row.appearance as string | null), personality: effective('personality', row.personality as string | null),
           ...physical,
@@ -448,15 +588,15 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
   const selected = characters.find((character) => character.id === selectedId) ?? null;
   const selectCharacter = (character: StudioCharacter) => {
     setSelectedId(character.id);
-    setIsProfileVisible(true); setIsEditingProfile(false); setScriptPreview(null); setProfileForm(formFromCharacter(character)); setTagDraft(character.tags.join(', ')); onSelect(character as unknown as Record<string, unknown>);
+    setIsProfileVisible(true); setIsEditingProfile(false); setScriptPreview(null); setProfileForm(formFromCharacter(character)); setRoleDraft(roleDraftFrom(character)); setTagDraft(character.tags.join(', ')); onSelect(character as unknown as Record<string, unknown>);
   };
-  const beginProfileEdit = () => { if (selected) { setPanelTab('profile'); setProfileForm(formFromCharacter(selected)); setTagDraft(selected.tags.join(', ')); setIsEditingProfile(true); setNotice(null); } };
+  const beginProfileEdit = () => { if (selected) { setPanelTab('profile'); setProfileForm(formFromCharacter(selected)); setRoleDraft(roleDraftFrom(selected)); setTagDraft(selected.tags.join(', ')); setIsEditingProfile(true); setNotice(null); } };
   const updateForm = (field: EditableField, value: string) => setProfileForm((current) => ({ ...current, [field]: value }));
 
   const saveProfile = async () => {
     if (!projectId || !selected) return;
     const update: CharacterProfileUpdate = {};
-    const clearFields: EditableField[] = [];
+    const clearFields: ProfileOverrideKey[] = [];
     for (const field of EDITABLE_FIELDS) {
       const current = field === 'age' ? (selected.age === null ? '' : String(selected.age)) : String(selected[field] ?? '');
       const next = profileForm[field].trim();
@@ -474,6 +614,36 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
         update.age = age;
       } else update[field] = next;
     }
+    // Type and presence: the backend stores no override when a choice matches the script or the type.
+    const typeChanged = roleDraft.characterType !== selected.characterType;
+    if (typeChanged) update.character_type = roleDraft.characterType;
+    if (typeChanged || roleDraft.onCamera !== selected.onCamera) update.on_camera = roleDraft.onCamera;
+    // Voice and type details follow the same rule as the fields above.
+    const textChanges = (
+      entries: { key: string; label: string; current: string | null; next: string }[],
+      prefix: 'voice.' | 'type_details.',
+    ): Record<string, string> | null => {
+      const changed: Record<string, string> = {};
+      for (const { key, label, current, next } of entries) {
+        const value = next.trim();
+        if (value === (current ?? '')) continue;
+        if (!value) {
+          if (selected.manualOverrideFields.includes(`${prefix}${key}`)) { clearFields.push(`${prefix}${key}` as ProfileOverrideKey); continue; }
+          setError(`${label} comes from the script. Replace it with another value, or leave it as it is.`);
+          return null;
+        }
+        changed[key] = value;
+      }
+      return changed;
+    };
+    const voiceChanges = textChanges(VOICE_FIELDS.map((field) => ({ key: field, label: VOICE_LABELS[field], current: selected.voice[field], next: roleDraft.voice[field] })), 'voice.');
+    if (!voiceChanges) return;
+    if (Object.keys(voiceChanges).length) update.voice = voiceChanges;
+    const detailChanges = textChanges((characterTypes.get(roleDraft.characterType)?.detailFields ?? []).map((field) => ({
+      key: field.key, label: field.label, current: selected.typeDetails[field.key] ?? null, next: roleDraft.details[field.key] ?? '',
+    })), 'type_details.');
+    if (!detailChanges) return;
+    if (Object.keys(detailChanges).length) update.type_details = detailChanges;
     if (clearFields.length) update.clear_fields = clearFields;
     if (Object.keys(update).length === 0) {
       if (!tagsDiffer(selected.tags, tagDraft)) { setIsEditingProfile(false); return; }
@@ -502,12 +672,12 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
     finally { setIsSavingProfile(false); }
   };
 
-  const resetField = async (field: EditableField) => {
+  const resetField = async (field: ProfileOverrideKey, label: string) => {
     if (!projectId || !selected) return;
     setIsSavingProfile(true); setError(null);
     try {
       await updateCharacterProfile(projectId, selected.id, { clear_fields: [field] });
-      await loadCharacters(); setNotice(`${FIELD_LABELS[field]} restored to its script value.`);
+      await loadCharacters(); setNotice(`${label} restored to its script value.`);
     } catch (resetError) { setError(resetError instanceof Error ? resetError.message : 'Failed to reset profile field.'); }
     finally { setIsSavingProfile(false); }
   };
@@ -586,7 +756,7 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
     {isLoading ? <div className="flex min-h-72 items-center justify-center gap-3 text-sm text-zinc-500"><RefreshCw className="h-5 w-5 animate-spin" />Loading script characters...</div> : characters.length === 0 ? <div className="flex min-h-72 flex-col items-center justify-center border border-dashed border-zinc-800 px-6 text-center"><FileText className="mb-3 h-7 w-7 text-zinc-600" /><h2 className="text-sm font-semibold text-zinc-300">No extracted characters yet</h2><p className="mt-1 max-w-sm text-sm text-zinc-500">Extract named characters and supported metadata from the script already saved in this project.</p><button type="button" onClick={() => void extractCharacters()} disabled={isExtracting} className="mt-4 inline-flex h-9 items-center justify-center gap-2 bg-violet-600 px-3 text-xs font-semibold text-white hover:bg-violet-500 disabled:opacity-50">{isExtracting ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Users className="h-3.5 w-3.5" />}{isExtracting ? 'Extracting characters...' : 'Extract from current script'}</button></div> : <div className={`grid gap-6 ${isProfileVisible ? 'xl:grid-cols-[minmax(0,1fr)_26rem]' : ''}`}>
       <div className="space-y-7">
         {TIER_GROUPS.map((group) => {
-          const members = characters.filter((character) => (character.ranking?.tier ?? 'unranked') === group.key);
+          const members = characters.filter((character) => character.onCamera && (character.ranking?.tier ?? 'unranked') === group.key);
           if (members.length === 0) return null;
           const compact = group.key === 'minor' || group.key === 'unranked';
           return <section key={group.key}>
@@ -600,45 +770,83 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
               : <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5">{members.map((character) => <CastCard key={character.id} character={character} selected={character.id === selectedId} onSelect={() => selectCharacter(character)} />)}</div>}
           </section>;
         })}
+        {(() => {
+          const voices = characters.filter((character) => !character.onCamera);
+          if (voices.length === 0) return null;
+          return <section>
+            <div className="mb-3 flex items-baseline gap-2">
+              <h2 className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-zinc-300"><Mic className="h-3.5 w-3.5 text-amber-300" />Voices</h2>
+              <span className="font-mono text-xs text-zinc-500">{voices.length}</span>
+              <span className="text-xs text-zinc-600">· Heard, never seen: no character sheet, never drawn in storyboards</span>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2 2xl:grid-cols-3">{voices.map((character) => <CastRow key={character.id} character={character} typeName={typeLabel(characterTypes, character.characterType)} selected={character.id === selectedId} onSelect={() => selectCharacter(character)} />)}</div>
+          </section>;
+        })()}
       </div>
       {isProfileVisible && <aside className="self-start border border-zinc-800 bg-zinc-950 xl:sticky xl:top-0 xl:max-h-[calc(100vh-9rem)] xl:overflow-y-auto">{selected ? (() => {
         const theme = characterTheme(selected);
         const missing = missingFields(selected);
-        const fieldProps = { selected, isEditingProfile, profileForm, isSavingProfile, onChange: updateForm, onReset: (field: EditableField) => void resetField(field) };
+        const fieldProps = { selected, isEditingProfile, profileForm, isSavingProfile, onChange: updateForm, onReset: (field: EditableField) => void resetField(field, FIELD_LABELS[field]) };
+        const selectedType = characterTypes.get(selected.characterType);
+        // While editing, the form follows the draft type and presence so the right fields appear.
+        const shownType = isEditingProfile ? characterTypes.get(roleDraft.characterType) : selectedType;
+        const shownOnCamera = isEditingProfile ? roleDraft.onCamera : selected.onCamera;
+        const detailFields: CharacterDetailField[] = shownType?.detailFields ?? [];
+        const hasVoice = VOICE_FIELDS.some((field) => selected.voice[field]);
+        const syncable = selected.manualOverrideFields.some((field) => (EDITABLE_FIELDS as string[]).includes(field));
+        const textFact = (key: ProfileOverrideKey, label: string, value: string | null, draft: string, placeholder: string, onChange: (value: string) => void, multiline = false) => (
+          <TextFact key={key} label={label} value={value} manual={selected.manualOverrideFields.includes(key)} isEditing={isEditingProfile} draft={draft} placeholder={placeholder} multiline={multiline}
+            busy={isSavingProfile} onChange={onChange} onReset={() => void resetField(key, label)} />
+        );
         return <div>
           <div className="flex items-start gap-3 border-b border-zinc-800 p-4">
-            <Portrait character={selected} className="h-20 w-16 shrink-0 border border-zinc-800" initialsClassName="text-xl" sizes="64px" />
+            {selected.onCamera
+              ? <Portrait character={selected} className="h-20 w-16 shrink-0 border border-zinc-800" initialsClassName="text-xl" sizes="64px" />
+              : <span className="flex h-20 w-16 shrink-0 items-center justify-center border border-zinc-800 bg-zinc-900" style={{ color: theme.accent }} title="Voice only"><Mic className="h-6 w-6" /></span>}
             <div className="min-w-0 flex-1">
               <h2 className="truncate text-base font-bold" style={{ color: theme.accent }}>{selected.name}</h2>
               <p className={`truncate text-sm ${selected.role ? 'text-zinc-300' : 'italic text-zinc-600'}`}>{selected.role ?? 'Role not set'}</p>
-              <div className="mt-1.5 flex items-center gap-2 text-[11px] text-zinc-500"><TierBadge ranking={selected.ranking} emptyLabel="Unranked" />{selected.ranking && <span className="font-mono">#{selected.ranking.rank}</span>}</div>
+              <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-zinc-500"><PresenceBadge character={selected} type={selectedType} />{selected.onCamera && <><TierBadge ranking={selected.ranking} emptyLabel="Unranked" />{selected.ranking && <span className="font-mono">#{selected.ranking.rank}</span>}</>}</div>
               <TagBadges character={selected} />
-              <button type="button" onClick={() => openPreview()} className="mt-2 inline-flex h-7 items-center gap-1.5 border px-2 text-[11px] font-semibold hover:bg-zinc-900" style={{ borderColor: theme.border, color: theme.accent }} title={selected.sheet || selected.sheetVersions.length ? 'Open the character sheet' : 'No character sheet yet'}><Expand className="h-3.5 w-3.5" />Preview character</button>
+              <button type="button" onClick={() => openPreview()} className="mt-2 inline-flex h-7 items-center gap-1.5 border px-2 text-[11px] font-semibold hover:bg-zinc-900" style={{ borderColor: theme.border, color: theme.accent }} title={!selected.onCamera ? 'Voice only: profile and voice' : selected.sheet || selected.sheetVersions.length ? 'Open the character sheet' : 'No character sheet yet'}><Expand className="h-3.5 w-3.5" />Preview character</button>
             </div>
             <button type="button" onClick={beginProfileEdit} className="inline-flex h-8 w-8 shrink-0 items-center justify-center border border-zinc-700 text-zinc-300 hover:bg-zinc-900" title="Edit character profile"><Pencil className="h-3.5 w-3.5" /></button>
           </div>
           <div role="tablist" className="grid grid-cols-2 border-b border-zinc-800 text-xs font-semibold">
             {(['profile', 'sheet'] as PanelTab[]).map((tab) => <button key={tab} type="button" role="tab" aria-selected={panelTab === tab} onClick={() => setPanelTab(tab)} className={`-mb-px border-b-2 py-2.5 ${panelTab === tab ? 'text-zinc-100' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`} style={panelTab === tab ? { borderColor: theme.accent } : undefined}>
-              {tab === 'profile' ? 'Profile' : <>Character sheet {selected.sheet ? <CheckCircle2 className="ml-1 inline h-3 w-3 text-emerald-400" /> : <span className="ml-1 font-normal text-zinc-500">none</span>}</>}
+              {tab === 'profile' ? 'Profile' : <>Character sheet {!selected.onCamera ? <span className="ml-1 font-normal text-amber-300/80">voice only</span> : selected.sheet ? <CheckCircle2 className="ml-1 inline h-3 w-3 text-emerald-400" /> : <span className="ml-1 font-normal text-zinc-500">none</span>}</>}
             </button>)}
           </div>
           <div className="p-4">{panelTab === 'profile' ? <>
             {!isEditingProfile && missing.length > 0 && <button type="button" onClick={beginProfileEdit} className="mb-4 flex w-full items-center justify-between gap-3 border border-amber-400/25 bg-amber-400/5 px-3 py-2 text-left text-xs text-amber-200 hover:bg-amber-400/10"><span>{missing.length} detail{missing.length === 1 ? ' isn’t' : 's aren’t'} in the script yet</span><span className="shrink-0 font-semibold">Fill in</span></button>}
             {isEditingProfile && <label className="mb-3 block"><span className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wide text-zinc-600">Tags / aliases<span className="normal-case tracking-normal text-zinc-600">Comma separated</span></span><input value={tagDraft} onChange={(event) => setTagDraft(event.target.value)} placeholder="VOSS, Detective" className="w-full border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-200 outline-none focus:border-violet-400" /></label>}
+            {isEditingProfile && <RoleEditor draft={roleDraft} types={characterTypes} offered={offeredTypes} manual={selected.manualOverrideFields} onChange={setRoleDraft} />}
             <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-xs">
               <ProfileField field="role" label="Role" {...fieldProps} />
               <ProfileField field="age" label="Age" {...fieldProps} />
               <ProfileField field="gender" label="Gender" {...fieldProps} />
-              <ProfileField field="race" label="Race" {...fieldProps} />
-              {(isEditingProfile || PHYSICAL_FIELDS.some((field) => selected[field])) && <p className="col-span-2 -mb-1 mt-1 border-t border-zinc-800 pt-3 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Look &amp; build <span className="font-normal normal-case tracking-normal text-zinc-600">· stays the same in every shot</span></p>}
-              {PHYSICAL_FIELDS.map((field) => <ProfileField key={field} field={field} label={FIELD_LABELS[field]} multiline={MULTILINE_FIELDS.includes(field)} {...fieldProps} />)}
-              <ProfileField field="appearance" label={FIELD_LABELS.appearance} multiline {...fieldProps} />
+              {shownOnCamera && <>
+                <ProfileField field="race" label="Race" {...fieldProps} />
+                {(isEditingProfile || PHYSICAL_FIELDS.some((field) => selected[field])) && <SectionHeading title="Look & build" hint="stays the same in every shot" />}
+                {PHYSICAL_FIELDS.map((field) => <ProfileField key={field} field={field} label={FIELD_LABELS[field]} multiline={MULTILINE_FIELDS.includes(field)} {...fieldProps} />)}
+                <ProfileField field="appearance" label={FIELD_LABELS.appearance} multiline {...fieldProps} />
+              </>}
+              {detailFields.length > 0 && (isEditingProfile || detailFields.some((field) => selected.typeDetails[field.key])) && <SectionHeading title={`${shownType?.label ?? 'Type'} details`} />}
+              {detailFields.map((field) => textFact(
+                `type_details.${field.key}`, field.label, selected.typeDetails[field.key] ?? null, roleDraft.details[field.key] ?? '', field.hint,
+                (value) => setRoleDraft((draft) => ({ ...draft, details: { ...draft.details, [field.key]: value } })),
+              ))}
+              {(isEditingProfile || hasVoice || !shownOnCamera) && <SectionHeading title="Voice" hint={shownOnCamera ? 'how they sound' : 'all the audience gets of them'} />}
+              {VOICE_FIELDS.map((field) => (isEditingProfile || selected.voice[field] || !shownOnCamera) && textFact(
+                `voice.${field}`, VOICE_LABELS[field], selected.voice[field], roleDraft.voice[field], VOICE_PLACEHOLDERS[field],
+                (value) => setRoleDraft((draft) => ({ ...draft, voice: { ...draft.voice, [field]: value } })), field === 'delivery',
+              ))}
               <ProfileField field="personality" label="Personality" multiline {...fieldProps} />
             </dl>
             {isEditingProfile && <div className="mt-3 flex gap-2"><button type="button" onClick={() => void saveProfile()} disabled={isSavingProfile} className="inline-flex h-9 flex-1 items-center justify-center gap-2 bg-violet-600 text-xs font-semibold text-white hover:bg-violet-500 disabled:opacity-50"><Save className="h-3.5 w-3.5" />{isSavingProfile ? 'Saving...' : 'Save profile'}</button><button type="button" onClick={() => setIsEditingProfile(false)} className="h-9 border border-zinc-700 px-3 text-xs text-zinc-300 hover:bg-zinc-900">Cancel</button></div>}
-            <div className="mt-4 border-t border-zinc-800 pt-1"><CharacterImportance ranking={selected.ranking} /></div>
-            <div className="mt-4 border-t border-zinc-800 pt-4"><button type="button" onClick={() => void openScriptPreview()} disabled={isSyncingScript || selected.manualOverrideFields.length === 0} title={selected.manualOverrideFields.length ? 'Preview a controlled update to the first character appearance' : 'Save a manual profile value before updating the script'} className="flex h-9 w-full items-center justify-center gap-2 border border-zinc-700 text-xs font-semibold text-zinc-200 hover:bg-zinc-900 disabled:cursor-not-allowed disabled:opacity-50"><FileText className="h-3.5 w-3.5" />{isSyncingScript ? 'Preparing script update...' : 'Update script'}</button></div>
-          </> : <>
+            {selected.onCamera && <div className="mt-4 border-t border-zinc-800 pt-1"><CharacterImportance ranking={selected.ranking} /></div>}
+            {selected.onCamera && <div className="mt-4 border-t border-zinc-800 pt-4"><button type="button" onClick={() => void openScriptPreview()} disabled={isSyncingScript || !syncable} title={syncable ? 'Preview a controlled update to the first character appearance' : 'Save a manual profile value before updating the script'} className="flex h-9 w-full items-center justify-center gap-2 border border-zinc-700 text-xs font-semibold text-zinc-200 hover:bg-zinc-900 disabled:cursor-not-allowed disabled:opacity-50"><FileText className="h-3.5 w-3.5" />{isSyncingScript ? 'Preparing script update...' : 'Update script'}</button></div>}
+          </> : !selected.onCamera ? <VoiceOnlySheetNotice character={selected} type={selectedType} /> : <>
             {sheetResult?.characterId === selected.id && <SheetResultCard result={sheetResult} characterName={selected.name} onPreview={openPreview} onDismiss={() => setSheetResult(null)} />}
             <CharacterSheetPanel character={selected} busy={isGenerating || approvingId !== null} approvingId={approvingId} onApprove={(assetId) => void approveSheet(assetId)} onPreview={openPreview} onDownload={() => void downloadSheet(selected)} />
             {isGenerating ? <div className="border border-violet-500/30 bg-violet-500/5 p-3" role="status" aria-live="polite"><div className="mb-1.5 flex items-center justify-between text-xs"><span className="flex items-center gap-2 text-zinc-200"><RefreshCw className="h-3.5 w-3.5 animate-spin text-violet-300" />Generating character sheet</span><span className="font-mono text-violet-300">{formatElapsed(elapsedSeconds)}</span></div><div className="h-1.5 overflow-hidden bg-zinc-800"><div className="h-full bg-violet-500 transition-[width] duration-500" style={{ width: `${generationProgress}%` }} /></div><p className="mt-2 text-[10px] leading-relaxed text-zinc-500">{generatingModel && <span className="font-mono text-zinc-400">{generatingModel}</span>}{generatingModel ? ' · ' : ''}Each result is checked for the face close-up and all four views and redrawn if one is missing (up to 3 tries), so this can take a few minutes. The result appears here.</p></div>
@@ -653,17 +861,19 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
       subtitle={selected.role}
       accent={characterTheme(selected).accent}
       badges={[
-        ...(selected.ranking ? [TIER_GROUPS.find((group) => group.key === selected.ranking?.tier)?.label ?? selected.ranking.tier] : []),
+        typeLabel(characterTypes, selected.characterType),
+        ...(!selected.onCamera ? ['Voice only'] : []),
+        ...(selected.onCamera && selected.ranking ? [TIER_GROUPS.find((group) => group.key === selected.ranking?.tier)?.label ?? selected.ranking.tier] : []),
         ...(selected.sheet ? ['Used in storyboards'] : []),
       ]}
       sheetUrl={selected.sheet?.url ?? selected.sheetVersions[0]?.url ?? null}
       faceUrl={selected.sheet?.faceUrl}
       review={selected.sheet?.review}
       initialUrl={sheetModal?.initialUrl}
-      facts={characterFacts(selected)}
+      facts={characterFacts(selected, characterTypes.get(selected.characterType))}
       versions={selected.sheetVersions.map((version, index) => ({
         id: version.assetId, url: version.url, label: `v${selected.sheetVersions.length - index}`, active: version.assetId === selected.sheet?.assetId,
       }))}
-      emptyMessage={`Open the Character sheet tab to generate ${selected.name}'s sheet from a prompt or reference images.`}
+      emptyMessage={selected.onCamera ? `Open the Character sheet tab to generate ${selected.name}'s sheet from a prompt or reference images.` : `${selected.name} is voice only, so there is no character sheet.`}
     />}</div>;
 }

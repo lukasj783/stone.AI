@@ -23,9 +23,15 @@ from services.duration_budget import MAX_CLIP_SECONDS, allocate_shot_durations, 
 from services.image_generation_service import generate_provider_images
 from services.project_runtime import load_project_runtime
 from services.project_visual_style import ProjectVisualStyle, apply_visual_style, load_project_visual_style
-from services.script_config import ProjectTypeConfig, load_project_script_context
+from services.script_config import ProjectTypeConfig, character_type_map, load_project_script_context
 from services.character_ranking import rank_characters_from_script
-from services.character_views import effective_character_profile, physical_summary
+from services.character_views import (
+    addresses_camera,
+    effective_character_profile,
+    is_on_camera,
+    physical_summary,
+    role_summary,
+)
 from services.environment_ranking import rank_environments_from_script
 from services.object_ranking import rank_objects_from_script
 from services.storyboard_models import DEFAULT_STORYBOARD_MODEL, TEXT_ONLY_FALLBACK_MODEL, storyboard_model
@@ -112,8 +118,10 @@ def _scene_context(
         view_summary = ", ".join(f"{v}: {url}" for v, url in views.items() if url)
         tags = _clean_labels(c.get("tags") or [])
         tag_line = f"\n  Tags: {', '.join(tags)}" if tags else ""
+        on_screen_role = f"  On-screen role: {c['role_summary']}\n" if c.get("role_summary") else ""
         char_lines.append(
             f"- {c_name} (Role: {c.get('role') or 'N/A'}, Age: {c.get('age') or 'N/A'}, Gender: {c.get('gender') or 'N/A'}, Race: {c.get('race') or 'N/A'})\n"
+            f"{on_screen_role}"
             f"  Physical: {physical_summary(c) or 'N/A'}\n"
             f"  Appearance: {c.get('appearance') or 'N/A'}{tag_line}\n"
             f"  Visual Keyframe Views: {view_summary or 'None'}"
@@ -223,10 +231,47 @@ def _has_adjacent_action(
     return False
 
 
+@dataclass(frozen=True)
+class SpeakerCast:
+    """How speakers appear on screen, by casefolded name or alias.
+
+    off_camera: voice-only speakers (narrators); their lines never get a speaker frame.
+    to_camera:  speakers who talk straight to the lens (presenters, hosts, spokespeople).
+    """
+
+    off_camera: frozenset[str] = frozenset()
+    to_camera: frozenset[str] = frozenset()
+
+
+def _speaker_key(label: object) -> str:
+    return " ".join(str(label or "").split()).casefold()
+
+
+def speaker_cast(characters: list[dict[str, Any]], character_types: dict[str, Any]) -> SpeakerCast:
+    off_camera: set[str] = set()
+    to_camera: set[str] = set()
+    for character in characters:
+        keys = {_speaker_key(label) for label in _character_aliases(character)} - {""}
+        if not is_on_camera(character, character_types):
+            off_camera |= keys
+        elif addresses_camera(character, character_types):
+            to_camera |= keys
+    return SpeakerCast(off_camera=frozenset(off_camera), to_camera=frozenset(to_camera - off_camera))
+
+
+def _load_speaker_cast(project_id: str) -> SpeakerCast:
+    supabase = require_supabase_client()
+    rows = _rows(supabase.table("characters").select(
+        "name, tags, character_type, on_camera, metadata"
+    ).eq("project_id", project_id).execute())
+    return speaker_cast(rows, character_type_map())
+
+
 def _build_scene_beats(
     blocks: list[dict[str, Any]],
     include_speaker_frames: bool = True,
     vocabulary: StoryboardVocabulary = SCREENPLAY_VOCABULARY,
+    cast: SpeakerCast | None = None,
 ) -> list[dict[str, Any]]:
     """Map script blocks to storyboard beats: one visual block -> exactly one beat.
 
@@ -234,8 +279,10 @@ def _build_scene_beats(
     speaker-presence beat when no visual block covers that moment, which keeps
     talking-head scenes storyboarded without leaking speech into prompts. Units with
     no visual blocks at all (a narration-only section) fall back to one beat per
-    narration line, illustrating what it describes.
+    narration line, illustrating what it describes. Voice-only speakers (``cast``) never
+    get a speaker beat; presenters and hosts get one that faces the lens.
     """
+    cast = cast or SpeakerCast()
     beats: list[dict[str, Any]] = []
     for index, block in enumerate(blocks):
         block_type = _block_type(block)
@@ -256,15 +303,18 @@ def _build_scene_beats(
         if _has_adjacent_action(blocks, index, vocabulary.visual_types):
             continue
         speaker = str(block.get("character_name") or "").strip()
-        if not speaker:
+        if not speaker or _speaker_key(speaker) in cast.off_camera:
             continue
         if beats and beats[-1]["kind"] == "speaker" and beats[-1]["speaker"].casefold() == speaker.casefold():
             continue
+        to_camera = block_type != "interview" and _speaker_key(speaker) in cast.to_camera
+        action = "answers on camera" if block_type == "interview" else "speaks directly to camera" if to_camera else "speaks"
         beats.append({
             "kind": "speaker",
             "block": block,
-            "text": f"{speaker} {'answers on camera' if block_type == 'interview' else 'speaks'}",
+            "text": f"{speaker} {action}",
             "speaker": speaker,
+            "to_camera": to_camera,
             "block_type": block_type,
             "label": vocabulary.label(block_type),
         })
@@ -427,7 +477,11 @@ def _describe_character(character: dict[str, Any], name_override: str | None = N
     if aliases:
         header = f"{header} [also called: {', '.join(aliases)}]"
     details = "; ".join(
-        part for part in (physical_summary(character), str(character.get("appearance") or "").strip()) if part
+        part for part in (
+            str(character.get("role_summary") or "").strip(),
+            physical_summary(character),
+            str(character.get("appearance") or "").strip(),
+        ) if part
     )
     return f"{header}: {details}" if details else header
 
@@ -471,6 +525,9 @@ def _deterministic_shot_plan(beat: dict[str, Any], is_first_action: bool) -> dic
             f"BEAT: {speaker} answers an interview question, seated, looking just off camera "
             "towards an unseen interviewer, mouth open mid-sentence."
             if beat.get("block_type") == "interview"
+            else f"BEAT: {speaker} speaks directly to the camera, eye contact with the lens, "
+            "mouth open mid-sentence."
+            if beat.get("to_camera")
             else f"BEAT: {speaker} is speaking, mouth open, mid-sentence, "
             "facing the camera or their scene partner."
         ),
@@ -1067,13 +1124,15 @@ def _gather_scene_linked_entities(
     """
     supabase = require_supabase_client()
 
-    # 1. Characters
+    # 1. Characters. Voice-only characters (narrators) are heard, never drawn, so they are
+    # left out entirely: the planner never casts them and no shot sends their images.
     characters_out: list[dict[str, Any]] = []
+    character_types = character_type_map()
     chars_res = supabase.table("characters").select(
-        "id, name, role, character_type, age, gender, race, appearance, personality, "
-        "physical, tags, metadata, primary_asset_id"
+        "id, name, role, character_type, on_camera, age, gender, race, appearance, personality, "
+        "physical, type_details, tags, metadata, primary_asset_id"
     ).eq("project_id", project_id).execute()
-    project_characters = _rows(chars_res)
+    project_characters = [c for c in _rows(chars_res) if is_on_camera(c, character_types)]
     if project_characters:
         char_ids = [c["id"] for c in project_characters]
         # The approved model sheet, its face crop and older turnaround keyframes are
@@ -1098,6 +1157,7 @@ def _gather_scene_linked_entities(
             characters_out.append({
                 # Manual profile values (role, appearance...) win over script facts, as on the sheet.
                 **effective_character_profile(c),
+                "role_summary": role_summary(c, character_types),
                 "views": _character_views_from_links(
                     [link for link in links if link.get("target_id") == c["id"]],
                     assets_dict,
@@ -1219,6 +1279,7 @@ def generate_scene_storyboard(
         blocks,
         include_speaker_frames=_env_flag("STORYBOARD_SPEAKER_PRESENCE_FRAMES", True),
         vocabulary=vocabulary,
+        cast=_load_speaker_cast(project_id),
     )
     if not beats:
         raise ValueError(f"This {type_config.leaf_unit.label.lower()} has no visual lines to storyboard")

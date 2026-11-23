@@ -11,14 +11,6 @@ class CharacterSchema(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
-# Keep in sync with EDITABLE_CHARACTER_FIELDS in services/character_views.py.
-ProfileField = Literal[
-    "role", "age", "gender", "race", "appearance", "personality",
-    "height", "build", "skin_tone", "face", "eyes", "hair",
-    "facial_hair", "distinguishing_marks", "glasses", "demeanor",
-]
-
-
 class PhysicalProfileSchema(BaseModel):
     """Permanent physical identity. Costume and per-shot state (expression, pose) do not belong here."""
 
@@ -45,6 +37,12 @@ class ExtractedCharacterSchema(BaseModel):
     appearance: str | None = None
     personality: str | None = None
     physical: PhysicalProfileSchema = Field(default_factory=PhysicalProfileSchema)
+    # None follows the type (voice-only types are heard, the rest are seen).
+    on_camera: bool | None = None
+    # How they sound: tone, accent, pace, pitch, delivery.
+    voice: dict[str, str] = Field(default_factory=dict)
+    # The type's own fields (a spokesperson's brand, a host's show...).
+    type_details: dict[str, str] = Field(default_factory=dict)
     tags: list[str] = Field(default_factory=list)
     image_prompt: str = ""
 
@@ -66,7 +64,16 @@ class UpdateCharacterProfilePayload(PhysicalProfileSchema):
     race: str | None = Field(default=None, max_length=120)
     appearance: str | None = Field(default=None, max_length=2_000)
     personality: str | None = Field(default=None, max_length=2_000)
-    clear_fields: list[ProfileField] = Field(default_factory=list)
+    # A character_types key the project type offers.
+    character_type: str | None = Field(default=None, min_length=1, max_length=64)
+    # True/False overrides the type's presence; null returns to it.
+    on_camera: bool | None = None
+    # {field: text}; an empty value removes the manual value for that field.
+    voice: dict[str, str | None] | None = None
+    type_details: dict[str, str | None] | None = None
+    # Any EDITABLE_CHARACTER_FIELDS name (services/character_views.py), or "character_type",
+    # "on_camera", "voice.<field>", "type_details.<field>".
+    clear_fields: list[str] = Field(default_factory=list, max_length=64)
 
 
 class CharacterProfileResponse(PhysicalProfileSchema):
@@ -78,6 +85,10 @@ class CharacterProfileResponse(PhysicalProfileSchema):
     race: str | None = None
     appearance: str | None = None
     personality: str | None = None
+    character_type: str = "supporting"
+    on_camera: bool = True
+    voice: dict[str, str] = Field(default_factory=dict)
+    type_details: dict[str, str] = Field(default_factory=dict)
     manual_override_fields: list[str] = Field(default_factory=list)
 
 

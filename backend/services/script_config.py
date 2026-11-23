@@ -1,21 +1,80 @@
 """Universal Script Engine configuration.
 
-The database holds which script formats, unit types (Act, Chapter, Lesson...) and
-block types (Action, Narration, Interview...) each project type may use. This module
-loads that configuration once, caches it briefly, and answers questions such as
-"which unit holds script blocks in a documentary?" or "is a b_roll block visual?".
+The database holds which script formats, unit types (Act, Chapter, Lesson...),
+block types (Action, Narration, Interview...) and character types (Main, Narrator,
+Spokesperson...) each project type may use. This module loads that configuration once,
+caches it briefly, and answers questions such as "which unit holds script blocks in a
+documentary?", "is a b_roll block visual?" or "is a narrator ever seen on camera?".
 """
 
+import logging
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from core.supabase_client import require_supabase_client
 
 
+logger = logging.getLogger(__name__)
+
 CONFIG_CACHE_SECONDS = 300.0
 DEFAULT_PROJECT_TYPE = "feature_film"
+
+ON_CAMERA = "on_camera"
+VOICE_ONLY = "voice_only"
+
+
+@dataclass(frozen=True)
+class DetailFieldConfig:
+    """One type-specific profile field, e.g. a spokesperson's ``brand``."""
+
+    key: str
+    label: str
+    hint: str = ""
+
+
+@dataclass(frozen=True)
+class CharacterTypeConfig:
+    key: str
+    label: str
+    description: str = ""
+    presence: str = ON_CAMERA  # on_camera | voice_only
+    # Speaks straight to the lens (presenter, host, spokesperson) rather than to other characters.
+    addresses_camera: bool = False
+    detail_fields: tuple[DetailFieldConfig, ...] = ()
+    sort_order: int = 0
+
+    @property
+    def voice_only(self) -> bool:
+        return self.presence == VOICE_ONLY
+
+    @property
+    def detail_keys(self) -> tuple[str, ...]:
+        return tuple(detail.key for detail in self.detail_fields)
+
+
+def _character_type_from_row(row: dict[str, Any]) -> CharacterTypeConfig:
+    details: list[DetailFieldConfig] = []
+    raw_fields = row.get("detail_fields")
+    for item in raw_fields if isinstance(raw_fields, list) else []:
+        if isinstance(item, dict) and isinstance(item.get("key"), str) and item["key"].strip():
+            key = item["key"].strip()
+            details.append(DetailFieldConfig(
+                key=key,
+                label=str(item.get("label") or key.replace("_", " ").capitalize()),
+                hint=str(item.get("hint") or ""),
+            ))
+    presence = row.get("presence")
+    return CharacterTypeConfig(
+        key=str(row["key"]),
+        label=str(row.get("label") or row["key"]),
+        description=str(row.get("description") or ""),
+        presence=presence if presence in (ON_CAMERA, VOICE_ONLY) else ON_CAMERA,
+        addresses_camera=bool(row.get("addresses_camera")),
+        detail_fields=tuple(details),
+        sort_order=int(row.get("sort_order") or 0),
+    )
 
 
 @dataclass(frozen=True)
@@ -62,7 +121,12 @@ class ProjectTypeConfig:
     formats: tuple[FormatConfig, ...]
     unit_types: tuple[UnitTypeConfig, ...]
     block_types: tuple[BlockTypeConfig, ...]
+    # Keys of the character types this project type offers, in display order.
     character_types: tuple[str, ...] = field(default_factory=tuple)
+    character_type_configs: tuple[CharacterTypeConfig, ...] = field(default_factory=tuple)
+
+    def character_type(self, key: str | None) -> CharacterTypeConfig | None:
+        return next((item for item in self.character_type_configs if item.key == key), None)
 
     @property
     def default_format(self) -> FormatConfig:
@@ -119,6 +183,7 @@ class ProjectTypeConfig:
 class EngineConfig:
     project_types: dict[str, ProjectTypeConfig]
     character_types: tuple[dict[str, Any], ...]
+    character_type_configs: dict[str, CharacterTypeConfig] = field(default_factory=dict)
 
     def project_type(self, key: str | None) -> ProjectTypeConfig:
         return self.project_types.get(key or "") or self.project_types[DEFAULT_PROJECT_TYPE]
@@ -130,7 +195,19 @@ def build_engine_config(tables: dict[str, list[dict[str, Any]]]) -> EngineConfig
     units = {row["key"]: row for row in tables["script_unit_types"]}
     blocks = {row["key"]: row for row in tables["script_block_types"]}
     character_types = tuple(sorted(tables.get("character_types", []), key=lambda row: row.get("sort_order") or 0))
-    character_keys = tuple(row["key"] for row in character_types)
+    character_type_configs = {row["key"]: _character_type_from_row(row) for row in character_types}
+    character_type_links = tables.get("project_type_character_types") or []
+
+    def offered_character_types(project_type: str) -> tuple[CharacterTypeConfig, ...]:
+        """The project type's own list; every type when it has none configured."""
+        links = sorted(
+            (link for link in character_type_links
+             if link.get("project_type") == project_type and link.get("character_type") in character_type_configs),
+            key=lambda link: link.get("sort_order") or 0,
+        )
+        if not links:
+            return tuple(character_type_configs.values())
+        return tuple(character_type_configs[link["character_type"]] for link in links)
 
     project_types: dict[str, ProjectTypeConfig] = {}
     for row in sorted(tables["project_types"], key=lambda r: r.get("sort_order") or 0):
@@ -179,6 +256,7 @@ def build_engine_config(tables: dict[str, list[dict[str, Any]]]) -> EngineConfig
         )
         if not type_formats or not type_units or not type_blocks:
             continue
+        type_characters = offered_character_types(key)
         project_types[key] = ProjectTypeConfig(
             key=key,
             label=row["label"],
@@ -188,11 +266,16 @@ def build_engine_config(tables: dict[str, list[dict[str, Any]]]) -> EngineConfig
             formats=type_formats,
             unit_types=type_units,
             block_types=type_blocks,
-            character_types=character_keys,
+            character_types=tuple(item.key for item in type_characters),
+            character_type_configs=type_characters,
         )
     if DEFAULT_PROJECT_TYPE not in project_types:
         raise RuntimeError("Script engine configuration is missing the default project type")
-    return EngineConfig(project_types=project_types, character_types=character_types)
+    return EngineConfig(
+        project_types=project_types,
+        character_types=character_types,
+        character_type_configs=character_type_configs,
+    )
 
 
 CONFIG_TABLES = (
@@ -204,6 +287,7 @@ CONFIG_TABLES = (
     "project_type_formats",
     "project_type_unit_types",
     "project_type_block_types",
+    "project_type_character_types",
 )
 
 _cache_lock = threading.Lock()
@@ -223,6 +307,19 @@ def load_engine_config(force: bool = False) -> EngineConfig:
         config = build_engine_config(tables)
         _cached = (time.monotonic(), config)
         return config
+
+
+def character_type_map() -> dict[str, CharacterTypeConfig]:
+    """Every character type by key, or {} when the configuration cannot be loaded.
+
+    Callers treat an unknown type as on camera, which is how characters behaved before
+    types carried a presence, so a configuration outage never hides a character.
+    """
+    try:
+        return dict(load_engine_config().character_type_configs)
+    except Exception as error:  # noqa: BLE001 - degrade to "everyone on camera"
+        logger.warning("Character type configuration unavailable: %s", error)
+        return {}
 
 
 @dataclass(frozen=True)
@@ -263,6 +360,7 @@ def project_type_payload(config: ProjectTypeConfig) -> dict[str, Any]:
         "unit_types": [unit.__dict__ for unit in config.unit_types],
         "leaf_unit_type": config.leaf_unit.key,
         "block_types": [block.__dict__ for block in config.block_types],
+        "character_types": [asdict(item) for item in config.character_type_configs],
     }
 
 

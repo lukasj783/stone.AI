@@ -18,8 +18,10 @@ from typing import Any
 
 from core.supabase_client import require_supabase_client
 from core.supabase_records import as_records
+from services.character_views import is_on_camera
 from services.environment_ranking import characters_by_scene
 from services.object_ranking import TIER_MINOR, _score, character_patterns, tier_for
+from services.script_config import character_type_map
 
 MAJOR_DIALOGUE_LINES = 5
 
@@ -109,7 +111,16 @@ def rank_characters(
 def rank_characters_from_script(project_id: str) -> dict[str, CharacterRanking]:
     """Rank every character in the project against its saved script (read-only)."""
     supabase = require_supabase_client()
-    characters = as_records(supabase.table("characters").select("id, name, tags").eq("project_id", project_id).execute().data)
+    # Ranking decides how many reference images a character's shots send, so only characters
+    # who are seen are ranked; voice-only ones (narrators) are never drawn.
+    character_types = character_type_map()
+    characters = [
+        character
+        for character in as_records(supabase.table("characters").select(
+            "id, name, tags, character_type, on_camera, metadata"
+        ).eq("project_id", project_id).execute().data)
+        if is_on_camera(character, character_types)
+    ]
     if not characters:
         return {}
     scenes = as_records(supabase.table("scenes").select("id, sort_order").eq("project_id", project_id).eq(

@@ -318,7 +318,9 @@ class ManualProfileTests(unittest.TestCase):
         }
         supabase = MagicMock()
         supabase.table.side_effect = lambda name: _FakeQuery({"characters": [character], "scenes": {"location": "DOCK"}}.get(name, []))
-        with patch.object(sg, "require_supabase_client", return_value=supabase), patch.object(sg, "_attach_importance_tiers"):
+        with patch.object(sg, "require_supabase_client", return_value=supabase), patch.object(
+            sg, "_attach_importance_tiers"
+        ), patch.object(sg, "character_type_map", return_value={}):
             characters, _, _ = sg._gather_scene_linked_entities("project-1", "scene-1", [])
         description = sg._describe_character(characters[0])
         self.assertEqual(description, "VOSS (Station engineer, 48, woman): cropped grey hair, scar over the left brow")

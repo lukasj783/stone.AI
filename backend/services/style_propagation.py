@@ -10,6 +10,8 @@ from services.environment_text_to_image import (
     persist_environment_generation,
 )
 from services.character_sheet import approved_sheet_inputs, approved_sheet_model, generate_model_sheet
+from services.character_views import is_on_camera
+from services.script_config import character_type_map
 from services.image_generation_service import generate_provider_images
 from services.object_text_to_image import build_object_prompt, load_object, persist_object_generation
 from services.visual_style import (
@@ -172,7 +174,8 @@ def propagate_character_style(
     character = _load_character(project_id, character_id)
     scene_ids = find_character_scene_ids(project_id, character)
     environment_ids, object_ids = find_style_dependent_assets(project_id, scene_ids)
-    has_character_views = _character_has_views(project_id, character)
+    # A voice-only character (narrator) has no sheet to redraw, even if one was made earlier.
+    has_character_views = _character_has_views(project_id, character) and is_on_camera(character, character_type_map())
     total = int(has_character_views) + len(environment_ids) + len(object_ids)
     completed = 0
     errors: list[str] = []

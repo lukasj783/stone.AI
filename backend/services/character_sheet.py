@@ -53,7 +53,8 @@ from supabase import Client
 from core.supabase_client import require_supabase_client
 from core.supabase_records import as_record, as_records, maybe_single_record
 from schemas.image_generation import CreateImageRequest
-from services.character_views import build_script_character_profile, effective_character_profile
+from services.character_views import build_script_character_profile, effective_character_profile, is_on_camera
+from services.script_config import character_type_map
 from services.image_generation_service import generate_provider_images
 from services.storyboard_models import DEFAULT_STORYBOARD_MODEL, storyboard_model
 from services.sheet_review import (
@@ -191,7 +192,7 @@ def character_block_for(character: dict[str, Any], visual_style: Any, direction:
         raise ValueError(
             "The script has no visual details for this character. Describe them in the prompt or add a reference image."
         )
-    return build_script_character_profile(character, visual_style)
+    return build_script_character_profile(character, visual_style, character_type_map())
 
 
 # --------------------------------------------------------------------------- face crop
@@ -391,11 +392,25 @@ def load_project_character(project_id: str, character_id: str) -> dict[str, Any]
     """Any character in the project: script-extracted or created on the Character page."""
     supabase = require_supabase_client()
     character = maybe_single_record(supabase.table("characters").select(
-        "id, name, role, age, gender, race, appearance, personality, physical, tags, metadata"
+        "id, name, character_type, on_camera, role, age, gender, race, appearance, personality, "
+        "physical, type_details, tags, metadata"
     ).eq("id", character_id).eq("project_id", project_id).maybe_single().execute())
     if not character:
         raise ValueError("Character was not found in this project")
     return character
+
+
+class VoiceOnlyCharacterError(ValueError):
+    """The character is only heard (a narrator), so there is nothing to draw."""
+
+
+def ensure_drawable(character: dict[str, Any]) -> None:
+    if not is_on_camera(character, character_type_map()):
+        raise VoiceOnlyCharacterError(
+            f"{character.get('name') or 'This character'} is voice only, so they get no character sheet and "
+            "storyboards never draw them. To show them on screen, turn on \"Appears on screen\" in their "
+            "profile or change their type."
+        )
 
 
 class SheetIncompleteError(ValueError):
@@ -525,6 +540,7 @@ def generate_model_sheet(
     references = list(references or [])[:MAX_REFERENCE_IMAGES]
     sheet_model_id(model)  # reject an unknown model before any work
     character = load_project_character(project_id, character_id)
+    ensure_drawable(character)
     style = resolve_character_visual_style(character, visual_style)
     prompt = build_model_sheet_prompt(
         character_block_for(character, style, direction, bool(references)), direction, references,
