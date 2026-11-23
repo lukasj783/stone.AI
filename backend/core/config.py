@@ -15,6 +15,14 @@ ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
 DEFAULT_GEMINI_MODEL = "google/gemini-3.5-flash"
 VALID_GEMINI_THINKING_LEVELS = ("none", "low", "high")
 
+# ElevenLabs' newest TTS model (90+ languages incl. Swahili, audio tags such as [whispers]).
+# Generated lines are saved and played later, so the slower, more expressive model is the
+# default; "eleven_v4_turbo" trades quality for ~100 ms latency in live use.
+DEFAULT_ELEVENLABS_MODEL = "eleven_v4"
+DEFAULT_ELEVENLABS_OUTPUT_FORMAT = "mp3_44100_128"
+# Voice Design (text description -> new voice); the v3 design model is the newest.
+DEFAULT_ELEVENLABS_DESIGN_MODEL = "eleven_ttv_v3"
+
 
 @dataclass
 class Settings:
@@ -26,6 +34,13 @@ class Settings:
     shot_video_poll_seconds: int
     gemini_model: str
     gemini_thinking_level: str
+    elevenlabs_api_key: str | None = None
+    elevenlabs_model: str = DEFAULT_ELEVENLABS_MODEL
+    elevenlabs_output_format: str = DEFAULT_ELEVENLABS_OUTPUT_FORMAT
+    elevenlabs_design_model: str = DEFAULT_ELEVENLABS_DESIGN_MODEL
+    # Parallel TTS requests per scene; ElevenLabs caps concurrency by plan.
+    elevenlabs_max_concurrency: int = 2
+    audio_storage_bucket: str = "output-audio"
 
 
 def _parse_origins(raw: str | None) -> list[str]:
@@ -85,6 +100,12 @@ def get_settings() -> Settings:
         shot_video_poll_seconds=max(2, int(os.getenv("SHOT_VIDEO_POLL_SECONDS", "5"))),
         gemini_model=(os.getenv("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL).strip(),
         gemini_thinking_level=_parse_thinking_level(os.getenv("GEMINI_THINKING_LEVEL")),
+        elevenlabs_api_key=_clean(os.getenv("ELEVENLABS_API_KEY")),
+        elevenlabs_model=_clean(os.getenv("ELEVENLABS_MODEL")) or DEFAULT_ELEVENLABS_MODEL,
+        elevenlabs_output_format=_clean(os.getenv("ELEVENLABS_OUTPUT_FORMAT")) or DEFAULT_ELEVENLABS_OUTPUT_FORMAT,
+        elevenlabs_design_model=_clean(os.getenv("ELEVENLABS_DESIGN_MODEL")) or DEFAULT_ELEVENLABS_DESIGN_MODEL,
+        elevenlabs_max_concurrency=max(1, int(os.getenv("ELEVENLABS_MAX_CONCURRENCY", "2"))),
+        audio_storage_bucket=_clean(os.getenv("AUDIO_STORAGE_BUCKET")) or "output-audio",
     )
 
 

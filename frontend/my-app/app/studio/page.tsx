@@ -14,6 +14,7 @@ import { MovieIdea } from '@/components/studio/workspace/MovieIdea';
 import { Outline } from '@/components/studio/workspace/Outline';
 import { StoryboardWorkspace } from '@/components/studio/workspace/StoryboardWorkspace';
 import { ShotListWorkspace } from '@/components/studio/workspace/ShotListWorkspace';
+import { Voices } from '@/components/studio/workspace/Voices';
 import { ProjectsGallery } from '@/components/studio/workspace/ProjectsGallery';
 import DeleteConfirmationModal from '@/components/ui/DeleteConfirmationModal';
 import { generateSceneStoryboard } from '@/lib/api/image-generation';
@@ -285,7 +286,9 @@ export default function StudioPage() {
             onOpenTimeline={() => setActiveView('timeline')}
           />
         );
-      default: 
+      case 'voices':
+        return <Voices projectId={projectId} />;
+      default:
         return (
           <div className="p-8 flex flex-col items-center justify-center h-full text-zinc-500">
             <div className="w-16 h-16 mb-4 rounded-xl border border-dashed border-zinc-700 bg-zinc-900/50 flex items-center justify-center">
