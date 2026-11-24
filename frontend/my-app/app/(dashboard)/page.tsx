@@ -59,7 +59,7 @@ export default function Home() {
                 onClick={() => setActiveTab(mode.label)}
                 className={cn(
                   "relative flex items-center gap-2 px-6 py-3 rounded-xl font-bold text-sm transition-all duration-300",
-                  isActive ? "text-white shadow-2xl" : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/40"
+                  isActive ? "text-white shadow-2xl" : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40"
                 )}
               >
                 {isActive && (

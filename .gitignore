@@ -43,3 +43,5 @@ yarn-error.log*
 # Tool / debug output (lint, tsc, pip, ad-hoc scripts)
 /*.txt
 frontend/my-app/*.txt
+# Playwright MCP logs and page snapshots
+.playwright-mcp/

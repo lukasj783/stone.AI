@@ -41,7 +41,7 @@ export default function Sidebar({ collapsed, setCollapsed }: SidebarProps) {
           collapsed ? "flex-col justify-center gap-1 h-16" : "flex-row justify-between gap-3 p-3",
           isActive 
             ? "bg-zinc-900 text-white shadow-xl shadow-white/5 border border-zinc-800" 
-            : "text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900/50"
+            : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/50"
         )}
       >
         <div className={cn("transition-transform duration-300", isActive && "scale-110")}>
@@ -90,7 +90,7 @@ export default function Sidebar({ collapsed, setCollapsed }: SidebarProps) {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="mb-4 text-[10px] font-bold text-zinc-600 uppercase tracking-widest px-4"
+              className="mb-4 text-[10px] font-bold text-zinc-400 uppercase tracking-widest px-4"
             >
               Navigation
             </motion.div>
@@ -107,7 +107,7 @@ export default function Sidebar({ collapsed, setCollapsed }: SidebarProps) {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest px-4 mb-2"
+              className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest px-4 mb-2"
             >
               Management
             </motion.div>

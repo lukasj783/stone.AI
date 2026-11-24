@@ -59,13 +59,19 @@ body {
   background: rgba(255, 255, 255, 0.3);
 }
 
-/* Hidden scrollbar - still scrollable */
-.scrollbar-hidden {
+/* Hidden scrollbar - still scrollable.
+   scrollbar-none and no-scrollbar are aliases used across the app; Tailwind v4
+   has no built-in class for this, so without them the default scrollbar shows. */
+.scrollbar-hidden,
+.scrollbar-none,
+.no-scrollbar {
   scrollbar-width: none; /* Firefox */
   -ms-overflow-style: none; /* IE/Edge */
 }
 
-.scrollbar-hidden::-webkit-scrollbar {
+.scrollbar-hidden::-webkit-scrollbar,
+.scrollbar-none::-webkit-scrollbar,
+.no-scrollbar::-webkit-scrollbar {
   display: none; /* Chrome/Safari */
 }
 
