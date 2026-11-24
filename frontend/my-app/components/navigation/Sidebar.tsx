@@ -1,10 +1,18 @@
 "use client";
 import React from 'react';
-import { Home, FolderOpen, BookOpen, Video, Image, UserCircle, Music, ChevronLeft, ChevronRight, Settings, Users, Clapperboard } from 'lucide-react';
+import { Home, FolderOpen, BookOpen, Video, Image, UserCircle, Music, ChevronLeft, ChevronRight, Settings, Users, Clapperboard, type LucideIcon } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
+
+interface NavItem {
+  label: string;
+  icon: LucideIcon;
+  href: string;
+  badge?: string;
+  hidden?: boolean;
+}
 
 interface SidebarProps {
   collapsed: boolean;
@@ -14,7 +22,9 @@ interface SidebarProps {
 export default function Sidebar({ collapsed, setCollapsed }: SidebarProps) {
   const pathname = usePathname();
   
-  const navItems = [
+  // `hidden: true` keeps a link out of the sidebar until its page exists.
+  // Remove the flag once the route is built.
+  const navItems: NavItem[] = [
     { label: 'Home', icon: Home, href: '/' },
     { label: 'Assets', icon: FolderOpen, href: '/assets' },
     { label: 'Story', icon: BookOpen, href: '/story', badge: 'Beta' },
@@ -22,15 +32,15 @@ export default function Sidebar({ collapsed, setCollapsed }: SidebarProps) {
     { label: 'Video', icon: Video, href: '/video' },
     { label: 'Image', icon: Image, href: '/image' },
     { label: 'Character', icon: UserCircle, href: '/image/character', badge: 'New' },
-    { label: 'Audio', icon: Music, href: '/audio' },
-  ];
+    { label: 'Audio', icon: Music, href: '/audio', hidden: true },
+  ].filter((item) => !item.hidden);
 
-  const managementItems = [
-    { label: 'Community', icon: Users, href: '/community' },
-    { label: 'Settings', icon: Settings, href: '/settings' },
-  ];
+  const managementItems: NavItem[] = [
+    { label: 'Community', icon: Users, href: '/community', hidden: true },
+    { label: 'Settings', icon: Settings, href: '/settings', hidden: true },
+  ].filter((item) => !item.hidden);
 
-  const renderNavItem = (item: typeof navItems[0]) => {
+  const renderNavItem = (item: NavItem) => {
     const Icon = item.icon;
     const isActive = pathname === item.href;
     
@@ -98,23 +108,27 @@ export default function Sidebar({ collapsed, setCollapsed }: SidebarProps) {
         </AnimatePresence>
         {navItems.map(renderNavItem)}
 
-        <div className="my-6 border-t border-zinc-900 mx-2" />
-        
-        {/* Management Section Header - Hide when collapsed */}
-        <AnimatePresence>
-          {!collapsed && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest px-4 mb-2"
-            >
-              Management
-            </motion.div>
-          )}
-        </AnimatePresence>
+        {managementItems.length > 0 && (
+          <>
+            <div className="my-6 border-t border-zinc-900 mx-2" />
 
-        {managementItems.map(renderNavItem)}
+            {/* Management Section Header - Hide when collapsed */}
+            <AnimatePresence>
+              {!collapsed && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest px-4 mb-2"
+                >
+                  Management
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {managementItems.map(renderNavItem)}
+          </>
+        )}
 
         <button 
           onClick={() => setCollapsed(!collapsed)}
