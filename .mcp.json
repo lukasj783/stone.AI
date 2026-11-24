@@ -3,6 +3,16 @@
     "supabase": {
       "type": "http",
       "url": "https://mcp.supabase.com/mcp?project_ref=pvbenawpvavqjyavqiho"
+    },
+    "playwright": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"]
+    },
+    "dembrandt": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "dembrandt@latest", "mcp"]
     }
   }
 }
