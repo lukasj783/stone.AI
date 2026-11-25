@@ -22,6 +22,8 @@ import {
   Check,
 } from 'lucide-react';
 import Link from 'next/link';
+import { ErrorBanner } from '@/components/ui/ErrorBanner';
+import { asDisplayError, readApiError } from '@/lib/api/errors';
 
 type ModelCapabilities = {
   audio?: boolean;
@@ -137,6 +139,7 @@ export default function TextToVideoPage() {
   const [prompt, setPrompt] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [generatedVideoUrl, setGeneratedVideoUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | Error | null>(null);
   
   // Settings States
   const [duration, setDuration] = useState<5 | 10>(5);
@@ -201,6 +204,7 @@ export default function TextToVideoPage() {
     
     setIsLoading(true);
     setGeneratedVideoUrl(null);
+    setError(null);
     try {
       const res = await fetch("http://localhost:8000/video/generate", {
         method: "POST",
@@ -210,15 +214,12 @@ export default function TextToVideoPage() {
         body: JSON.stringify(payload)
       });
       
+      if (!res.ok) await readApiError(res, "Failed to generate video");
       const data = await res.json();
-      if (res.ok) {
-        setGeneratedVideoUrl(data.video_url);
-      } else {
-        alert(data.detail || "Failed to generate video");
-      }
+      setGeneratedVideoUrl(data.video_url);
     } catch (err) {
       console.error(err);
-      alert("Error generating video");
+      setError(asDisplayError(err, "Error generating video"));
     } finally {
       setIsLoading(false);
     }
@@ -228,6 +229,7 @@ export default function TextToVideoPage() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setError(null);
     try {
       const formData = new FormData();
       formData.append('file', file);
@@ -236,15 +238,12 @@ export default function TextToVideoPage() {
         method: "POST",
         body: formData
       });
+      if (!res.ok) await readApiError(res, "Upload failed");
       const data = await res.json();
-      if (res.ok) {
-        alert("File uploaded successfully to Supabase input-videos: " + data.url);
-      } else {
-        alert("Upload failed: " + data.detail);
-      }
+      alert("File uploaded successfully to Supabase input-videos: " + data.url);
     } catch (err) {
       console.error(err);
-      alert("Error uploading file");
+      setError(asDisplayError(err, "Error uploading file"));
     }
   };
 
@@ -640,6 +639,8 @@ export default function TextToVideoPage() {
           >
             {isLoading ? "Generating..." : "Create"}
           </button>
+
+          <ErrorBanner error={error} onDismiss={() => setError(null)} compact className="rounded-xl" />
           
           <div className="flex items-center justify-center gap-2">
               <Sparkles size={14} className="text-emerald-500" />

@@ -2,12 +2,13 @@ import React, { useRef, useEffect, useState } from 'react';
 import Image from 'next/image';
 import {
   Video, ImageIcon, Music, Mic, Type, Search as SearchIcon, UploadCloud,
-  Loader, AlertCircle, CheckCircle, Plus, X, Play
+  Loader, CheckCircle, Plus, X, Play
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import WaveSurfer from 'wavesurfer.js';
 import { UploadedAsset, AssetTab } from './types';
 import { AudioWaveform } from './AudioWaveform';
+import { ErrorBanner } from '@/components/ui/ErrorBanner';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 const ACCEPT_MAP: Record<AssetTab, string> = {
@@ -204,12 +205,7 @@ export function AssetLibrary({
           </div>
         </div>
 
-        {error && (
-          <div className="flex items-center gap-2 text-red-400 text-xs bg-red-900/20 border border-red-900/30 rounded-md p-2 shrink-0">
-            <AlertCircle size={14} />
-            <span>{error}</span>
-          </div>
-        )}
+        <ErrorBanner error={error} compact className="shrink-0" />
 
         {status === 'success' && !error && (
           <div className="flex items-center gap-2 text-green-400 text-xs bg-green-900/20 border border-green-900/30 rounded-md p-2 shrink-0">

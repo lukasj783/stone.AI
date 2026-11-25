@@ -26,6 +26,7 @@ import { CharacterSheetReference, CharacterSheetResponse, DraftCharacterSheetRes
 import { createCharacterFromSheet, draftCharacterSheet } from '@/lib/api/image-generation';
 import { useSheetModel } from '@/components/characters/useSheetModel';
 import { StoryboardModelPicker } from '@/components/studio/workspace/StoryboardModelPicker';
+import { ErrorBanner } from '@/components/ui/ErrorBanner';
 
 // Workflow steps: pick how to start, describe or upload, review sheet versions, save.
 type AppStep = 'mode-select' | 'text-input' | 'image-input' | 'sheet-preview' | 'save-character' | 'saved';
@@ -63,14 +64,14 @@ function CharacterCreatorContent() {
   );
   const [guidancePrompt, setGuidancePrompt] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
-  const [generationError, setGenerationError] = useState('');
+  const [generationError, setGenerationError] = useState<string | Error>('');
   const [generationProgress, setGenerationProgress] = useState(0);
   const [sheets, setSheets] = useState<DraftCharacterSheetResponse[]>([]);
   const [selectedSheetId, setSelectedSheetId] = useState<string | null>(null);
   const [lastInputs, setLastInputs] = useState<SheetInputs | null>(null);
   const [adjustment, setAdjustment] = useState('');
   const [isSavingCharacter, setIsSavingCharacter] = useState(false);
-  const [saveError, setSaveError] = useState('');
+  const [saveError, setSaveError] = useState<string | Error>('');
   const [savedCharacter, setSavedCharacter] = useState<CharacterSheetResponse | null>(null);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [projectId, setProjectId] = useState<string | null>(queryProjectId);
@@ -124,7 +125,7 @@ function CharacterCreatorContent() {
       setSelectedSheetId(sheet.sheet_asset_id);
       setStep('sheet-preview');
     } catch (error) {
-      setGenerationError(error instanceof Error ? error.message : 'Character sheet generation failed');
+      setGenerationError(error instanceof Error ? error : 'Character sheet generation failed');
     } finally {
       setIsGenerating(false);
     }
@@ -179,7 +180,7 @@ function CharacterCreatorContent() {
       setSavedCharacter(saved);
       setStep('saved');
     } catch (error) {
-      setSaveError(error instanceof Error ? error.message : 'Character save failed');
+      setSaveError(error instanceof Error ? error : 'Character save failed');
     } finally {
       setIsSavingCharacter(false);
     }
@@ -200,11 +201,7 @@ function CharacterCreatorContent() {
     setStep('mode-select');
   };
 
-  const renderError = () => generationError && (
-    <div className="text-xs text-red-400 font-semibold bg-red-950/30 border border-red-900/50 rounded-xl px-4 py-3">
-      {generationError}
-    </div>
-  );
+  const renderError = () => <ErrorBanner error={generationError} onDismiss={() => setGenerationError('')} compact className="rounded-xl px-4 py-3" />;
 
   const renderProjectSelect = () => (
     <div>
@@ -566,7 +563,7 @@ function CharacterCreatorContent() {
             </div>
 
             <div className="mt-auto pt-4">
-              {saveError && <p className="mb-3 text-sm text-red-400">{saveError}</p>}
+              <ErrorBanner error={saveError} onDismiss={() => setSaveError('')} compact className="mb-3" />
               <button
                 onClick={handleSaveCharacter}
                 disabled={isSavingCharacter}

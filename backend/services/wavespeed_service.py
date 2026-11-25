@@ -1,14 +1,63 @@
+import json
+import re
 import uuid
 import os
 import requests
 import wavespeed
+from core.provider_errors import ProviderServiceError
 from core.supabase_client import get_supabase_client
 from schemas.image_generation import CreateImageRequest, CreateImageResponse
 from schemas.video_generation import CreateImageToVideoRequest, CreateVideoRequest, CreateMotionTransferRequest, CreateLipsyncRequest
 from services.storyboard_models import GPT_IMAGE_EDIT_MODEL, LEGACY_GPT_IMAGE_EDIT_MODELS, STORYBOARD_MODELS
 
-class WaveSpeedServiceError(Exception):
-    pass
+class WaveSpeedServiceError(ProviderServiceError):
+    """A WaveSpeed call failed. ``status``, ``code`` and ``provider_message`` hold what WaveSpeed answered."""
+
+    provider = "WaveSpeed"
+
+
+# wavespeed-python only raises plain RuntimeErrors, so what WaveSpeed answered is read back from their text.
+SDK_HTTP_ERROR = re.compile(r"HTTP (\d{3}): (.*)", re.DOTALL)
+SDK_PREDICTION_FAILED = re.compile(r"Prediction failed \(task_id: [^)]*\): (.*)", re.DOTALL)
+
+
+def _parse_wavespeed_body(body: str) -> tuple[int | None, str | None]:
+    """WaveSpeed's application ``code`` and message from a JSON error body (https://wavespeed.ai/docs/error-codes)."""
+    try:
+        data = json.loads(body)
+    except (TypeError, ValueError):
+        return None, body.strip() or None
+    if not isinstance(data, dict):
+        return None, body.strip() or None
+    code = data.get("code")
+    message = data.get("message") or data.get("error")
+    return (code if isinstance(code, int) else None), (str(message) if message else None)
+
+
+def _wavespeed_reply_error(action: str, status: int | None, body: str) -> WaveSpeedServiceError:
+    code, message = _parse_wavespeed_body(body)
+    reason = f"WaveSpeed rejected the request: {message}" if message else f"WaveSpeed answered with HTTP {status}"
+    return WaveSpeedServiceError(f"{action}: {reason}", status=status, code=code, provider_message=message)
+
+
+def wavespeed_error_from(action: str, error: Exception) -> WaveSpeedServiceError:
+    """A WaveSpeedServiceError for a failed SDK or HTTP call, keeping what WaveSpeed said without raw HTTP text.
+
+    Raise it ``from error`` so timeouts and network failures underneath can still be recognised.
+    """
+    if isinstance(error, WaveSpeedServiceError):
+        return error
+    if isinstance(error, requests.HTTPError) and error.response is not None:
+        return _wavespeed_reply_error(action, error.response.status_code, error.response.text)
+    text = str(error)
+    http = SDK_HTTP_ERROR.search(text)
+    if http:
+        return _wavespeed_reply_error(action, int(http.group(1)), http.group(2))
+    failed = SDK_PREDICTION_FAILED.search(text)
+    if failed:
+        reason = failed.group(1).strip()
+        return WaveSpeedServiceError(f"{action}: WaveSpeed could not finish the job: {reason}", provider_message=reason)
+    return WaveSpeedServiceError(f"{action}: {text}")
 
 
 MULTI_IMAGE_ASPECT_RATIOS = {"3:2", "2:3", "3:4", "4:3"}
@@ -193,7 +242,7 @@ def generate_wavespeed_images(payload: CreateImageRequest) -> CreateImageRespons
             images=images
         )
     except Exception as e:
-        raise WaveSpeedServiceError(f"Wavespeed API Error: {str(e)}") from e
+        raise wavespeed_error_from("WaveSpeed image generation failed", e) from e
 
 
 def upload_inpaint_image(file_bytes: bytes, filename: str, content_type: str, role: str) -> str:
@@ -261,7 +310,7 @@ def generate_wavespeed_inpaint(
 
         return CreateImageResponse(model=model, images=images)
     except Exception as e:
-        raise WaveSpeedServiceError(f"Wavespeed inpaint API Error: {str(e)}") from e
+        raise wavespeed_error_from("WaveSpeed inpaint failed", e) from e
 
 
 def _download_file_bytes(file_url: str) -> bytes:
@@ -350,7 +399,7 @@ def submit_seedance_shot_video(
         response.raise_for_status()
         data = _prediction_data(response.json())
     except requests.RequestException as error:
-        raise WaveSpeedServiceError(f"Failed to submit Seedance shot video: {error}") from error
+        raise wavespeed_error_from("Failed to submit Seedance shot video", error) from error
 
     prediction_id = data.get("id")
     urls = data.get("urls")
@@ -368,7 +417,7 @@ def get_seedance_shot_video_result(result_url: str) -> dict[str, object]:
         response.raise_for_status()
         return _prediction_data(response.json())
     except requests.RequestException as error:
-        raise WaveSpeedServiceError(f"Failed to poll Seedance shot video: {error}") from error
+        raise wavespeed_error_from("Failed to poll Seedance shot video", error) from error
 
 
 def store_seedance_shot_video(video_url: str, project_id: str, shot_id: str, batch_id: str) -> tuple[str, str]:
@@ -470,7 +519,7 @@ def synthesize_video(request: CreateVideoRequest) -> str:
         output = client.run(request.model.value, params)
         video_url = output["outputs"][0]
     except Exception as e:
-        raise WaveSpeedServiceError(f"Failed to generate video via WaveSpeed: {str(e)}")
+        raise wavespeed_error_from("Failed to generate video via WaveSpeed", e) from e
 
     try:
         return _store_generated_video(video_url)
@@ -486,7 +535,7 @@ def synthesize_image_to_video(request: CreateImageToVideoRequest) -> str:
         output = client.run(request.model.value, params)
         video_url = output["outputs"][0]
     except Exception as e:
-        raise WaveSpeedServiceError(f"Failed to generate image-to-video via WaveSpeed: {str(e)}")
+        raise wavespeed_error_from("Failed to generate image-to-video via WaveSpeed", e) from e
 
     try:
         return _store_generated_video(video_url)
@@ -534,7 +583,7 @@ def synthesize_motion_transfer(request: CreateMotionTransferRequest) -> str:
         output = client.run(request.model.value, params)
         video_url = output["outputs"][0]
     except Exception as e:
-        raise WaveSpeedServiceError(f"Failed to generate motion-transfer via WaveSpeed: {str(e)}")
+        raise wavespeed_error_from("Failed to generate motion-transfer via WaveSpeed", e) from e
 
     try:
         return _store_generated_video(video_url)
@@ -590,7 +639,7 @@ def synthesize_lipsync(request: CreateLipsyncRequest) -> str:
         output = client.run(request.model.value, params)
         video_url = output["outputs"][0]
     except Exception as e:
-        raise WaveSpeedServiceError(f"Failed to generate lipsync via WaveSpeed: {str(e)}")
+        raise wavespeed_error_from("Failed to generate lipsync via WaveSpeed", e) from e
 
     try:
         return _store_generated_video(video_url)

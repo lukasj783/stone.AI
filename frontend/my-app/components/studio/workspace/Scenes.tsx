@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { Clapperboard, FileText, RefreshCw, CheckCircle2, Clock, AlertCircle, ChevronRight } from 'lucide-react';
 import { supabase } from "@/lib/supabaseClient";
+import { ErrorBanner } from '@/components/ui/ErrorBanner';
 
 interface ScenesProps {
   projectId: string | null;
@@ -25,7 +26,7 @@ interface SceneRow {
 export function Scenes({ projectId, onNavigateToScript, onConvertToStoryboard }: ScenesProps) {
   const [scenes, setScenes] = useState<SceneRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | Error | null>(null);
   const [generatingSceneId, setGeneratingSceneId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -79,7 +80,7 @@ export function Scenes({ projectId, onNavigateToScript, onConvertToStoryboard }:
           setScenes(mapped);
         }
       } catch (e) {
-        if (isMounted) setError(e instanceof Error ? e.message : "Failed to load scenes.");
+        if (isMounted) setError(e instanceof Error ? e : "Failed to load scenes.");
       } finally {
         if (isMounted) setIsLoading(false);
       }
@@ -126,7 +127,7 @@ export function Scenes({ projectId, onNavigateToScript, onConvertToStoryboard }:
     try {
       await onConvertToStoryboard(sceneId);
     } catch (conversionError) {
-      setError(conversionError instanceof Error ? conversionError.message : 'Failed to generate storyboard.');
+      setError(conversionError instanceof Error ? conversionError : 'Failed to generate storyboard.');
     } finally {
       setGeneratingSceneId(null);
     }
@@ -196,11 +197,7 @@ export function Scenes({ projectId, onNavigateToScript, onConvertToStoryboard }:
 
       {/* Scene Cards Grid */}
       <div className="flex-1 overflow-auto px-8 py-6">
-        {error && (
-          <div className="mb-4 bg-red-500/10 border border-red-500/30 text-red-300 text-sm px-4 py-3 rounded-lg">
-            {error}
-          </div>
-        )}
+        <ErrorBanner error={error} onDismiss={() => setError(null)} className="mb-4 rounded-lg" />
 
         {isLoading ? (
           <div className="flex flex-col items-center justify-center py-24 gap-4">

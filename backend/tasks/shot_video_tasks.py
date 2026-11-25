@@ -3,6 +3,7 @@ from typing import Any
 
 from core.celery_app import celery_app
 from core.config import get_settings
+from core.provider_errors import describe_error
 from core.supabase_client import require_supabase_client
 from core.supabase_records import as_record, as_records
 from services.wavespeed_service import (
@@ -140,7 +141,8 @@ def poll_shot_video(self: Any, job_id: str) -> None:
         }).eq("id", job_id).execute()
         raise self.retry(countdown=get_settings().shot_video_poll_seconds)
     if status != "completed":
-        _mark_failed(job_id, batch_id, str(result.get("error") or f"WaveSpeed prediction {status or 'failed'}"))
+        reason = str(result.get("error") or f"WaveSpeed prediction {status or 'failed'}")
+        _mark_failed(job_id, batch_id, describe_error(WaveSpeedServiceError(reason, provider_message=reason)))
         return
 
     outputs = result.get("outputs")

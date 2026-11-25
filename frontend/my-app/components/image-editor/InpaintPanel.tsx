@@ -17,6 +17,7 @@ import { generateInpaintImage } from '@/lib/api/image-generation';
 import { cn } from '@/lib/utils';
 import type { InpaintModel } from '@/lib/types/image-generation';
 import type { InpaintExportResult } from '@/lib/types/layers.types';
+import { ErrorBanner } from '@/components/ui/ErrorBanner';
 
 type GenerationModel = {
   id: number;
@@ -97,7 +98,7 @@ export default function InpaintPanel({
   const [sizePreset, setSizePreset] = useState('Square (1:1)');
   const [resolution, setResolution] = useState('1K');
   const [isGenerating, setIsGenerating] = useState(false);
-  const [errorMessage, setErrorMessage] = useState('');
+  const [errorMessage, setErrorMessage] = useState<string | Error>('');
 
   const canCreate = Boolean(imageSrc && prompt.trim() && hasMask && !isGenerating);
 
@@ -148,7 +149,7 @@ export default function InpaintPanel({
       const response = await generateInpaintImage(formData);
       onResultsGenerated(response.images);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Inpaint generation failed');
+      setErrorMessage(error instanceof Error ? error : 'Inpaint generation failed');
     } finally {
       setIsGenerating(false);
     }
@@ -404,11 +405,7 @@ export default function InpaintPanel({
           </AnimatePresence>
         </section>
 
-        {errorMessage && (
-          <div className="rounded-lg border border-red-900/70 bg-red-950/40 px-3 py-2 text-xs leading-5 text-red-200">
-            {errorMessage}
-          </div>
-        )}
+        <ErrorBanner error={errorMessage} onDismiss={() => setErrorMessage('')} compact className="rounded-lg leading-5" />
 
         <button
           type="button"

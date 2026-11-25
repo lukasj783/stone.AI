@@ -4,6 +4,7 @@ import uuid
 import httpx
 
 from core.supabase_client import get_supabase_client
+from core.provider_errors import describe_error
 from schemas.image_generation import CreateImageRequest
 from services.visual_style import VisualStyle
 
@@ -120,5 +121,5 @@ def persist_environment_generation(project_id: str, environment_id: str, payload
             supabase.table("assets").delete().eq("id", asset_id).execute()
         if storage_path:
             supabase.storage.from_("output-images").remove([storage_path])
-        supabase.table("generation_jobs").update({"status": "failed", "error_message": str(error)}).eq("id", job_id).execute()
+        supabase.table("generation_jobs").update({"status": "failed", "error_message": describe_error(error)}).eq("id", job_id).execute()
         raise

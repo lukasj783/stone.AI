@@ -1,4 +1,5 @@
 "use client";
+import { readApiError } from '@/lib/api/errors';
 import React, { useState, useRef } from 'react';
 import { usePathname } from 'next/navigation';
 import { HighlightTextarea } from "@/components/ui/HighlightTextarea";
@@ -21,7 +22,6 @@ import {
   X,
   Loader,
   CheckCircle,
-  AlertCircle,
   Download,
   Maximize2,
 } from 'lucide-react';
@@ -30,6 +30,7 @@ import Link from 'next/link';
 import { cn } from '@/lib/utils';
 import { ImageModel as ApiImageModel } from '@/lib/types/image-generation';
 import { supabase } from '@/lib/supabaseClient';
+import { ErrorBanner } from '@/components/ui/ErrorBanner';
 
 // Sample style images configuration - rows of styles
 const styleImages = [
@@ -183,7 +184,7 @@ export default function ChatToEditPage() {
   const [uploadedImages, setUploadedImages] = useState<Array<{url: string, file: File | null, tag: string, supabaseUrl?: string}>>([]);
   const [chatHistory, setChatHistory] = useState<Array<{ role: 'user' | 'assistant'; content: string; image?: string }>>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | Error | null>(null);
   const [generatedImages, setGeneratedImages] = useState<string[]>([]);
   const [activePreviewIndex, setActivePreviewIndex] = useState(0);
 
@@ -300,10 +301,7 @@ export default function ChatToEditPage() {
         body: JSON.stringify(payload),
       });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || 'Failed to generate image');
-      }
+      if (!response.ok) await readApiError(response, 'Failed to generate image');
 
       const data = await response.json();
       const imageUrls = data.images || (Array.isArray(data) ? data : []);
@@ -320,7 +318,7 @@ export default function ChatToEditPage() {
         throw new Error('No images generated');
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err : 'An error occurred');
       console.error('Generation error:', err);
     } finally {
       setIsLoading(false);
@@ -684,12 +682,7 @@ export default function ChatToEditPage() {
                   )}
                 </button>
               </div>
-              {error && (
-                <div className="flex items-center gap-2 text-red-400 text-xs p-2 mt-2 bg-red-900/20 rounded-lg">
-                  <AlertCircle size={14} />
-                  {error}
-                </div>
-              )}
+              <ErrorBanner error={error} onDismiss={() => setError(null)} compact className="mt-2 rounded-lg" />
             </div>
 
             {/* Right Panel - Output Preview & History */}

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, AudioLines, CheckCircle2, Copy, Mic2, Play, RefreshCw, Sparkles, Square, Volume2, Wand2, X } from 'lucide-react';
+import { AudioLines, CheckCircle2, Copy, Mic2, Play, RefreshCw, Sparkles, Square, Volume2, Wand2, X } from 'lucide-react';
 import {
   type AudioLine,
   type AudioOverview,
@@ -19,6 +19,7 @@ import {
 import { CloneVoiceForm } from '@/components/audio/CloneVoiceForm';
 import { DesignVoiceForm } from '@/components/audio/DesignVoiceForm';
 import { LANGUAGES, TaggedText, VoiceSelect, errorText } from '@/components/audio/shared';
+import { ErrorBanner } from '@/components/ui/ErrorBanner';
 
 interface VoicesProps { projectId: string | null; }
 
@@ -34,7 +35,7 @@ export function Voices({ projectId }: VoicesProps) {
   const [generating, setGenerating] = useState<'scene' | string | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [playingIndex, setPlayingIndex] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | Error | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   // Which clone form is open: null = closed; assignTo/name prefill it (e.g. from a cast row).
   const [cloneForm, setCloneForm] = useState<{ key: number; assignTo: string | null; name: string } | null>(null);
@@ -191,7 +192,7 @@ export function Voices({ projectId }: VoicesProps) {
       </button>
     </header>
 
-    {error && <div className="mb-5 flex items-center gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300"><AlertCircle className="h-4 w-4 shrink-0" />{error}</div>}
+    <ErrorBanner error={error} onDismiss={() => setError(null)} className="mb-5 rounded-md" />
     {notice && <div className="mb-5 flex items-start gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
       <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" /><span className="flex-1">{notice}</span>
       <button type="button" onClick={() => setNotice(null)} aria-label="Dismiss"><X className="h-4 w-4" /></button>

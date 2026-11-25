@@ -1,5 +1,7 @@
 /** ElevenLabs narration and character dialogue (backend: /api/story/audio). */
 
+import { readApiError } from './errors';
+
 function getApiBaseUrl(): string {
   const baseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
   return baseUrl.replace(/\/$/, '');
@@ -10,16 +12,7 @@ async function request<T>(path: string, init: RequestInit | undefined, fallbackM
     ...init,
     headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
   });
-  if (!response.ok) {
-    let message = `${fallbackMessage} (status ${response.status})`;
-    try {
-      const payload = await response.json();
-      if (typeof payload?.detail === 'string') message = payload.detail;
-    } catch {
-      // keep the fallback message
-    }
-    throw new Error(message);
-  }
+  if (!response.ok) return readApiError(response, fallbackMessage);
   return response.status === 204 ? (undefined as T) : (await response.json() as T);
 }
 
@@ -147,16 +140,7 @@ export async function cloneVoice(projectId: string, clone: CloneVoiceRequest): P
 
   // No Content-Type header: the browser sets the multipart boundary itself.
   const response = await fetch(`${getApiBaseUrl()}/api/story/audio/voices/clone`, { method: 'POST', body: form });
-  if (!response.ok) {
-    let message = `Voice cloning failed (status ${response.status})`;
-    try {
-      const payload = await response.json();
-      if (typeof payload?.detail === 'string') message = payload.detail;
-    } catch {
-      // keep the fallback message
-    }
-    throw new Error(message);
-  }
+  if (!response.ok) return readApiError(response, 'Voice cloning failed');
   return await response.json() as ClonedVoice;
 }
 

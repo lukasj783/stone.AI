@@ -30,6 +30,7 @@ import { CharacterDetailField, CharacterTypeInfo, CharacterTypeMap, effectiveCha
 import { supabase } from '@/lib/supabaseClient';
 import { CharacterSheetCreator } from './CharacterSheetCreator';
 import { RankingStat, TierBadge } from './ImportanceTier';
+import { ErrorBanner } from '@/components/ui/ErrorBanner';
 
 interface CharactersProps {
   projectId: string | null;
@@ -493,7 +494,7 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
   const [offeredTypes, setOfferedTypes] = useState<string[]>([]);
   const [tagDraft, setTagDraft] = useState('');
   const [scriptPreview, setScriptPreview] = useState<CharacterScriptSyncPreview | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | Error | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const loadCharacters = useCallback(async () => {
@@ -562,7 +563,7 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
       // Keep the current pick; otherwise open the top-ranked character so the panel is never blank.
       setSelectedId((current) => loaded.some((character) => character.id === current) ? current : loaded[0]?.id ?? null);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'Failed to load script characters.');
+      setError(loadError instanceof Error ? loadError : 'Failed to load script characters.');
     } finally { setIsLoading(false); }
   }, [projectId]);
 
@@ -654,7 +655,7 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
         if (tagsError) throw tagsError;
         await loadCharacters();
         setIsEditingProfile(false); setNotice('Character tags saved.');
-      } catch (tagsSaveError) { setError(tagsSaveError instanceof Error ? tagsSaveError.message : 'Failed to save character tags.'); }
+      } catch (tagsSaveError) { setError(tagsSaveError instanceof Error ? tagsSaveError : 'Failed to save character tags.'); }
       finally { setIsSavingProfile(false); }
       return;
     }
@@ -668,7 +669,7 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
       }
       await loadCharacters();
       setIsEditingProfile(false); setNotice('Character profile saved.');
-    } catch (saveError) { setError(saveError instanceof Error ? saveError.message : 'Failed to save character profile.'); }
+    } catch (saveError) { setError(saveError instanceof Error ? saveError : 'Failed to save character profile.'); }
     finally { setIsSavingProfile(false); }
   };
 
@@ -678,7 +679,7 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
     try {
       await updateCharacterProfile(projectId, selected.id, { clear_fields: [field] });
       await loadCharacters(); setNotice(`${label} restored to its script value.`);
-    } catch (resetError) { setError(resetError instanceof Error ? resetError.message : 'Failed to reset profile field.'); }
+    } catch (resetError) { setError(resetError instanceof Error ? resetError : 'Failed to reset profile field.'); }
     finally { setIsSavingProfile(false); }
   };
 
@@ -710,7 +711,7 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
     try {
       await approveCharacterSheet(projectId, selected.id, assetId);
       await loadCharacters(); setNotice(`Storyboards now use this sheet for ${selected.name}.`);
-    } catch (approveError) { setError(approveError instanceof Error ? approveError.message : 'Failed to switch the character sheet.'); }
+    } catch (approveError) { setError(approveError instanceof Error ? approveError : 'Failed to switch the character sheet.'); }
     finally { setApprovingId(null); }
   };
 
@@ -725,7 +726,7 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
     if (!projectId) return;
     setIsExtracting(true); setError(null);
     try { await extractScriptCharacters(projectId); await loadCharacters(); }
-    catch (extractionError) { setError(extractionError instanceof Error ? extractionError.message : 'Failed to extract characters from the current script.'); }
+    catch (extractionError) { setError(extractionError instanceof Error ? extractionError : 'Failed to extract characters from the current script.'); }
     finally { setIsExtracting(false); }
   };
 
@@ -733,7 +734,7 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
     if (!projectId || !selected) return;
     setIsSyncingScript(true); setError(null);
     try { setScriptPreview(await previewCharacterScriptSync(projectId, selected.id)); }
-    catch (previewError) { setError(previewError instanceof Error ? previewError.message : 'Failed to preview script update.'); }
+    catch (previewError) { setError(previewError instanceof Error ? previewError : 'Failed to preview script update.'); }
     finally { setIsSyncingScript(false); }
   };
 
@@ -743,7 +744,7 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
     try {
       const result = await confirmCharacterScriptSync(projectId, scriptPreview);
       setScriptPreview(null); setNotice(`Script ${result.action === 'insert' ? 'updated' : 'description refreshed'} in ${result.scene_slugline ?? 'the first appearance scene'}.`);
-    } catch (syncError) { setError(syncError instanceof Error ? syncError.message : 'Failed to update script.'); }
+    } catch (syncError) { setError(syncError instanceof Error ? syncError : 'Failed to update script.'); }
     finally { setIsSyncingScript(false); }
   };
 
@@ -751,7 +752,7 @@ export function Characters({ projectId, onSelect }: CharactersProps) {
 
   return <div className="h-full overflow-auto px-6 py-7 lg:px-8"><div className="mx-auto max-w-7xl">
     <header className="mb-6 flex flex-wrap items-start justify-between gap-4 border-b border-zinc-800 pb-5"><div><div className="flex items-center gap-2.5"><Users className="h-5 w-5 text-violet-400" /><h1 className="text-xl font-bold text-zinc-100">Script Characters</h1></div><p className="mt-1 text-sm text-zinc-500">Script facts remain traceable while manual character decisions stay explicit.</p></div><div className="flex items-center gap-2"><button type="button" onClick={() => setIsProfileVisible((visible) => !visible)} disabled={!selected} title={isProfileVisible ? 'Conceal character profile' : 'Preview character profile'} className="inline-flex h-9 w-9 items-center justify-center border border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800 disabled:opacity-50">{isProfileVisible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}</button><button type="button" onClick={() => void loadCharacters()} disabled={isLoading} className="inline-flex h-9 items-center gap-2 border border-zinc-700 bg-zinc-900 px-3 text-xs font-semibold text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"><RefreshCw className={`h-3.5 w-3.5 ${isLoading ? 'animate-spin' : ''}`} />Refresh</button></div></header>
-    {error && <div className="mb-5 flex items-center gap-2 border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300"><AlertCircle className="h-4 w-4" />{error}</div>}
+    <ErrorBanner error={error} onDismiss={() => setError(null)} className="mb-5" />
     {notice && <div className="mb-5 border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">{notice}</div>}
     {isLoading ? <div className="flex min-h-72 items-center justify-center gap-3 text-sm text-zinc-500"><RefreshCw className="h-5 w-5 animate-spin" />Loading script characters...</div> : characters.length === 0 ? <div className="flex min-h-72 flex-col items-center justify-center border border-dashed border-zinc-800 px-6 text-center"><FileText className="mb-3 h-7 w-7 text-zinc-600" /><h2 className="text-sm font-semibold text-zinc-300">No extracted characters yet</h2><p className="mt-1 max-w-sm text-sm text-zinc-500">Extract named characters and supported metadata from the script already saved in this project.</p><button type="button" onClick={() => void extractCharacters()} disabled={isExtracting} className="mt-4 inline-flex h-9 items-center justify-center gap-2 bg-violet-600 px-3 text-xs font-semibold text-white hover:bg-violet-500 disabled:opacity-50">{isExtracting ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Users className="h-3.5 w-3.5" />}{isExtracting ? 'Extracting characters...' : 'Extract from current script'}</button></div> : <div className={`grid gap-6 ${isProfileVisible ? 'xl:grid-cols-[minmax(0,1fr)_26rem]' : ''}`}>
       <div className="space-y-7">

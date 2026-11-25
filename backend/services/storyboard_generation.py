@@ -14,6 +14,7 @@ import httpx
 from PIL import Image
 
 from core.supabase_client import require_supabase_client
+from core.provider_errors import describe_error
 from schemas.image_generation import (
     CreateImageRequest,
     GenerateStoryboardResponse,
@@ -1507,7 +1508,7 @@ def regenerate_single_shot_frame(
         supabase.table("shots").update({"status": "failed"}).eq("id", shot_id).execute()
         supabase.table("generation_jobs").update({
             "status": "failed",
-            "error_message": str(error),
+            "error_message": describe_error(error),
         }).eq("id", job_id).execute()
         raise
 

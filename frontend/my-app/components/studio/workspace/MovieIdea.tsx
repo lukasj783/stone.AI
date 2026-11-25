@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiError } from '@/lib/api/errors';
 import React, { useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import { BadgePlus, BookOpen, Check, Clapperboard, Clock3, Info, Palette, Sparkles, UserPlus, WandSparkles } from "lucide-react";
@@ -23,6 +24,7 @@ import {
   parseDurationSeconds,
   type Pacing,
 } from "@/lib/duration";
+import { ErrorBanner } from '@/components/ui/ErrorBanner';
 
 interface MovieIdeaProps {
   projectId: string | null;
@@ -139,7 +141,7 @@ export function MovieIdea({
   const [isLoading, setIsLoading] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | Error | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
   // Custom Alert / Confirmation state
@@ -277,7 +279,7 @@ export function MovieIdea({
         }));
         setCharacters(mapped);
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load project idea data.");
+        setError(e instanceof Error ? e : "Failed to load project idea data.");
       } finally {
         setIsLoading(false);
       }
@@ -414,10 +416,8 @@ export function MovieIdea({
         }),
       });
 
+      if (!response.ok) await readApiError(response, "Failed to generate outline");
       const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload?.detail || "Failed to generate outline.");
-      }
 
       const outlineText = String(payload.outline || "");
       const outlinePayload = {
@@ -451,7 +451,7 @@ export function MovieIdea({
       setMessage("Outline generated and saved successfully.");
       onNavigateToOutline?.();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Outline generation failed.");
+      setError(e instanceof Error ? e : "Outline generation failed.");
     } finally {
       setIsGenerating(false);
     }
@@ -500,15 +500,12 @@ export function MovieIdea({
         }),
       });
 
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload?.detail || "Failed to generate script.");
-      }
+      if (!response.ok) await readApiError(response, "Failed to generate script");
 
       setMessage(`${videoTypeConfig.label} script generation started. Opening the script...`);
       onNavigateToScript?.();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Script generation failed.");
+      setError(e instanceof Error ? e : "Script generation failed.");
     } finally {
       setIsGenerating(false);
     }
@@ -574,7 +571,7 @@ export function MovieIdea({
           </div>
         </section>
 
-        {error && <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200">{error}</div>}
+        <ErrorBanner error={error} onDismiss={() => setError(null)} className="rounded-lg" />
         {message && <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-200">{message}</div>}
 
         {/* Basics */}

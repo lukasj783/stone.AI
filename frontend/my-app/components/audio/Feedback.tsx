@@ -2,7 +2,8 @@
 
 import type { ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
-import { AlertCircle, CheckCircle2, KeyRound, RefreshCw, X } from 'lucide-react';
+import { CheckCircle2, KeyRound, X } from 'lucide-react';
+import { ErrorBanner as SharedErrorBanner } from '@/components/ui/ErrorBanner';
 import { cn } from '@/lib/utils';
 
 /** ElevenLabs has no API key on the backend: say exactly what to set. */
@@ -18,27 +19,14 @@ export function NotConfiguredNotice({ className }: { className?: string }) {
   );
 }
 
-/** A failed request: the backend's own message, and a way to try again. */
+/** A failed request: the backend's own message, and a way to try again. The audio hub's look of the shared banner. */
 export function ErrorBanner({ message, onRetry, onDismiss, className }: {
-  message: string;
+  message: string | Error;
   onRetry?: () => void;
   onDismiss?: () => void;
   className?: string;
 }) {
-  return (
-    <div role="alert" className={cn('flex items-start gap-3 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200', className)}>
-      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-300" />
-      <p className="flex-1">{message}</p>
-      {onRetry && (
-        <button type="button" onClick={onRetry} className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-semibold text-red-100 hover:bg-red-500/20">
-          <RefreshCw className="h-3 w-3" />Try again
-        </button>
-      )}
-      {onDismiss && (
-        <button type="button" onClick={onDismiss} aria-label="Dismiss" className="shrink-0 text-red-300 hover:text-red-100"><X className="h-4 w-4" /></button>
-      )}
-    </div>
-  );
+  return <SharedErrorBanner error={message} onRetry={onRetry} onDismiss={onDismiss} className={cn('gap-3 rounded-xl text-red-200', className)} />;
 }
 
 /** Confirms a finished action in the same words as the button that started it. */

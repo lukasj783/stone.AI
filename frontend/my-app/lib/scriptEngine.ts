@@ -5,6 +5,8 @@
 // Interview...) a project may use. The database enforces the same rules, so
 // the editor only offers what will save.
 
+import { readApiError } from './api/errors';
+
 export type ScriptRenderer = 'screenplay' | 'two_column' | 'treatment' | 'instructional';
 export type BlockLane = 'video' | 'audio' | 'both' | 'structure';
 
@@ -65,10 +67,8 @@ export async function fetchProjectScriptConfig(projectId: string): Promise<Proje
   const response = await fetch(
     `${getApiBaseUrl()}/api/script-engine/projects/${encodeURIComponent(projectId)}/config`,
   );
-  const data = await response.json().catch(() => null);
-  if (!response.ok) {
-    throw new Error(data?.detail || 'Failed to load the script configuration.');
-  }
+  if (!response.ok) await readApiError(response, 'Failed to load the script configuration');
+  const data = await response.json();
   return data as ProjectScriptConfig;
 }
 
@@ -86,10 +86,8 @@ export async function compileProjectScript(projectId: string, save = false): Pro
   const response = await fetch(
     `${getApiBaseUrl()}/api/script-engine/projects/${encodeURIComponent(projectId)}/compile?save=${save}`,
   );
-  const data = await response.json().catch(() => null);
-  if (!response.ok) {
-    throw new Error(data?.detail || 'Failed to compile the script.');
-  }
+  if (!response.ok) await readApiError(response, 'Failed to compile the script');
+  const data = await response.json();
   return data as CompiledScriptResponse;
 }
 

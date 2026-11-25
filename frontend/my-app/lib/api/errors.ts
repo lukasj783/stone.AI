@@ -28,6 +28,16 @@ interface ApiErrorBody {
 
 const asString = (value: unknown): string | null => (typeof value === 'string' && value ? value : null);
 
+/**
+ * What to show for a caught error: the error itself (an ApiError keeps its fix link), a clear
+ * message when the backend could not be reached at all, or `fallback` for anything else.
+ */
+export function asDisplayError(reason: unknown, fallback: string): string | Error {
+  // fetch() rejects with a TypeError ("Failed to fetch") when no response came back.
+  if (reason instanceof TypeError) return "Couldn't reach the server. Check that the backend is running, then try again.";
+  return reason instanceof Error ? reason : fallback;
+}
+
 /** Throws an ApiError built from a failed response; `fallback` is used when the body has no message. */
 export async function readApiError(response: Response, fallback: string): Promise<never> {
   let body: ApiErrorBody | null = null;

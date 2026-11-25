@@ -1,8 +1,10 @@
 "use client";
+import { readApiError } from '@/lib/api/errors';
 import React, { useState, useRef } from 'react';
 import { Upload, Loader, Download, Maximize2, Settings, UserCircle, CreditCard, Info, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { ErrorBanner } from '@/components/ui/ErrorBanner';
 
 export default function FaceSwapPage() {
   const pathname = usePathname();
@@ -15,7 +17,7 @@ export default function FaceSwapPage() {
 
   const [generatedUrl, setGeneratedUrl] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | Error | null>(null);
 
   const refInputRef = useRef<HTMLInputElement>(null);
   const targetInputRef = useRef<HTMLInputElement>(null);
@@ -80,10 +82,7 @@ export default function FaceSwapPage() {
         body: formData,
       });
 
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.detail || "Swap process failed.");
-      }
+      if (!response.ok) await readApiError(response, "Swap process failed");
 
       const data = await response.json();
       if (data.images && data.images.length > 0) {
@@ -91,8 +90,8 @@ export default function FaceSwapPage() {
       } else {
         throw new Error("No image returned from server.");
       }
-    } catch (err: any) {
-      setError(err?.message || "An unexpected error occurred");
+    } catch (err) {
+      setError(err instanceof Error ? err : "An unexpected error occurred");
     } finally {
       setIsLoading(false);
     }
@@ -323,7 +322,7 @@ export default function FaceSwapPage() {
                 </button>
               </div>
               
-              {error && <div className="p-4 bg-red-900/20 border border-red-900/50 rounded-xl text-red-400 text-sm">{error}</div>}
+              <ErrorBanner error={error} onDismiss={() => setError(null)} className="rounded-xl p-4" />
 
             </div>
 

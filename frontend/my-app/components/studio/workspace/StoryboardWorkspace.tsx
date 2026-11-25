@@ -18,6 +18,7 @@ import {
   ShotVideoBatchResponse,
   startShotVideoBatch,
 } from '@/lib/api/video-generation';
+import { ErrorBanner } from '@/components/ui/ErrorBanner';
 
 interface StoryboardWorkspaceProps {
   projectId: string | null;
@@ -98,7 +99,7 @@ export function StoryboardWorkspace({
   const [regeneratingShotId, setRegeneratingShotId] = useState<string | null>(null);
   const [editingShotId, setEditingShotId] = useState<string | null>(null);
   const [promptDraft, setPromptDraft] = useState<string>('');
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | Error | null>(null);
   const [storyboardModel, setStoryboardModelState] = useState<string>(DEFAULT_STORYBOARD_MODEL);
   // Remember the chosen model per project in this browser (a convenience; the server default still applies elsewhere).
   useEffect(() => {
@@ -239,7 +240,7 @@ export function StoryboardWorkspace({
         }
       } catch (loadError) {
         if (isMounted) {
-          setError(loadError instanceof Error ? loadError.message : 'Failed to load storyboard.');
+          setError(loadError instanceof Error ? loadError : 'Failed to load storyboard.');
         }
       } finally {
         if (isMounted) setIsLoading(false);
@@ -264,7 +265,7 @@ export function StoryboardWorkspace({
             return next;
           });
         })
-        .catch((statusError) => setError(statusError instanceof Error ? statusError.message : 'Failed to refresh video render status.'));
+        .catch((statusError) => setError(statusError instanceof Error ? statusError : 'Failed to refresh video render status.'));
     }, 4000);
     return () => window.clearInterval(interval);
   }, [projectId, videoBatch]);
@@ -320,7 +321,7 @@ export function StoryboardWorkspace({
       setImageByShot(newImages);
     } catch (genError) {
       clearInterval(progressInterval);
-      setError(genError instanceof Error ? genError.message : 'Failed to generate storyboard.');
+      setError(genError instanceof Error ? genError : 'Failed to generate storyboard.');
     } finally {
       setIsGenerating(false);
       setTimeout(() => {
@@ -351,7 +352,7 @@ export function StoryboardWorkspace({
       setEditingShotId(null);
       setPromptDraft('');
     } catch (regError) {
-      setError(regError instanceof Error ? regError.message : 'Failed to regenerate frame.');
+      setError(regError instanceof Error ? regError : 'Failed to regenerate frame.');
     } finally {
       setRegeneratingShotId(null);
     }
@@ -382,7 +383,7 @@ export function StoryboardWorkspace({
         generate_audio: videoAudio,
       }));
     } catch (videoError) {
-      setError(videoError instanceof Error ? videoError.message : 'Failed to queue shot videos.');
+      setError(videoError instanceof Error ? videoError : 'Failed to queue shot videos.');
     } finally {
       setIsQueueingVideos(false);
     }
@@ -395,7 +396,7 @@ export function StoryboardWorkspace({
     try {
       applyVideoBatch(await retryFailedShotVideos(projectId, videoBatch.batch_id));
     } catch (videoError) {
-      setError(videoError instanceof Error ? videoError.message : 'Failed to retry shot videos.');
+      setError(videoError instanceof Error ? videoError : 'Failed to retry shot videos.');
     } finally {
       setIsQueueingVideos(false);
     }
@@ -561,12 +562,7 @@ export function StoryboardWorkspace({
           )}
         </div>
 
-        {error && (
-          <div className="mb-5 flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
-            <AlertCircle className="h-4 w-4 shrink-0" />
-            {error}
-          </div>
-        )}
+        <ErrorBanner error={error} onDismiss={() => setError(null)} className="mb-5 rounded-lg" />
 
         {/* Content Area */}
         {isLoading || isGenerating ? (

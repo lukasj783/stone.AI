@@ -1,12 +1,14 @@
 import unittest
 
 import httpx
+import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from replicate.exceptions import ReplicateError
 
-from core.provider_errors import classify_provider_error, install_provider_error_handlers
+from core.provider_errors import classify_provider_error, describe_error, install_provider_error_handlers
 from services.gemini_client import GeminiError
+from services.wavespeed_service import WaveSpeedServiceError, wavespeed_error_from
 
 REPLICATE_URL = "https://api.replicate.com/v1/models/google/gemini-3.5-flash/predictions"
 
@@ -85,6 +87,109 @@ class ClassifyProviderErrorTests(unittest.TestCase):
         self.assertIsNone(classify_provider_error(http_error(404)))
 
 
+def sdk_submit_error(status: int, body: str) -> RuntimeError:
+    """What wavespeed-python raises when a submission is refused."""
+    return RuntimeError(f"Failed to submit prediction: HTTP {status}: {body}")
+
+
+def wavespeed_error(error: Exception, action: str = "Image generation failed") -> Exception:
+    """The service-level error for an SDK failure, raised and caught so its chain is real."""
+    try:
+        try:
+            raise error
+        except Exception as inner:
+            raise wavespeed_error_from(action, inner) from inner
+    except Exception as wrapped:
+        return wrapped
+
+
+class WaveSpeedErrorTests(unittest.TestCase):
+    def test_insufficient_credits_code_on_submit(self) -> None:
+        error = wavespeed_error(sdk_submit_error(400, '{"code":1407,"message":"insufficient_credits"}'))
+        failure = classify_provider_error(error)
+        assert failure is not None
+        self.assertEqual(failure.code, "provider_out_of_credit")
+        self.assertEqual(failure.provider, "WaveSpeed")
+        self.assertEqual(failure.action_url, "https://wavespeed.ai/top-up")
+        self.assertEqual(failure.action_label, "Add credit on WaveSpeed")
+
+    def test_insufficient_credits_in_a_failed_prediction(self) -> None:
+        sdk = RuntimeError("Prediction failed (task_id: abc123): insufficient_credits: top up your account")
+        failure = classify_provider_error(wavespeed_error(sdk))
+        assert failure is not None
+        self.assertEqual(failure.code, "provider_out_of_credit")
+
+    def test_rejected_key(self) -> None:
+        sdk = sdk_submit_error(401, '{"code":401,"message":"Invalid API key. Verify the key on your dashboard."}')
+        failure = classify_provider_error(wavespeed_error(sdk))
+        assert failure is not None
+        self.assertEqual(failure.code, "provider_auth_failed")
+        self.assertIn("WAVESPEED_API_KEY", failure.message)
+
+    def test_content_moderation(self) -> None:
+        sdk = RuntimeError("Prediction failed (task_id: abc): content moderation: sensitive content detected")
+        failure = classify_provider_error(wavespeed_error(sdk))
+        assert failure is not None
+        self.assertEqual(failure.code, "provider_content_blocked")
+        self.assertEqual(failure.status_code, 422)
+        submit = sdk_submit_error(400, '{"code":1200,"message":"The content contains sensitive information"}')
+        failure = classify_provider_error(wavespeed_error(submit))
+        assert failure is not None
+        self.assertEqual(failure.code, "provider_content_blocked")
+
+    def test_prediction_timeout(self) -> None:
+        failure = classify_provider_error(wavespeed_error(TimeoutError("Prediction timed out after 600 seconds")))
+        assert failure is not None
+        self.assertEqual(failure.code, "provider_timeout")
+        self.assertEqual(failure.provider, "WaveSpeed")
+
+    def test_connection_failure_is_named_after_the_wrapping_provider(self) -> None:
+        try:
+            try:
+                raise requests.ConnectionError("connection refused")
+            except requests.ConnectionError as inner:
+                raise RuntimeError("Failed to submit prediction after 6 attempts") from inner
+        except RuntimeError as sdk:
+            failure = classify_provider_error(wavespeed_error(sdk))
+        assert failure is not None
+        self.assertEqual(failure.code, "provider_unavailable")
+        self.assertEqual(failure.provider, "WaveSpeed")
+
+    def test_other_refusals_keep_wavespeeds_reason_without_raw_http(self) -> None:
+        error = wavespeed_error(sdk_submit_error(400, '{"code":1401,"message":"Invalid parameter: size"}'))
+        self.assertIsNone(classify_provider_error(error))
+        self.assertEqual(str(error), "Image generation failed: WaveSpeed rejected the request: Invalid parameter: size")
+        self.assertNotIn("HTTP 400", describe_error(error))
+
+    def test_existing_service_errors_pass_through(self) -> None:
+        original = WaveSpeedServiceError("No images were returned by WaveSpeed.")
+        self.assertIs(wavespeed_error_from("Image generation failed", original), original)
+
+
+class RequestsLibraryTests(unittest.TestCase):
+    def test_http_error_from_requests(self) -> None:
+        response = requests.Response()
+        response.status_code = 429
+        response.url = "https://api.wavespeed.ai/api/v3/bytedance/seedance"
+        failure = classify_provider_error(requests.HTTPError("429 Too Many Requests", response=response))
+        assert failure is not None
+        self.assertEqual(failure.code, "provider_rate_limited")
+        self.assertEqual(failure.provider, "WaveSpeed")
+
+    def test_timeout_from_requests(self) -> None:
+        failure = classify_provider_error(requests.ReadTimeout("read timed out"))
+        assert failure is not None
+        self.assertEqual(failure.code, "provider_timeout")
+
+
+class DescribeErrorTests(unittest.TestCase):
+    def test_provider_failures_get_the_clear_message(self) -> None:
+        self.assertIn("out of credit", describe_error(http_error(402)))
+
+    def test_other_errors_keep_their_text(self) -> None:
+        self.assertEqual(describe_error(ValueError("Scene has no shots")), "Scene has no shots")
+
+
 def build_app() -> TestClient:
     app = FastAPI()
     install_provider_error_handlers(app)
@@ -103,6 +208,13 @@ def build_app() -> TestClient:
     @app.post("/bad-request")
     def bad_request() -> None:
         raise HTTPException(status_code=400, detail="No screenplay blocks were found for this project")
+
+    @app.post("/wavespeed-as-400")
+    def wavespeed_as_400() -> None:
+        try:
+            raise wavespeed_error(sdk_submit_error(400, '{"code":1407,"message":"insufficient_credits"}'))
+        except Exception as error:
+            raise HTTPException(status_code=400, detail=f"Image generation failed: {error}") from error
 
     @app.post("/plain-500")
     def plain_500() -> None:
@@ -132,6 +244,12 @@ class ProviderErrorResponseTests(unittest.TestCase):
         response = self.client.post("/uncaught")
         self.assertEqual(response.status_code, 429)
         self.assertEqual(response.json()["error"]["code"], "provider_rate_limited")
+
+    def test_provider_failure_reported_as_400_is_still_explained(self) -> None:
+        response = self.client.post("/wavespeed-as-400")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["error"]["code"], "provider_out_of_credit")
+        self.assertIn("WaveSpeed is out of credit", response.json()["detail"])
 
     def test_other_errors_are_unchanged(self) -> None:
         response = self.client.post("/bad-request")

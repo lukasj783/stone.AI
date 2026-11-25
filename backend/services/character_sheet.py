@@ -51,6 +51,7 @@ from PIL import Image
 from supabase import Client
 
 from core.supabase_client import require_supabase_client
+from core.provider_errors import describe_error
 from core.supabase_records import as_record, as_records, maybe_single_record
 from schemas.image_generation import CreateImageRequest
 from services.character_views import build_script_character_profile, effective_character_profile, is_on_camera
@@ -514,7 +515,7 @@ def _render_sheet(
     except Exception as error:
         supabase.table("generation_jobs").update({
             "status": "failed",
-            "error_message": str(error),
+            "error_message": describe_error(error),
             "completed_at": datetime.now(UTC).isoformat(),
             "settings": {**settings, "review_attempts": attempts},
         }).eq("id", job_id).execute()

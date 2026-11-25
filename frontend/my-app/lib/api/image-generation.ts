@@ -1,3 +1,4 @@
+import { readApiError } from './errors';
 import {
   CharacterSheetReference,
   CharacterSheetResponse,
@@ -38,18 +39,7 @@ export async function batchDeleteImages(items: { id: number; url: string }[]): P
     body: JSON.stringify({ items }),
   });
 
-  if (!response.ok) {
-    let message = 'Failed to delete items';
-    try {
-      const errorPayload = await response.json();
-      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
-        message = errorPayload.detail;
-      }
-    } catch {
-      message = `Failed to delete items with status ${response.status}`;
-    }
-    throw new Error(message);
-  }
+  if (!response.ok) return readApiError(response, 'Failed to delete items');
 }
 
 
@@ -62,18 +52,7 @@ export async function generateImage(payload: CreateImageRequest): Promise<Create
     body: JSON.stringify(payload),
   });
 
-  if (!response.ok) {
-    let message = 'Image generation failed';
-    try {
-      const errorPayload = await response.json();
-      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
-        message = errorPayload.detail;
-      }
-    } catch {
-      message = `Image generation failed with status ${response.status}`;
-    }
-    throw new Error(message);
-  }
+  if (!response.ok) return readApiError(response, 'Image generation failed');
 
   return response.json() as Promise<CreateImageResponse>;
 }
@@ -89,18 +68,7 @@ export async function generateSceneStoryboard(
     body: JSON.stringify(payload),
   });
 
-  if (!response.ok) {
-    let message = 'Storyboard generation failed';
-    try {
-      const errorPayload = await response.json();
-      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
-        message = errorPayload.detail;
-      }
-    } catch {
-      message = `Storyboard generation failed with status ${response.status}`;
-    }
-    throw new Error(message);
-  }
+  if (!response.ok) return readApiError(response, 'Storyboard generation failed');
 
   return response.json() as Promise<GenerateStoryboardResponse>;
 }
@@ -116,18 +84,7 @@ export async function regenerateShotFrame(
     body: JSON.stringify(payload),
   });
 
-  if (!response.ok) {
-    let message = 'Shot frame regeneration failed';
-    try {
-      const errorPayload = await response.json();
-      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
-        message = errorPayload.detail;
-      }
-    } catch {
-      message = `Shot frame regeneration failed with status ${response.status}`;
-    }
-    throw new Error(message);
-  }
+  if (!response.ok) return readApiError(response, 'Shot frame regeneration failed');
 
   return response.json() as Promise<StoryboardFrame>;
 }
@@ -138,18 +95,7 @@ export async function generateInpaintImage(payload: FormData): Promise<CreateIma
     body: payload,
   });
 
-  if (!response.ok) {
-    let message = 'Inpaint generation failed';
-    try {
-      const errorPayload = await response.json();
-      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
-        message = errorPayload.detail;
-      }
-    } catch {
-      message = `Inpaint generation failed with status ${response.status}`;
-    }
-    throw new Error(message);
-  }
+  if (!response.ok) return readApiError(response, 'Inpaint generation failed');
 
   return response.json() as Promise<CreateImageResponse>;
 }
@@ -165,30 +111,9 @@ export async function saveCharacterVisualStyle(
     body: JSON.stringify(payload),
   });
 
-  if (!response.ok) {
-    let message = 'Character style update failed';
-    try {
-      const errorPayload = await response.json();
-      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
-        message = errorPayload.detail;
-      }
-    } catch {
-      message = `Character style update failed with status ${response.status}`;
-    }
-    throw new Error(message);
-  }
+  if (!response.ok) return readApiError(response, 'Character style update failed');
 
   return response.json() as Promise<SetCharacterStyleResponse>;
-}
-
-async function errorDetail(response: Response, fallback: string): Promise<string> {
-  try {
-    const payload = await response.json();
-    if (typeof payload?.detail === 'string') return payload.detail;
-  } catch {
-    // Keep the fallback message.
-  }
-  return `${fallback} (status ${response.status})`;
 }
 
 /**
@@ -205,7 +130,7 @@ export async function generateCharacterSheet(payload: GenerateCharacterSheetRequ
     visual_style: payload.visual_style,
   }, payload.references);
   const response = await fetch(`${getApiBaseUrl()}/api/image/character-sheet/generate`, { method: 'POST', body });
-  if (!response.ok) throw new Error(await errorDetail(response, 'Character sheet generation failed'));
+  if (!response.ok) return readApiError(response, 'Character sheet generation failed');
   return response.json() as Promise<CharacterSheetResponse>;
 }
 
@@ -216,7 +141,7 @@ export async function approveCharacterSheet(projectId: string, characterId: stri
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ project_id: projectId, character_id: characterId, asset_id: assetId }),
   });
-  if (!response.ok) throw new Error(await errorDetail(response, 'Character sheet approval failed'));
+  if (!response.ok) return readApiError(response, 'Character sheet approval failed');
   return response.json() as Promise<CharacterSheetResponse>;
 }
 
@@ -239,7 +164,7 @@ export async function draftCharacterSheet(payload: DraftCharacterSheetRequest): 
     visual_style: payload.visual_style,
   }, payload.references);
   const response = await fetch(`${getApiBaseUrl()}/api/image/character-sheet/draft`, { method: 'POST', body });
-  if (!response.ok) throw new Error(await errorDetail(response, 'Character sheet generation failed'));
+  if (!response.ok) return readApiError(response, 'Character sheet generation failed');
   return response.json() as Promise<DraftCharacterSheetResponse>;
 }
 
@@ -250,7 +175,7 @@ export async function createCharacterFromSheet(payload: CreateCharacterFromSheet
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-  if (!response.ok) throw new Error(await errorDetail(response, 'Character save failed'));
+  if (!response.ok) return readApiError(response, 'Character save failed');
   return response.json() as Promise<CharacterSheetResponse>;
 }
 
@@ -265,18 +190,7 @@ export async function generateScriptEnvironmentImage(
     body: JSON.stringify(payload),
   });
 
-  if (!response.ok) {
-    let message = 'Script environment generation failed';
-    try {
-      const errorPayload = await response.json();
-      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
-        message = errorPayload.detail;
-      }
-    } catch {
-      message = `Script environment generation failed with status ${response.status}`;
-    }
-    throw new Error(message);
-  }
+  if (!response.ok) return readApiError(response, 'Script environment generation failed');
 
   return response.json() as Promise<CreateImageResponse>;
 }
@@ -285,14 +199,7 @@ export async function generateObjectReferenceImage(payload: GenerateObjectRefere
   const response = await fetch(`${getApiBaseUrl()}/api/image/object-generate`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
   });
-  if (!response.ok) {
-    let message = 'Object reference generation failed';
-    try {
-      const errorPayload = await response.json();
-      if (typeof errorPayload?.detail === 'string') message = errorPayload.detail;
-    } catch { message = `Object reference generation failed with status ${response.status}`; }
-    throw new Error(message);
-  }
+  if (!response.ok) return readApiError(response, 'Object reference generation failed');
   return response.json() as Promise<CreateImageResponse>;
 }
 
@@ -306,18 +213,7 @@ export async function generateMultipleAngle(imageFile: File, prompt: string): Pr
     body: formData,
   });
 
-  if (!response.ok) {
-    let message = 'Multiple angle generation failed';
-    try {
-      const errorPayload = await response.json();
-      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
-        message = errorPayload.detail;
-      }
-    } catch {
-      message = `Multiple angle generation failed with status ${response.status}`;
-    }
-    throw new Error(message);
-  }
+  if (!response.ok) return readApiError(response, 'Multiple angle generation failed');
 
   return response.json();
 }
@@ -349,34 +245,14 @@ export async function generateEnvironmentImageFromUpload(
     body: formData,
   });
 
-  if (!response.ok) {
-    let message = 'Environment generation from upload failed';
-    try {
-      const errorPayload = await response.json();
-      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
-        message = errorPayload.detail;
-      }
-    } catch {
-      message = `Environment generation from upload failed with status ${response.status}`;
-    }
-    throw new Error(message);
-  }
+  if (!response.ok) return readApiError(response, 'Environment generation from upload failed');
 
   return response.json() as Promise<CreateImageResponse>;
 }
 
 async function entityReferenceRequest<T>(path: string, init: RequestInit, fallback: string): Promise<T> {
   const response = await fetch(`${getApiBaseUrl()}/api/image/entity-references${path}`, init);
-  if (!response.ok) {
-    let message = `${fallback} (status ${response.status})`;
-    try {
-      const errorPayload = await response.json();
-      if (typeof errorPayload?.detail === 'string') message = errorPayload.detail;
-    } catch {
-      // Keep the status-based message.
-    }
-    throw new Error(message);
-  }
+  if (!response.ok) return readApiError(response, fallback);
   return (response.status === 204 ? undefined : await response.json()) as T;
 }
 
@@ -424,6 +300,6 @@ export function setEntityPrimaryReference(projectId: string, entityType: Referen
 /** WaveSpeed edit models available for storyboard frames, default first. */
 export async function listStoryboardModels(): Promise<StoryboardModelOption[]> {
   const response = await fetch(`${getApiBaseUrl()}/api/story/storyboard/models`);
-  if (!response.ok) throw new Error(`Failed to load storyboard models (status ${response.status})`);
+  if (!response.ok) return readApiError(response, 'Failed to load storyboard models');
   return response.json() as Promise<StoryboardModelOption[]>;
 }

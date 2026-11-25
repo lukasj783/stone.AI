@@ -24,6 +24,7 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
 import { generateImageToVideo } from '@/lib/api/video-generation';
 import { ImageToVideoModel, VideoGenerationHistoryItem } from '@/lib/types/video-generation';
+import { ErrorBanner } from '@/components/ui/ErrorBanner';
 
 type ModelCapabilities = {
   audio?: boolean;
@@ -138,7 +139,7 @@ export default function ImageToVideoPage() {
   const [historyItems, setHistoryItems] = useState<VideoGenerationHistoryItem[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isHistoryLoading, setIsHistoryLoading] = useState(true);
-  const [generationError, setGenerationError] = useState<string | null>(null);
+  const [generationError, setGenerationError] = useState<string | Error | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
 
   const selectedModelConfig = useMemo(
@@ -234,7 +235,7 @@ export default function ImageToVideoPage() {
       ]);
     } catch (error) {
       console.error(error);
-      setGenerationError(error instanceof Error ? error.message : 'Image to video generation failed');
+      setGenerationError(error instanceof Error ? error : 'Image to video generation failed');
     } finally {
       setIsGenerating(false);
     }
@@ -608,11 +609,7 @@ export default function ImageToVideoPage() {
             </div>
           </div>
 
-          {generationError && (
-            <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-              {generationError}
-            </div>
-          )}
+          <ErrorBanner error={generationError} onDismiss={() => setGenerationError(null)} className="rounded-xl text-red-200" />
 
           {generatedVideoUrl && (
             <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-3">
@@ -697,11 +694,7 @@ export default function ImageToVideoPage() {
           <div className="flex-1 bg-zinc-950/50 border border-zinc-900 rounded-3xl p-6 overflow-hidden">
             {activeHistoryTab === 'Video' && (
               <div className="h-full flex flex-col gap-4">
-                {historyError && (
-                  <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-                    {historyError}
-                  </div>
-                )}
+                <ErrorBanner error={historyError} className="rounded-xl text-red-200" />
 
                 {isHistoryLoading ? (
                   <div className="flex-1 flex items-center justify-center text-sm text-zinc-500">Loading recent videos...</div>

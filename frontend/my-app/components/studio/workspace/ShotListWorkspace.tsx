@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import Image from 'next/image';
 import {
-  AlertCircle, CheckCircle2, Clapperboard, Film, ListVideo, LoaderCircle,
+  CheckCircle2, Clapperboard, Film, ListVideo, LoaderCircle,
   Play, Plus, RefreshCw, Send, Video, XCircle,
 } from 'lucide-react';
 import {
@@ -14,6 +14,7 @@ import {
   type ShotListItem,
 } from '@/lib/api/video-generation';
 import { formatSeconds, RUNTIME_TOLERANCE, runtimeDrift } from '@/lib/duration';
+import { ErrorBanner } from '@/components/ui/ErrorBanner';
 
 type Filter = 'all' | 'complete' | 'rendering' | 'failed' | 'missing';
 
@@ -80,7 +81,7 @@ export function ShotListWorkspace({ projectId, onOpenStoryboard, onOpenTimeline 
   const [isLoading, setIsLoading] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
   const [isAddingToTimeline, setIsAddingToTimeline] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | Error | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const loadShotList = async () => {
@@ -99,7 +100,7 @@ export function ShotListWorkspace({ projectId, onOpenStoryboard, onOpenTimeline 
         return response.shots.find((shot) => shot.video_url)?.shot_id ?? response.shots[0]?.shot_id ?? null;
       });
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'Failed to load Shot List.');
+      setError(loadError instanceof Error ? loadError : 'Failed to load Shot List.');
     } finally {
       setIsLoading(false);
     }
@@ -140,7 +141,7 @@ export function ShotListWorkspace({ projectId, onOpenStoryboard, onOpenTimeline 
       setNotice('Failed shots in this render batch were requeued.');
       await loadShotList();
     } catch (retryError) {
-      setError(retryError instanceof Error ? retryError.message : 'Failed to retry the shot video.');
+      setError(retryError instanceof Error ? retryError : 'Failed to retry the shot video.');
     } finally {
       setIsRetrying(false);
     }
@@ -155,7 +156,7 @@ export function ShotListWorkspace({ projectId, onOpenStoryboard, onOpenTimeline 
       const result = await addShotVideoToTimeline(projectId, selected.shot_id, selected.video_asset_id);
       setNotice(result.created ? 'Shot video added to the timeline.' : 'This shot video is already on the timeline.');
     } catch (timelineError) {
-      setError(timelineError instanceof Error ? timelineError.message : 'Failed to add the shot video to the timeline.');
+      setError(timelineError instanceof Error ? timelineError : 'Failed to add the shot video to the timeline.');
     } finally {
       setIsAddingToTimeline(false);
     }
@@ -187,7 +188,7 @@ export function ShotListWorkspace({ projectId, onOpenStoryboard, onOpenTimeline 
           </div>
         </div>
 
-        {error && <div className="flex items-center gap-2 border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300"><AlertCircle className="h-4 w-4" />{error}</div>}
+        <ErrorBanner error={error} onDismiss={() => setError(null)} />
         {notice && <div className="flex items-center gap-2 border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300"><CheckCircle2 className="h-4 w-4" />{notice}</div>}
 
         {isLoading && shots.length === 0 ? <div className="flex min-h-72 items-center justify-center gap-3 text-sm text-zinc-500"><LoaderCircle className="h-5 w-5 animate-spin" />Loading shots...</div> : shots.length === 0 ? <div className="flex min-h-72 flex-col items-center justify-center border border-dashed border-zinc-800 text-center"><Film className="mb-3 h-8 w-8 text-zinc-700" /><h2 className="text-sm font-semibold text-zinc-300">No planned shots yet</h2><p className="mt-1 max-w-sm text-sm text-zinc-500">Generate storyboard images from a scene before reviewing production shots.</p></div> : (

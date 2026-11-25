@@ -19,6 +19,8 @@ import {
 import Link from 'next/link';
 import Image from 'next/image';
 import VideoTrimmerModal from '@/components/ui/VideoTrimmerModal';
+import { ErrorBanner } from '@/components/ui/ErrorBanner';
+import { asDisplayError, readApiError } from '@/lib/api/errors';
 
 const checkVideoDuration = (file: File): Promise<number> => {
   return new Promise((resolve, reject) => {
@@ -57,6 +59,7 @@ export default function VideoToVideoPage() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [untrimmedVideo, setUntrimmedVideo] = useState<File | null>(null);
   const [generatedVideos, setGeneratedVideos] = useState<string[]>([]);
+  const [error, setError] = useState<string | Error | null>(null);
   const [selectedVideoIndex, setSelectedVideoIndex] = useState(0);
 
   const getMaxDuration = () => {
@@ -75,9 +78,10 @@ export default function VideoToVideoPage() {
 
   const handleGenerate = async () => {
     if (!selectedModel) return;
+    setError(null);
 
     if (activeFeatureTab === 'Motion Transfer' && (!sourceImage || !referenceVideo)) {
-      alert('Please upload both an image and a video for motion transfer.');
+      setError('Please upload both an image and a video for motion transfer.');
       return;
     }
 
@@ -85,10 +89,10 @@ export default function VideoToVideoPage() {
       const isMulti = selectedModel.includes('multi');
       const isVideo = selectedModel.includes('video');
       
-      if (isVideo && !referenceVideo) return alert('Video is required.');
-      if (!isVideo && !sourceImage) return alert('Image is required.');
-      if (isMulti && (!leftAudio || !rightAudio)) return alert('Both left and right audio files are required.');
-      if (!isMulti && !audio) return alert('Audio file is required.');
+      if (isVideo && !referenceVideo) return setError('Video is required.');
+      if (!isVideo && !sourceImage) return setError('Image is required.');
+      if (isMulti && (!leftAudio || !rightAudio)) return setError('Both left and right audio files are required.');
+      if (!isMulti && !audio) return setError('Audio file is required.');
     }
 
     if (referenceVideo) {
@@ -97,7 +101,7 @@ export default function VideoToVideoPage() {
         const maxDur = getMaxDuration();
         if (duration > maxDur) {
           const modelName = models.find(m => m.id === selectedModel)?.name || 'the selected model';
-          alert(`The selected video exceeds the maximum allowed duration of ${maxDur} seconds for ${modelName}. Please select a shorter video or trim it.`);
+          setError(`The selected video exceeds the maximum allowed duration of ${maxDur} seconds for ${modelName}. Please select a shorter video or trim it.`);
           return;
         }
       } catch (e) {
@@ -131,34 +135,7 @@ export default function VideoToVideoPage() {
         body: formData,
       });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        let errorMessage = `Generation failed: ${errorText}`;
-        try {
-          const errorJson = JSON.parse(errorText);
-          const rawMessage = errorJson.detail || errorJson.message || errorText;
-          
-          if (typeof rawMessage === 'string' && rawMessage.includes('HTTP 400:')) {
-            try {
-              const nestedJsonStr = rawMessage.substring(rawMessage.indexOf('HTTP 400:') + 9).trim();
-              const nestedJson = JSON.parse(nestedJsonStr);
-              if (nestedJson.message) {
-                 errorMessage = nestedJson.message;
-              } else {
-                 errorMessage = rawMessage;
-              }
-            } catch {
-               errorMessage = rawMessage;
-            }
-          } else {
-             errorMessage = typeof rawMessage === 'string' ? rawMessage : JSON.stringify(rawMessage);
-          }
-        } catch {
-          // Ignore parse error, use original message
-        }
-        alert(errorMessage);
-        return;
-      }
+      if (!response.ok) await readApiError(response, 'Generation failed');
 
       const data = await response.json();
       console.log('Generation started:', data);
@@ -173,8 +150,7 @@ export default function VideoToVideoPage() {
       alert('Generation request was sent successfully!');
     } catch (error: unknown) {
       console.error('Error starting generation:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Failed to start generation. Check the console and make sure the backend is running.';
-      alert(errorMessage);
+      setError(asDisplayError(error, 'Failed to start generation. Check the console and make sure the backend is running.'));
     } finally {
       setIsGenerating(false);
     }
@@ -611,6 +587,8 @@ export default function VideoToVideoPage() {
               'Generate New Styles'
             )}
           </button>
+
+          <ErrorBanner error={error} onDismiss={() => setError(null)} compact className="rounded-xl" />
         </div>
 
         {/* --- History/Right Panel --- */}

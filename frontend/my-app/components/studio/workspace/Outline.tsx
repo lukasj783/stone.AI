@@ -1,8 +1,10 @@
 "use client";
 
+import { readApiError } from '@/lib/api/errors';
 import React, { useEffect, useState } from "react";
 import { List, RefreshCw, Clock3, Sparkles, FileText, ArrowLeft } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
+import { ErrorBanner } from '@/components/ui/ErrorBanner';
 
 interface OutlineProps {
   projectId: string | null;
@@ -24,7 +26,7 @@ export function Outline({ projectId, onNavigateToIdea, onNavigateToScript }: Out
   const [outline, setOutline] = useState<OutlineData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isGeneratingScript, setIsGeneratingScript] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | Error | null>(null);
 
   useEffect(() => {
     if (!projectId) return;
@@ -60,7 +62,7 @@ export function Outline({ projectId, onNavigateToIdea, onNavigateToScript }: Out
         }
       } catch (e) {
         if (isMounted) {
-          setError(e instanceof Error ? e.message : "Failed to load outline.");
+          setError(e instanceof Error ? e : "Failed to load outline.");
         }
       } finally {
         if (isMounted) setIsLoading(false);
@@ -107,17 +109,14 @@ export function Outline({ projectId, onNavigateToIdea, onNavigateToScript }: Out
         }),
       });
 
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload?.detail || "Failed to generate script.");
-      }
+      if (!response.ok) await readApiError(response, "Failed to generate script");
 
       // Script generation runs in the background. Move to the script tab to watch formatting happen.
       if (onNavigateToScript) {
         onNavigateToScript();
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Script generation failed.");
+      setError(e instanceof Error ? e : "Script generation failed.");
     } finally {
       setIsGeneratingScript(false);
     }
@@ -168,11 +167,7 @@ export function Outline({ projectId, onNavigateToIdea, onNavigateToScript }: Out
         </section>
 
         {/* Error */}
-        {error && (
-          <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200">
-            {error}
-          </div>
-        )}
+        <ErrorBanner error={error} onDismiss={() => setError(null)} className="rounded-lg" />
 
         {/* Loading */}
         {isLoading && (

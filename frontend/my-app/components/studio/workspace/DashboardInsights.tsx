@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiError } from '@/lib/api/errors';
 import { useState } from 'react';
 import type { JSX } from 'react';
 import { AlertTriangle, CheckCircle2, Clock3, ExternalLink, RefreshCw } from 'lucide-react';
@@ -224,10 +225,7 @@ export function AttentionCard({
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ project_id: projectId }),
             });
-            if (!response.ok) {
-              const body = (await response.json().catch(() => null)) as { detail?: string } | null;
-              throw new Error(body?.detail || 'Could not restart the failed scenes.');
-            }
+            if (!response.ok) await readApiError(response, 'Could not restart the failed scenes');
           }),
         },
       });

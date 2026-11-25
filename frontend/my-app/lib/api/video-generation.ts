@@ -1,3 +1,4 @@
+import { readApiError } from './errors';
 import { GenerateImageToVideoPayload, ImageToVideoResponse, GenerateLipsyncPayload, LipsyncResponse } from '@/lib/types/video-generation';
 
 function getApiBaseUrl(): string {
@@ -82,16 +83,7 @@ async function readShotVideoBatchResponse(response: Response): Promise<ShotVideo
   if (response.ok) {
     return response.json() as Promise<ShotVideoBatchResponse>;
   }
-  let message = 'Shot video batch request failed';
-  try {
-    const errorPayload = await response.json();
-    if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
-      message = errorPayload.detail;
-    }
-  } catch {
-    message = `Shot video batch request failed with status ${response.status}`;
-  }
-  throw new Error(message);
+  return readApiError(response, 'Shot video batch request failed');
 }
 
 export async function startShotVideoBatch(
@@ -129,16 +121,7 @@ export async function retryFailedShotVideos(
 
 export async function getShotList(projectId: string): Promise<ShotListResponse> {
   const response = await fetch(`${getApiBaseUrl()}/api/video/shot-list?project_id=${encodeURIComponent(projectId)}`);
-  if (!response.ok) {
-    let message = 'Failed to load Shot List';
-    try {
-      const errorPayload = await response.json();
-      if (errorPayload?.detail && typeof errorPayload.detail === 'string') message = errorPayload.detail;
-    } catch {
-      message = `Failed to load Shot List with status ${response.status}`;
-    }
-    throw new Error(message);
-  }
+  if (!response.ok) return readApiError(response, 'Failed to load Shot List');
   return response.json() as Promise<ShotListResponse>;
 }
 
@@ -152,16 +135,7 @@ export async function addShotVideoToTimeline(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ project_id: projectId, shot_id: shotId, asset_id: assetId }),
   });
-  if (!response.ok) {
-    let message = 'Failed to add video to timeline';
-    try {
-      const errorPayload = await response.json();
-      if (errorPayload?.detail && typeof errorPayload.detail === 'string') message = errorPayload.detail;
-    } catch {
-      message = `Failed to add video to timeline with status ${response.status}`;
-    }
-    throw new Error(message);
-  }
+  if (!response.ok) return readApiError(response, 'Failed to add video to timeline');
   return response.json() as Promise<AddShotVideoToTimelineResponse>;
 }
 
@@ -174,18 +148,7 @@ export async function batchDeleteVideos(items: { id: number; url: string }[]): P
     body: JSON.stringify({ items }),
   });
 
-  if (!response.ok) {
-    let message = 'Failed to delete videos';
-    try {
-      const errorPayload = await response.json();
-      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
-        message = errorPayload.detail;
-      }
-    } catch {
-      message = `Failed to delete videos with status ${response.status}`;
-    }
-    throw new Error(message);
-  }
+  if (!response.ok) return readApiError(response, 'Failed to delete videos');
 }
 
 export async function generateLipsync(payload: GenerateLipsyncPayload): Promise<LipsyncResponse> {
@@ -206,18 +169,7 @@ export async function generateLipsync(payload: GenerateLipsyncPayload): Promise<
     body: formData,
   });
 
-  if (!response.ok) {
-    let message = 'Lipsync generation failed';
-    try {
-      const errorPayload = await response.json();
-      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
-        message = errorPayload.detail;
-      }
-    } catch {
-      message = `Lipsync generation failed with status ${response.status}`;
-    }
-    throw new Error(message);
-  }
+  if (!response.ok) return readApiError(response, 'Lipsync generation failed');
 
   return response.json() as Promise<LipsyncResponse>;
 }
@@ -271,18 +223,7 @@ export async function generateImageToVideo(payload: GenerateImageToVideoPayload)
     body: formData,
   });
 
-  if (!response.ok) {
-    let message = 'Image to video generation failed';
-    try {
-      const errorPayload = await response.json();
-      if (errorPayload?.detail && typeof errorPayload.detail === 'string') {
-        message = errorPayload.detail;
-      }
-    } catch {
-      message = `Image to video generation failed with status ${response.status}`;
-    }
-    throw new Error(message);
-  }
+  if (!response.ok) return readApiError(response, 'Image to video generation failed');
 
   return response.json() as Promise<ImageToVideoResponse>;
 }

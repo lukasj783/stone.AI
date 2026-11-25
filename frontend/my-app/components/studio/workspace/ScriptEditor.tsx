@@ -1,5 +1,6 @@
 "use client";
 
+import { readApiError } from '@/lib/api/errors';
 import React, { useEffect, useState, useRef } from 'react';
 import { Bot, Play, RefreshCw, Trash2, Edit2, Check, X, Eye, BookOpen } from 'lucide-react';
 import { supabase } from "@/lib/supabaseClient";
@@ -16,6 +17,7 @@ import {
   unitLabel,
   type ProjectScriptConfig,
 } from '@/lib/scriptEngine';
+import { ErrorBanner } from '@/components/ui/ErrorBanner';
 
 interface ScriptProps {
   projectId: string | null;
@@ -100,7 +102,7 @@ export function ScriptEditor({ projectId }: ScriptProps) {
   const [blocks, setBlocks] = useState<ScriptBlock[]>([]);
   const [characters, setCharacters] = useState<ScriptCharacter[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | Error | null>(null);
   const [activeSceneId, setActiveSceneId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'single' | 'full'>('single');
   const canvasContainerRef = useRef<HTMLDivElement>(null);
@@ -343,7 +345,7 @@ export function ScriptEditor({ projectId }: ScriptProps) {
         setEditingBlockContent(newBlock.content || newBlock.character_name || "");
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to add script element.");
+      setError(e instanceof Error ? e : "Failed to add script element.");
     }
   };
 
@@ -596,10 +598,8 @@ export function ScriptEditor({ projectId }: ScriptProps) {
         }),
       });
 
+      if (!response.ok) await readApiError(response, "Failed to trigger AI Rewrite");
       const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data?.detail || "Failed to trigger AI Rewrite.");
-      }
       
       // Let user know the background worker has successfully started
       showAlert("AI Rewrite", data.message || "AI Rewrite kicked off successfully for incomplete scenes!", "success");
@@ -704,7 +704,7 @@ export function ScriptEditor({ projectId }: ScriptProps) {
         }
       } catch (e) {
         if (isMounted) {
-          setError(e instanceof Error ? e.message : "Failed to load script data.");
+          setError(e instanceof Error ? e : "Failed to load script data.");
         }
       } finally {
         if (isMounted) setIsLoading(false);
@@ -759,7 +759,7 @@ export function ScriptEditor({ projectId }: ScriptProps) {
       setEditingBlockId(null);
       setEditingBlockContent("");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to save block update.");
+      setError(e instanceof Error ? e : "Failed to save block update.");
     }
   };
 
@@ -1316,7 +1316,7 @@ export function ScriptEditor({ projectId }: ScriptProps) {
 
         {/* Editor Canvas */}
         <div ref={canvasContainerRef} className="flex-1 overflow-auto flex flex-col items-center py-12 relative scroll-smooth bg-linear-to-b from-[#0e0e11] to-[#08080a]">
-          {error && <div className="absolute top-4 bg-red-500/10 border border-red-500/40 text-red-200 px-4 py-2 rounded-lg text-sm z-10">{error}</div>}
+          <ErrorBanner error={error} onDismiss={() => setError(null)} className="absolute top-4 z-10 rounded-lg py-2" />
           
           {/* Format Check Issue Report Panel */}
           {hasCheckedFormat && (

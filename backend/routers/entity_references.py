@@ -16,6 +16,7 @@ from services.entity_references import (
     upload_entity_reference,
 )
 from services.replicate_service import ReplicateConfigurationError
+from core.provider_errors import classify_provider_error, describe_error
 from services.wavespeed_service import WaveSpeedServiceError
 
 router = APIRouter(prefix="/api/image/entity-references", tags=["entity-references"])
@@ -128,7 +129,7 @@ async def generate_references(payload: GenerateEntityReferencesRequest) -> Gener
     failed: dict[str, str] = {}
     for angle, result in zip(angles, results):
         if isinstance(result, BaseException):
-            failed[angle] = str(result)
+            failed[angle] = describe_error(result)
         else:
             references.append(EntityReference(**result))
     if not references:
@@ -136,7 +137,12 @@ async def generate_references(payload: GenerateEntityReferencesRequest) -> Gener
         status = 400 if any(isinstance(result, ValueError) for result in results) else 500
         if any(isinstance(result, (ReplicateConfigurationError, WaveSpeedServiceError)) for result in results):
             status = 500
-        raise HTTPException(status_code=status, detail=first_error)
+        # Chained to a provider failure (out of credit, ...) so the error handler can explain it.
+        provider_error = next(
+            (result for result in results if isinstance(result, BaseException) and classify_provider_error(result)),
+            None,
+        )
+        raise HTTPException(status_code=status, detail=first_error) from provider_error
     return GenerateEntityReferencesResponse(references=references, failed=failed)
 
 
