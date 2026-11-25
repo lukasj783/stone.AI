@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from core.config import get_settings
+from core.provider_errors import install_provider_error_handlers
 from routers.image_to_image import router as image_to_image_router
 from routers.text_to_image import router as text_to_image_router
 from routers.video_generation import router as video_generation_router
@@ -22,6 +23,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+install_provider_error_handlers(app)
 
 app.include_router(text_to_image_router)
 app.include_router(image_to_image_router)

@@ -1,3 +1,5 @@
+import { readApiError } from './errors';
+
 function getApiBaseUrl(): string {
   const baseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
   return baseUrl.replace(/\/$/, '');
@@ -10,16 +12,7 @@ export async function extractScriptCharacters(projectId: string): Promise<number
     body: JSON.stringify({ project_id: projectId }),
   });
 
-  if (!response.ok) {
-    let message = 'Failed to extract characters from the current script';
-    try {
-      const errorPayload = await response.json();
-      if (typeof errorPayload?.detail === 'string') message = errorPayload.detail;
-    } catch {
-      message = `Character extraction failed with status ${response.status}`;
-    }
-    throw new Error(message);
-  }
+  if (!response.ok) return readApiError(response, 'Failed to extract characters from the current script');
 
   const result = await response.json() as { count: number };
   return result.count;
@@ -32,16 +25,7 @@ export async function extractScriptEnvironments(projectId: string): Promise<numb
     body: JSON.stringify({ project_id: projectId }),
   });
 
-  if (!response.ok) {
-    let message = 'Failed to extract environments from the current script';
-    try {
-      const errorPayload = await response.json();
-      if (typeof errorPayload?.detail === 'string') message = errorPayload.detail;
-    } catch {
-      message = `Environment extraction failed with status ${response.status}`;
-    }
-    throw new Error(message);
-  }
+  if (!response.ok) return readApiError(response, 'Failed to extract environments from the current script');
 
   const result = await response.json() as { count: number };
   return result.count;
@@ -222,17 +206,6 @@ export interface CharacterScriptSyncPreview {
   scene_slugline: string | null;
   content: string;
   action: 'insert' | 'replace';
-}
-
-async function readApiError(response: Response, fallback: string): Promise<never> {
-  let message = fallback;
-  try {
-    const payload = await response.json();
-    if (typeof payload?.detail === 'string') message = payload.detail;
-  } catch {
-    message = `${fallback} (${response.status})`;
-  }
-  throw new Error(message);
 }
 
 export async function updateCharacterProfile(projectId: string, characterId: string, update: CharacterProfileUpdate): Promise<CharacterProfile> {
