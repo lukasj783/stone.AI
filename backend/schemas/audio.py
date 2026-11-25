@@ -42,6 +42,24 @@ class VoicePreviewSchema(BaseModel):
     duration_seconds: float | None = None
 
 
+class SpeakTextPayload(BaseModel):
+    voice_id: str = Field(min_length=1, max_length=200)
+    text: str = Field(min_length=1)
+    # ISO 639-1 code such as "sw"; null lets the model detect the language.
+    language_code: str | None = Field(default=None, max_length=10)
+
+
+class SpeechResponse(BaseModel):
+    """Generated speech returned inline (base64); nothing is stored."""
+
+    audio_base64: str
+    media_type: str
+    file_extension: str
+    duration_seconds: float | None = None
+    model: str
+    characters: int
+
+
 class SaveDesignedVoicePayload(BaseModel):
     project_id: str = Field(min_length=1)
     generated_voice_id: str = Field(min_length=1, max_length=200)

@@ -14,6 +14,7 @@ ElevenLabs audio tags (``services.audio_tags``). Voice choices live in
 ``assets`` rows (audio files in Supabase Storage) referenced by ``voice_lines``.
 """
 
+import base64
 import logging
 import re
 import uuid
@@ -955,6 +956,43 @@ def _clean_description(description: str) -> str:
     if len(text) > DESIGN_DESCRIPTION_MAX_CHARS:
         raise ValueError(f"Keep the voice description under {DESIGN_DESCRIPTION_MAX_CHARS} characters")
     return text
+
+
+# Conservative per-request limit; longer text should be split into several clips.
+SPEECH_TEXT_MAX_CHARS = 3000
+
+
+def speak_text(voice_id: str, text: str, language_code: str | None = None) -> dict[str, Any]:
+    """Text to speech outside any project: the audio comes back to the caller and is not stored."""
+    settings = get_settings()
+    if not settings.elevenlabs_api_key:
+        raise ValueError("ElevenLabs is not configured: set ELEVENLABS_API_KEY in backend/.env")
+    voice = _clean_text(voice_id)
+    if not voice:
+        raise ValueError("Choose a voice")
+    spoken = str(text or "").strip()
+    if not spoken:
+        raise ValueError("Enter the text to speak")
+    if len(spoken) > SPEECH_TEXT_MAX_CHARS:
+        raise ValueError(f"Keep the text under {SPEECH_TEXT_MAX_CHARS} characters, or split it into several clips")
+    output_format = settings.elevenlabs_output_format
+    audio = synthesize_speech(
+        api_key=settings.elevenlabs_api_key,
+        voice_id=voice,
+        text=spoken,
+        model_id=settings.elevenlabs_model,
+        output_format=output_format,
+        language_code=_clean_text(language_code),
+    )
+    media_type, extension = audio_file_type(output_format)
+    return {
+        "audio_base64": base64.b64encode(audio).decode("ascii"),
+        "media_type": media_type,
+        "file_extension": extension,
+        "duration_seconds": estimate_duration_seconds(audio, output_format),
+        "model": settings.elevenlabs_model,
+        "characters": len(spoken),
+    }
 
 
 def design_voice_previews(description: str, sample_text: str | None = None) -> list[dict[str, Any]]:

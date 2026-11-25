@@ -17,6 +17,8 @@ from schemas.audio import (
     VoicePreviewSchema,
     GenerateSceneAudioPayload,
     SceneAudioResponse,
+    SpeakTextPayload,
+    SpeechResponse,
     UpdateAudioSettingsPayload,
     UpdateCharacterVoicePayload,
     VoiceOptionSchema,
@@ -30,6 +32,7 @@ from services.voice_generation import (
     design_voice_previews,
     generate_scene_audio,
     save_design_and_assign,
+    speak_text,
     suggest_voice_design,
     load_audio_overview,
     load_scene_audio,
@@ -70,6 +73,12 @@ async def get_voices(search: str | None = None) -> list[VoiceOptionSchema]:
             for voice in list_voices(api_key=api_key, search=search)
         ]
     return await _run("Loading voices", work)
+
+
+@router.post("/speech", response_model=SpeechResponse)
+async def post_speech(payload: SpeakTextPayload) -> Any:
+    """Text to speech with any voice, outside a project. The audio is returned, not stored."""
+    return await _run("Speech generation", lambda: speak_text(payload.voice_id, payload.text, payload.language_code))
 
 
 @router.post("/voices/clone", response_model=CloneVoiceResponse, status_code=201)

@@ -449,6 +449,63 @@ class CloneEndpointTests(unittest.TestCase):
         clone_voice.assert_not_called()
 
 
+class SpeechTests(unittest.TestCase):
+    def settings(self, **overrides):
+        values = {"elevenlabs_api_key": "key", "elevenlabs_model": "eleven_v4", "elevenlabs_output_format": "mp3_44100_128"}
+        return SimpleNamespace(**{**values, **overrides})
+
+    def test_speech_is_returned_inline_with_its_type_and_length(self) -> None:
+        import base64
+
+        audio = b"x" * 16000  # 1 second at 128 kbps
+        with patch.object(vg, "get_settings", return_value=self.settings()), \
+                patch.object(vg, "synthesize_speech", return_value=audio) as synthesize:
+            result = vg.speak_text(" v1 ", "  Habari [laughs] yako?\n", "sw")
+        kwargs = synthesize.call_args.kwargs
+        self.assertEqual((kwargs["voice_id"], kwargs["text"], kwargs["language_code"]), ("v1", "Habari [laughs] yako?", "sw"))
+        self.assertEqual(base64.b64decode(result["audio_base64"]), audio)
+        self.assertEqual((result["media_type"], result["file_extension"]), ("audio/mpeg", "mp3"))
+        self.assertEqual(result["duration_seconds"], 1.0)
+        self.assertEqual(result["characters"], len("Habari [laughs] yako?"))
+
+    def test_bad_input_never_reaches_elevenlabs(self) -> None:
+        with patch.object(vg, "synthesize_speech") as synthesize:
+            with patch.object(vg, "get_settings", return_value=self.settings(elevenlabs_api_key=None)):
+                with self.assertRaisesRegex(ValueError, "not configured"):
+                    vg.speak_text("v1", "Hello")
+            with patch.object(vg, "get_settings", return_value=self.settings()):
+                with self.assertRaisesRegex(ValueError, "Choose a voice"):
+                    vg.speak_text("  ", "Hello")
+                with self.assertRaisesRegex(ValueError, "Enter the text"):
+                    vg.speak_text("v1", "   ")
+                with self.assertRaisesRegex(ValueError, "under 3000"):
+                    vg.speak_text("v1", "a" * (vg.SPEECH_TEXT_MAX_CHARS + 1))
+            synthesize.assert_not_called()
+
+    def test_endpoint_returns_the_speech(self) -> None:
+        from fastapi.testclient import TestClient
+        from main import app
+        from routers import audio as audio_router
+
+        result = {"audio_base64": "AAAA", "media_type": "audio/mpeg", "file_extension": "mp3",
+                  "duration_seconds": 1.0, "model": "eleven_v4", "characters": 5}
+        with patch.object(audio_router, "speak_text", return_value=result) as service:
+            response = TestClient(app).post("/api/story/audio/speech", json={"voice_id": "v1", "text": "Hello"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), result)
+        service.assert_called_once_with("v1", "Hello", None)
+
+    def test_endpoint_turns_validation_errors_into_400(self) -> None:
+        from fastapi.testclient import TestClient
+        from main import app
+
+        with patch.object(vg, "get_settings", return_value=self.settings()), patch.object(vg, "synthesize_speech") as synthesize:
+            response = TestClient(app).post("/api/story/audio/speech", json={"voice_id": "v1", "text": "a" * 3001})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("3000", response.json()["detail"])
+        synthesize.assert_not_called()
+
+
 class ClientTests(unittest.TestCase):
     def test_clone_request_shape(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:

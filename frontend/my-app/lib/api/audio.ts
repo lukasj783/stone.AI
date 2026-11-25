@@ -219,6 +219,27 @@ export function saveDesignedVoice(projectId: string, save: {
   }, 'Saving the designed voice failed');
 }
 
+/** Must match SPEECH_TEXT_MAX_CHARS in backend/services/voice_generation.py. */
+export const SPEECH_TEXT_MAX_CHARS = 3000;
+
+export interface SpeechResult {
+  /** Base64 audio; play it as a data: URL. Nothing is stored on the server. */
+  audio_base64: string;
+  media_type: string;
+  file_extension: string;
+  duration_seconds: number | null;
+  model: string;
+  characters: number;
+}
+
+/** Text to speech with any voice, outside a project. */
+export function speakText(voiceId: string, text: string, languageCode?: string | null): Promise<SpeechResult> {
+  return request<SpeechResult>('/speech', {
+    method: 'POST',
+    body: JSON.stringify({ voice_id: voiceId, text, language_code: languageCode || null }),
+  }, 'Speech generation failed');
+}
+
 export function listVoices(search?: string): Promise<VoiceOption[]> {
   const query = search?.trim() ? `?search=${encodeURIComponent(search.trim())}` : '';
   return request<VoiceOption[]>(`/voices${query}`, undefined, 'Failed to load ElevenLabs voices');

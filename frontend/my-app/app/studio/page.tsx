@@ -24,6 +24,9 @@ import {
   type StudioVideoTypeId,
 } from '@/lib/studioVideoTypes';
 
+/** Workspace views another page may open directly with ?view=. */
+const DEEP_LINK_VIEWS = new Set(['voices']);
+
 export default function StudioPage() {
   const {
     projectId,
@@ -56,9 +59,19 @@ export default function StudioPage() {
 
     async function prepareProject() {
       setProjectError(null);
+      // Deep link from other sections, e.g. /studio?project=<id>&view=voices from the Audio hub.
+      const params = new URLSearchParams(window.location.search);
+      const requestedProjectId = params.get('project');
+      const requestedView = params.get('view');
+
       await loadLastStudioProject();
+      if (requestedProjectId) {
+        const opened = await loadProject(requestedProjectId);
+        if (isMounted && !opened) setProjectError('Unable to open that movie idea. It may have been deleted.');
+      }
 
       if (!isMounted) return;
+      if (requestedView && DEEP_LINK_VIEWS.has(requestedView)) setActiveView(requestedView);
       setIsProjectReady(true);
     }
 
@@ -67,7 +80,7 @@ export default function StudioPage() {
     return () => {
       isMounted = false;
     };
-  }, [loadLastStudioProject]);
+  }, [loadLastStudioProject, loadProject]);
 
   const handleCreateProject = useCallback(
     async (name: string, videoType: StudioVideoTypeId) => {

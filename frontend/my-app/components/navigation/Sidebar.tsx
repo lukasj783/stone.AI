@@ -24,7 +24,7 @@ export default function Sidebar({ collapsed, setCollapsed }: SidebarProps) {
   
   // `hidden: true` keeps a link out of the sidebar until its page exists.
   // Remove the flag once the route is built.
-  const navItems: NavItem[] = [
+  const navItems = ([
     { label: 'Home', icon: Home, href: '/' },
     { label: 'Assets', icon: FolderOpen, href: '/assets' },
     { label: 'Story', icon: BookOpen, href: '/story', badge: 'Beta' },
@@ -32,13 +32,13 @@ export default function Sidebar({ collapsed, setCollapsed }: SidebarProps) {
     { label: 'Video', icon: Video, href: '/video' },
     { label: 'Image', icon: Image, href: '/image' },
     { label: 'Character', icon: UserCircle, href: '/image/character', badge: 'New' },
-    { label: 'Audio', icon: Music, href: '/audio', hidden: true },
-  ].filter((item) => !item.hidden);
+    { label: 'Audio', icon: Music, href: '/audio' },
+  ] as NavItem[]).filter((item) => !item.hidden);
 
-  const managementItems: NavItem[] = [
+  const managementItems = ([
     { label: 'Community', icon: Users, href: '/community', hidden: true },
     { label: 'Settings', icon: Settings, href: '/settings', hidden: true },
-  ].filter((item) => !item.hidden);
+  ] as NavItem[]).filter((item) => !item.hidden);
 
   const renderNavItem = (item: NavItem) => {
     const Icon = item.icon;
