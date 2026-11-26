@@ -308,7 +308,7 @@ function nextActions(snapshot: ProjectSnapshot, isNarrative: boolean): NextActio
 const PAGE = 1000;
 
 /** Fetch every row of a query, 1000 at a time (PostgREST caps a single response). */
-async function fetchAll<T>(
+export async function fetchAll<T>(
   query: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
 ): Promise<T[]> {
   const rows: T[] = [];

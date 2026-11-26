@@ -1,13 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { JSX } from 'react';
 import Image from 'next/image';
-import { 
-  AlertCircle, ArrowLeft, Clapperboard, Image as ImageIcon, 
-  RefreshCw, Sparkles, ChevronDown, User, MountainSnow, Box, Edit2, Check, Film, RotateCcw
+import {
+  AlertCircle, ArrowLeft, Clapperboard, Image as ImageIcon,
+  Layers, Loader2, RefreshCw, Sparkles, User, MountainSnow, Box, Edit2, Check, Film, RotateCcw
 } from 'lucide-react';
 import { supabase } from '@/lib/supabaseClient';
+import { loadStoryboardSceneOverview, type StoryboardSceneOption } from '@/lib/storyboardSceneOverview';
+import type { StoryboardBatch } from '@/lib/api/storyboard-batches';
+import { StoryboardSceneSelect, type SceneActivity } from './StoryboardSceneSelect';
+import { GenerateAllScenesDialog, StoryboardBatchProgress } from './GenerateAllScenes';
+import { useStoryboardBatch } from './useStoryboardBatch';
 import { characterTags, characterTheme } from '@/lib/characterTheme';
 import type { StoryboardCharacterLabel } from '@/lib/types/image-generation';
 import { generateSceneStoryboard, regenerateShotFrame } from '@/lib/api/image-generation';
@@ -85,14 +90,20 @@ export function StoryboardWorkspace({
   onBackToScenes,
   onSelectScene,
 }: StoryboardWorkspaceProps): JSX.Element {
-  const [allScenes, setAllScenes] = useState<SceneRecord[]>([]);
+  const [sceneOptions, setSceneOptions] = useState<StoryboardSceneOption[]>([]);
+  // Bumped after a generation so the scene picker's storyboard progress is re-read.
+  const [overviewVersion, setOverviewVersion] = useState(0);
   const [activeSceneId, setActiveSceneId] = useState<string | null>(sceneId);
+  // Lets a finished generation check whether the user is still on the scene it was started for.
+  const activeSceneIdRef = useRef<string | null>(sceneId);
+  useEffect(() => { activeSceneIdRef.current = activeSceneId; }, [activeSceneId]);
   const [scene, setScene] = useState<SceneRecord | null>(null);
   const [shots, setShots] = useState<ShotRecord[]>([]);
   const [imageByShot, setImageByShot] = useState<Record<string, string>>({});
   const [videoByShot, setVideoByShot] = useState<Record<string, string>>({});
   const [entities, setEntities] = useState<EntityBadge[]>([]);
-  
+  const loadedSceneIdRef = useRef<string | null>(null);
+
   const [isLoading, setIsLoading] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationProgress, setGenerationProgress] = useState<{ percent: number; statusText: string }>({ percent: 0, statusText: '' });
@@ -121,31 +132,72 @@ export function StoryboardWorkspace({
   const [videoResolution, setVideoResolution] = useState<'480p' | '720p' | '1080p' | '4k'>('720p');
   const [videoAudio, setVideoAudio] = useState(true);
 
-  // Fetch all project scenes for selector dropdown
-  useEffect(() => {
-    if (!projectId) return;
-    const fetchScenes = async () => {
-      const { data } = await supabase
-        .from('scenes')
-        .select('id, slugline_raw, title, sort_order')
-        .eq('project_id', projectId)
-        // Storyboards are made per leaf unit (scene, section, segment), never per act or chapter.
-        .eq('is_leaf', true)
-        .order('sort_order', { ascending: true });
-      if (data && data.length > 0) {
-        setAllScenes(
-          (data as (SceneRecord & { title?: string | null })[]).map((row) => ({
-            ...row,
-            slugline_raw: row.slugline_raw || row.title || 'Untitled',
-          }))
-        );
-        if (!activeSceneId) {
-          setActiveSceneId(data[0].id);
-        }
+  // "Generate All Scenes at Once": batch progress refreshes the picker and, when the open
+  // scene is part of it, that scene's frames as they finish.
+  const [showGenerateAll, setShowGenerateAll] = useState(false);
+  const [shotsVersion, setShotsVersion] = useState(0);
+  const lastBatchSignature = useRef('');
+  const lastOpenSceneProgress = useRef('');
+  const reportError = useCallback((reason: Error | string) => setError(reason), []);
+  const handleBatchUpdate = useCallback((next: StoryboardBatch) => {
+    const signature = [next.status, next.completed_shots, next.failed_shots, next.total_shots,
+      next.scenes.map((item) => item.status).join(',')].join('|');
+    if (signature === lastBatchSignature.current) return;
+    lastBatchSignature.current = signature;
+    setOverviewVersion((version) => version + 1);
+    const openScene = next.scenes.find((item) => item.scene_id === activeSceneIdRef.current);
+    const progress = openScene
+      ? `${openScene.scene_id}|${openScene.status}|${openScene.total_shots}|${openScene.completed_shots}|${openScene.failed_shots}`
+      : '';
+    if (openScene && progress !== lastOpenSceneProgress.current) {
+      lastOpenSceneProgress.current = progress;
+      setShotsVersion((version) => version + 1);
+    }
+  }, []);
+  const storyboardBatch = useStoryboardBatch(projectId, reportError, handleBatchUpdate);
+  const { batch, active: isBatchActive } = storyboardBatch;
+  const batchSceneById = useMemo(
+    () => new Map((batch?.scenes ?? []).map((item) => [item.scene_id, item])),
+    [batch],
+  );
+  const sceneActivity = useMemo(() => {
+    const activity: Record<string, SceneActivity> = {};
+    if (isBatchActive) {
+      for (const item of batch?.scenes ?? []) {
+        if (item.status === 'queued') activity[item.scene_id] = 'queued';
+        else if (item.status === 'planning' || item.status === 'rendering') activity[item.scene_id] = 'generating';
       }
-    };
-    void fetchScenes();
-  }, [projectId, activeSceneId]);
+    }
+    if (isGenerating && activeSceneId) activity[activeSceneId] = 'generating';
+    return activity;
+  }, [batch, isBatchActive, isGenerating, activeSceneId]);
+  const openBatchScene = activeSceneId && isBatchActive ? batchSceneById.get(activeSceneId) : undefined;
+  const openSceneInBatch = Boolean(openBatchScene && ['queued', 'planning', 'rendering'].includes(openBatchScene.status));
+
+  const handleStartAllScenes = async () => {
+    await storyboardBatch.start(storyboardModel);
+    setShowGenerateAll(false);
+  };
+
+  // Scenes for the picker with their storyboard progress. Storyboards are made per leaf unit
+  // (scene, section, segment), never per act or chapter.
+  useEffect(() => {
+    if (!projectId) {
+      setSceneOptions([]);
+      return;
+    }
+    let cancelled = false;
+    loadStoryboardSceneOverview(projectId)
+      .then((options) => {
+        if (cancelled) return;
+        setSceneOptions(options);
+        if (options.length > 0) setActiveSceneId((current) => current ?? options[0].id);
+      })
+      .catch((overviewError) => {
+        if (!cancelled) setError(overviewError instanceof Error ? overviewError : 'Failed to load the scene list.');
+      });
+    return () => { cancelled = true; };
+  }, [projectId, overviewVersion]);
 
   useEffect(() => {
     if (sceneId) setActiveSceneId(sceneId);
@@ -162,9 +214,14 @@ export function StoryboardWorkspace({
     }
 
     let isMounted = true;
+    // Reloading the same scene (new frames from a batch) keeps the current frames on screen.
+    const isRefresh = loadedSceneIdRef.current === activeSceneId;
+    loadedSceneIdRef.current = activeSceneId;
     const loadStoryboard = async () => {
-      setIsLoading(true);
-      setError(null);
+      if (!isRefresh) {
+        setIsLoading(true);
+        setError(null);
+      }
       try {
         const { data: sceneRow, error: sceneError } = await supabase
           .from('scenes')
@@ -249,7 +306,7 @@ export function StoryboardWorkspace({
 
     void loadStoryboard();
     return () => { isMounted = false; };
-  }, [projectId, activeSceneId]);
+  }, [projectId, activeSceneId, shotsVersion]);
 
   useEffect(() => {
     if (!projectId || !videoBatch || !['queued', 'running'].includes(videoBatch.status)) return;
@@ -272,6 +329,7 @@ export function StoryboardWorkspace({
 
   const handleGenerateStoryboard = async (force: boolean = false) => {
     if (!projectId || !activeSceneId) return;
+    const requestedSceneId = activeSceneId;
     setIsGenerating(true);
     setGenerationProgress({ percent: 10, statusText: 'Analyzing screenplay & scene context...' });
     setError(null);
@@ -292,7 +350,7 @@ export function StoryboardWorkspace({
     try {
       const res = await generateSceneStoryboard({
         project_id: projectId,
-        scene_id: activeSceneId,
+        scene_id: requestedSceneId,
         force_regenerate: force,
         provider: 'wavespeed',
         model: storyboardModel,
@@ -300,6 +358,9 @@ export function StoryboardWorkspace({
 
       clearInterval(progressInterval);
       setGenerationProgress({ percent: 100, statusText: 'Completed!' });
+
+      // The frames are saved on the server; only show them if this scene is still the one on screen.
+      if (activeSceneIdRef.current !== requestedSceneId) return;
 
       const updatedShots: ShotRecord[] = res.frames.map((f, idx) => ({
         id: f.shot_id,
@@ -324,6 +385,7 @@ export function StoryboardWorkspace({
       setError(genError instanceof Error ? genError : 'Failed to generate storyboard.');
     } finally {
       setIsGenerating(false);
+      setOverviewVersion((version) => version + 1);
       setTimeout(() => {
         setGenerationProgress({ percent: 0, statusText: '' });
       }, 1200);
@@ -348,6 +410,7 @@ export function StoryboardWorkspace({
         setShots((prev) =>
           prev.map((s) => (s.id === shot.id ? { ...s, prompt: res.prompt, status: 'complete' } : s))
         );
+        setOverviewVersion((version) => version + 1);
       }
       setEditingShotId(null);
       setPromptDraft('');
@@ -411,7 +474,7 @@ export function StoryboardWorkspace({
         {/* Header & Controls */}
         <div className="mb-7 border-b border-zinc-800/60 pb-6">
           <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
+            <div className="min-w-0">
               <button
                 type="button"
                 onClick={onBackToScenes}
@@ -420,28 +483,20 @@ export function StoryboardWorkspace({
                 <ArrowLeft className="h-3.5 w-3.5" />
                 Back to Scenes
               </button>
-              <div className="flex items-center gap-3">
-                <Clapperboard className="h-6 w-6 text-violet-400" />
-                
-                {/* Scene Dropdown Selector */}
-                {allScenes.length > 0 ? (
-                  <div className="relative inline-block">
-                    <select
-                      value={activeSceneId ?? ''}
-                      onChange={(e) => {
-                        setActiveSceneId(e.target.value);
-                        if (onSelectScene) onSelectScene(e.target.value);
-                      }}
-                      className="appearance-none rounded-lg border border-zinc-700 bg-zinc-900/90 py-1.5 pl-3 pr-8 text-base font-bold text-zinc-100 focus:outline-none focus:ring-2 focus:ring-violet-500"
-                    >
-                      {allScenes.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.slugline_raw || `Scene ${(s.sort_order ?? 0) + 1}`}
-                        </option>
-                      ))}
-                    </select>
-                    <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
-                  </div>
+              <div className="flex min-w-0 items-center gap-3">
+                <Clapperboard className="h-6 w-6 shrink-0 text-violet-400" />
+
+                {sceneOptions.length > 0 ? (
+                  <StoryboardSceneSelect
+                    scenes={sceneOptions}
+                    value={activeSceneId}
+                    disabled={isGenerating}
+                    sceneActivity={sceneActivity}
+                    onChange={(nextSceneId) => {
+                      setActiveSceneId(nextSceneId);
+                      if (onSelectScene) onSelectScene(nextSceneId);
+                    }}
+                  />
                 ) : (
                   <h1 className="text-xl font-bold text-zinc-100">{scene?.slugline_raw || 'Scene Storyboard'}</h1>
                 )}
@@ -459,24 +514,23 @@ export function StoryboardWorkspace({
 
             {/* Action Bar */}
             <div className="flex flex-col items-end gap-2">
-              <StoryboardModelPicker value={storyboardModel} onChange={setStoryboardModel} disabled={isGenerating || regeneratingShotId !== null} />
+              <StoryboardModelPicker value={storyboardModel} onChange={setStoryboardModel} disabled={isGenerating || isBatchActive || regeneratingShotId !== null} />
               <div className="flex items-center gap-3">
-                {shots.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => handleGenerateStoryboard(true)}
-                    disabled={isGenerating}
-                    className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-2 text-xs font-semibold text-zinc-300 transition-colors hover:bg-zinc-800 disabled:opacity-50"
-                  >
-                    <RefreshCw className={`h-3.5 w-3.5 ${isGenerating ? 'animate-spin' : ''}`} />
-                    Regenerate All
-                  </button>
-                )}
-                
+                <button
+                  type="button"
+                  onClick={() => setShowGenerateAll(true)}
+                  disabled={isGenerating || isBatchActive || storyboardBatch.isBusy || sceneOptions.length === 0 || !projectId}
+                  title={isBatchActive ? 'All scenes are being generated' : 'Generate every scene that has no finished storyboard, in parallel'}
+                  className="flex items-center gap-2 rounded-lg border border-violet-500/40 bg-zinc-900 px-4 py-2 text-xs font-semibold text-violet-200 transition-colors hover:bg-violet-500/10 disabled:opacity-50"
+                >
+                  {isBatchActive ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Layers className="h-3.5 w-3.5" />}
+                  {isBatchActive ? 'Generating All Scenes...' : 'Generate All Scenes at Once'}
+                </button>
+
                 <button
                   type="button"
                   onClick={() => handleGenerateStoryboard(false)}
-                  disabled={isGenerating}
+                  disabled={isGenerating || openSceneInBatch}
                   className="flex items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-xs font-bold text-white shadow-lg shadow-violet-600/20 transition-colors hover:bg-violet-500 disabled:opacity-50"
                 >
                   <Sparkles className={`h-4 w-4 ${isGenerating ? 'animate-spin' : ''}`} />
@@ -562,6 +616,16 @@ export function StoryboardWorkspace({
           )}
         </div>
 
+        {batch && (
+          <StoryboardBatchProgress
+            batch={batch}
+            isBusy={storyboardBatch.isBusy}
+            onCancel={() => void storyboardBatch.cancel()}
+            onRetryFailed={() => void storyboardBatch.retryFailed()}
+            onDismiss={storyboardBatch.dismiss}
+          />
+        )}
+
         <ErrorBanner error={error} onDismiss={() => setError(null)} className="mb-5 rounded-lg" />
 
         {/* Content Area */}
@@ -570,6 +634,14 @@ export function StoryboardWorkspace({
             <RefreshCw className="h-8 w-8 animate-spin text-violet-500" />
             <p className="font-semibold text-zinc-200">Generating 16:9 Storyboard Images...</p>
             <p className="text-xs text-zinc-500">Integrating character views, environment look, and screenplay action lines.</p>
+          </div>
+        ) : shots.length === 0 && openSceneInBatch ? (
+          <div className="flex min-h-80 flex-col items-center justify-center gap-3 text-center text-sm text-zinc-400" aria-live="polite">
+            <Loader2 className="h-8 w-8 animate-spin text-violet-500" aria-hidden />
+            <p className="font-semibold text-zinc-200">
+              {openBatchScene?.status === 'queued' ? 'Waiting for its turn in the batch...' : 'Planning this scene\'s shots...'}
+            </p>
+            <p className="text-xs text-zinc-500">Its frames will appear here as they finish.</p>
           </div>
         ) : shots.length === 0 ? (
           <div className="flex min-h-80 flex-col items-center justify-center gap-4 text-center">
@@ -717,7 +789,7 @@ export function StoryboardWorkspace({
                             <button
                               type="button"
                               onClick={() => handleRegenerateSingleShot(shot)}
-                              disabled={isRegenerating}
+                              disabled={isRegenerating || openSceneInBatch}
                               className="flex items-center gap-1 rounded bg-violet-600 px-3 py-1 text-[11px] font-bold text-white hover:bg-violet-500 disabled:opacity-50"
                             >
                               {isRegenerating ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
@@ -730,7 +802,7 @@ export function StoryboardWorkspace({
                           <button
                             type="button"
                             onClick={() => handleRegenerateSingleShot(shot)}
-                            disabled={isRegenerating}
+                            disabled={isRegenerating || openSceneInBatch}
                             className="flex items-center gap-1.5 text-[11px] font-semibold text-zinc-400 hover:text-violet-400 transition-colors disabled:opacity-50"
                           >
                             <RefreshCw className={`h-3 w-3 ${isRegenerating ? 'animate-spin' : ''}`} />
@@ -747,6 +819,16 @@ export function StoryboardWorkspace({
           </>
         )}
       </div>
+
+      {showGenerateAll && projectId && (
+        <GenerateAllScenesDialog
+          projectId={projectId}
+          modelLabel={storyboardModel}
+          isStarting={storyboardBatch.isBusy}
+          onCancel={() => setShowGenerateAll(false)}
+          onConfirm={() => void handleStartAllScenes()}
+        />
+      )}
     </div>
   );
 }

@@ -1241,18 +1241,82 @@ def _storyboard_image_request(
     )
 
 
-def generate_scene_storyboard(
+@dataclass
+class PreparedSceneStoryboard:
+    """A scene whose shot rows are saved and whose frames are ready to render."""
+
+    job_id: str
+    shot_planner: str | None
+    # Every shot of the scene in script order, and the ones that still need an image.
+    shots: list[dict[str, Any]]
+    pending_shots: list[dict[str, Any]]
+    reused_plan: bool = False
+
+
+def _shot_ids_with_storyboard_image(project_id: str, shot_ids: list[str]) -> set[str]:
+    if not shot_ids:
+        return set()
+    links = require_supabase_client().table("asset_links").select("target_id").eq("project_id", project_id).eq(
+        "target_type", "shot"
+    ).eq("role", "storyboard").in_("target_id", shot_ids).execute()
+    return {str(link["target_id"]) for link in _rows(links)}
+
+
+def _start_scene_job(
     project_id: str,
     scene_id: str,
+    model: str,
+    prompt: str,
+    settings: dict[str, Any],
+    job_id: str | None = None,
+    storyboard_batch_id: str | None = None,
+) -> str:
+    """Mark the scene's storyboard job as running: updates a queued batch job, or creates one."""
+    supabase = require_supabase_client()
+    if job_id:
+        current = _rows(supabase.table("generation_jobs").select("settings").eq("id", job_id).execute())
+        if not current:
+            raise RuntimeError("Storyboard generation job was not found")
+        merged = {**(current[0].get("settings") or {}), **settings}
+        supabase.table("generation_jobs").update({
+            "model": model, "prompt": prompt, "settings": merged, "status": "running", "error_message": None,
+        }).eq("id", job_id).execute()
+        return job_id
+    row: dict[str, Any] = {
+        "project_id": project_id,
+        "scene_id": scene_id,
+        "kind": "storyboard",
+        "model": model,
+        "prompt": prompt,
+        "settings": settings,
+        "status": "running",
+    }
+    if storyboard_batch_id:
+        row["storyboard_batch_id"] = storyboard_batch_id
+    job_result = supabase.table("generation_jobs").insert(row).execute()
+    if not _rows(job_result):
+        raise RuntimeError("Failed to create storyboard generation job")
+    return str(_rows(job_result)[0]["id"])
+
+
+def prepare_scene_storyboard(
+    project_id: str,
+    scene_id: str,
+    *,
     force_regenerate: bool = False,
     provider: str = STORYBOARD_PROVIDER,
     model: str = STORYBOARD_MODEL,
-) -> GenerateStoryboardResponse:
-    """Build durable storyboard stills for one screenplay scene.
+    job_id: str | None = None,
+    storyboard_batch_id: str | None = None,
+    reuse_matching_shots: bool = False,
+) -> GenerateStoryboardResponse | PreparedSceneStoryboard:
+    """Plan a scene's shots and save them, ready for their frames to be rendered.
 
-    The scene's action lines are broken into a shot list, then each shot renders one
-    frame, in script order. A language model plans the shots; the image prompt wording
-    is still assembled deterministically from each shot.
+    Returns the stored storyboard instead when it can be reused (``force_regenerate`` off).
+    With ``reuse_matching_shots``, saved shots that still cover the current script are kept
+    and only those without an image are returned as pending (how a batch finishes a partly
+    generated scene without paying for its finished frames again). ``job_id`` is the queued
+    job a batch created for this scene; without it a new job is created.
     """
     supabase = require_supabase_client()
 
@@ -1292,6 +1356,26 @@ def generate_scene_storyboard(
         existing = _existing_storyboard(project_id, scene_id, capped_beats)
         if existing:
             return existing
+
+    if reuse_matching_shots:
+        saved_shots = _rows(supabase.table("shots").select(
+            "id, scene_id, shot_number, description, camera_angle, camera_motion, prompt, status, sort_order, metadata"
+        ).eq("project_id", project_id).eq("scene_id", scene_id).order("sort_order").execute())
+        if saved_shots and _storyboard_matches_script(saved_shots, capped_beats):
+            imaged = _shot_ids_with_storyboard_image(project_id, [str(shot["id"]) for shot in saved_shots])
+            pending = [shot for shot in saved_shots if str(shot["id"]) not in imaged]
+            if pending:
+                supabase.table("shots").update({"status": "in_progress"}).in_(
+                    "id", [shot["id"] for shot in pending]
+                ).execute()
+                pending = [{**shot, "status": "in_progress"} for shot in pending]
+            reused_job_id = _start_scene_job(
+                project_id, scene_id, model, str(scene.get("slugline_raw") or scene.get("title") or ""),
+                {"provider": provider, "phase": "rendering", "frame_count": len(saved_shots),
+                 "reused_plan": True, "pending_shot_ids": [shot["id"] for shot in pending]},
+                job_id=job_id, storyboard_batch_id=storyboard_batch_id,
+            )
+            return PreparedSceneStoryboard(reused_job_id, None, saved_shots, pending, reused_plan=True)
 
     visual_style = load_project_visual_style(project_id, supabase)
     characters, environment, objects = _gather_scene_linked_entities(project_id, scene_id, blocks)
@@ -1348,6 +1432,8 @@ def generate_scene_storyboard(
                 "character_ids": frame["character_ids"],
                 "characters": frame["characters"],
                 "image_references": frame["image_references"],
+                # Style applied now, so every frame of a batch keeps the look it was planned with.
+                "styled_prompt": apply_visual_style(frame["prompt"], visual_style),
             },
         }
         for index, frame in enumerate(planned_frames)
@@ -1356,13 +1442,14 @@ def generate_scene_storyboard(
     if len(shots) != len(planned_frames):
         raise RuntimeError("Failed to create storyboard shots")
 
-    job_result = supabase.table("generation_jobs").insert({
-        "project_id": project_id,
-        "scene_id": scene_id,
-        "kind": "storyboard",
-        "model": model,
-        "prompt": _scene_context(scene, blocks, characters, environment, objects, visual_style),
-        "settings": {
+    started_job_id = _start_scene_job(
+        project_id,
+        scene_id,
+        model,
+        _scene_context(scene, blocks, characters, environment, objects, visual_style),
+        {
+            "provider": provider,
+            "phase": "rendering",
             "frame_count": len(shots),
             "action_block_count": len(action_blocks),
             "max_action_frames": max_action_frames,
@@ -1371,64 +1458,116 @@ def generate_scene_storyboard(
             "shot_planner_error": planner_error,
             "prompts": [frame["prompt"] for frame in planned_frames],
         },
-        "status": "running",
-    }).execute()
-    if not _rows(job_result):
-        raise RuntimeError("Failed to create storyboard generation job")
-    job_id = _rows(job_result)[0]["id"]
+        job_id=job_id,
+        storyboard_batch_id=storyboard_batch_id,
+    )
+    ordered = sorted(shots, key=lambda shot: shot.get("sort_order") or 0)
+    return PreparedSceneStoryboard(started_job_id, shot_planner, ordered, ordered)
+
+
+def render_storyboard_shot(
+    project_id: str,
+    scene_id: str,
+    job_id: str,
+    shot: dict[str, Any],
+    *,
+    provider: str = STORYBOARD_PROVIDER,
+    model: str = STORYBOARD_MODEL,
+) -> str:
+    """Render one saved shot's frame, store it and link it to the shot. Returns the image URL.
+
+    Uses the references and styled prompt saved on the shot when it was planned; raises on failure
+    (the caller decides whether to retry or mark the shot failed).
+    """
+    metadata = shot.get("metadata") or {}
+    prompt = metadata.get("styled_prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        # Shots planned before prompts were stored styled: apply the project's current style.
+        prompt = apply_visual_style(str(shot.get("prompt") or ""), load_project_visual_style(project_id))
+    image_references = [str(url) for url in (metadata.get("image_references") or []) if url]
+    response = generate_provider_images(_storyboard_image_request(provider, model, prompt, image_references, project_id))
+    if not response.images:
+        raise RuntimeError("Image model did not return a storyboard image")
+    return _persist_frame_image(project_id, scene_id, job_id, shot, response.images[0], shot.get("sort_order") or 0)
+
+
+def scene_job_outcome(shot_statuses: Sequence[str]) -> tuple[str, str | None]:
+    """The storyboard job status for a scene from its shots' statuses, with an error message when any failed."""
+    if not shot_statuses or any(status in {"pending", "in_progress"} for status in shot_statuses):
+        return "running", None
+    failed = sum(1 for status in shot_statuses if status == "failed")
+    if failed:
+        noun = "frame" if failed == 1 else "frames"
+        return "failed", f"{failed} storyboard {noun} failed"
+    return "complete", None
+
+
+def refresh_scene_job(job_id: str, scene_id: str) -> str:
+    """Store the scene job's status worked out from its shots, and return it."""
+    supabase = require_supabase_client()
+    statuses = [str(row.get("status") or "") for row in _rows(
+        supabase.table("shots").select("status").eq("scene_id", scene_id).execute()
+    )]
+    status, error_message = scene_job_outcome(statuses)
+    update: dict[str, Any] = {"status": status, "error_message": error_message}
+    if status == "complete":
+        update["completed_at"] = datetime.now(UTC).isoformat()
+    supabase.table("generation_jobs").update(update).eq("id", job_id).neq("status", "cancelled").execute()
+    return status
+
+
+def mark_shot_failed(shot_id: str) -> None:
+    require_supabase_client().table("shots").update({"status": "failed"}).eq("id", shot_id).execute()
+
+
+def generate_scene_storyboard(
+    project_id: str,
+    scene_id: str,
+    force_regenerate: bool = False,
+    provider: str = STORYBOARD_PROVIDER,
+    model: str = STORYBOARD_MODEL,
+) -> GenerateStoryboardResponse:
+    """Build durable storyboard stills for one screenplay scene.
+
+    The scene's action lines are broken into a shot list, then each shot renders one
+    frame, in script order. A language model plans the shots; the image prompt wording
+    is still assembled deterministically from each shot.
+    """
+    prepared = prepare_scene_storyboard(
+        project_id, scene_id, force_regenerate=force_regenerate, provider=provider, model=model,
+    )
+    if isinstance(prepared, GenerateStoryboardResponse):
+        return prepared
 
     concurrency_limit = max(1, int(os.getenv("STORYBOARD_GENERATION_CONCURRENCY", "3")))
 
-    def generate_image(shot: dict[str, Any], frame_meta: dict[str, Any]) -> str:
-        image_inputs = frame_meta.get("image_references") or []
-        response = generate_provider_images(_storyboard_image_request(
-            provider, model, apply_visual_style(shot["prompt"], visual_style), list(image_inputs), project_id,
-        ))
-        if not response.images:
-            raise RuntimeError("Image model did not return a storyboard image")
-        return response.images[0]
+    def render(shot: dict[str, Any]) -> str:
+        return render_storyboard_shot(project_id, scene_id, prepared.job_id, shot, provider=provider, model=model)
 
     results: list[tuple[dict[str, Any], str | None, str | None]] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency_limit) as executor:
-        future_to_shot = {
-            executor.submit(generate_image, shot, planned_frames[idx]): shot
-            for idx, shot in enumerate(shots)
-        }
+        future_to_shot = {executor.submit(render, shot): shot for shot in prepared.pending_shots}
         for future in concurrent.futures.as_completed(future_to_shot):
             shot = future_to_shot[future]
             try:
                 results.append((shot, future.result(), None))
             except Exception as error:
+                mark_shot_failed(shot["id"])
                 results.append((shot, None, str(error)))
 
     response_frames: list[StoryboardFrame] = []
-    has_failure = False
-    for shot, source_url, generation_error in sorted(results, key=lambda result: result[0].get("sort_order") or 0):
-        if generation_error or not source_url:
-            has_failure = True
-            supabase.table("shots").update({"status": "failed"}).eq("id", shot["id"]).execute()
+    for shot, image_url, generation_error in sorted(results, key=lambda result: result[0].get("sort_order") or 0):
+        if generation_error or not image_url:
             response_frames.append(_frame_response({**shot, "status": "failed"}, error=generation_error))
-            continue
-        try:
-            image_url = _persist_frame_image(project_id, scene_id, job_id, shot, source_url, shot["sort_order"])
+        else:
             response_frames.append(_frame_response({**shot, "status": "complete"}, image_url=image_url))
-        except Exception as error:
-            has_failure = True
-            message = str(error)
-            supabase.table("shots").update({"status": "failed"}).eq("id", shot["id"]).execute()
-            response_frames.append(_frame_response({**shot, "status": "failed"}, error=message))
 
-    status = "failed" if has_failure else "complete"
-    supabase.table("generation_jobs").update({
-        "status": status,
-        "completed_at": datetime.now(UTC).isoformat() if not has_failure else None,
-        "error_message": "One or more storyboard frames failed" if has_failure else None,
-    }).eq("id", job_id).execute()
+    status = refresh_scene_job(prepared.job_id, scene_id)
     return GenerateStoryboardResponse(
         scene_id=scene_id,
-        generation_job_id=job_id,
-        status="partial" if has_failure and any(frame.image_url for frame in response_frames) else status,
-        shot_planner=shot_planner,
+        generation_job_id=prepared.job_id,
+        status="partial" if status == "failed" and any(frame.image_url for frame in response_frames) else status,
+        shot_planner=prepared.shot_planner,
         frames=response_frames,
     )
 
