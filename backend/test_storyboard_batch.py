@@ -1,6 +1,8 @@
 import unittest
 from unittest import mock
 
+import httpx
+
 from services import storyboard_batch as batches
 from services import storyboard_generation as sg
 from services.wavespeed_service import WaveSpeedServiceError
@@ -185,9 +187,104 @@ class LocalRunnerTests(unittest.TestCase):
         self.assertEqual(set_failed.call_args.args[0], "job")
 
     def test_runner_only_knows_batches_it_started(self) -> None:
-        self.runner.track("b1")
+        self.runner.track("b1", ["job"])
+        self.assertFalse(self.runner.is_live("b1"), "nothing queued yet")
+        self.runner._begin("job")
         self.assertTrue(self.runner.is_live("b1"))
         self.assertFalse(self.runner.is_live("b2"))
+
+    def _drain(self) -> None:
+        plans, images = self.runner._pools()
+        plans.shutdown(wait=True)
+        images.shutdown(wait=True)
+
+    def test_batch_stays_live_while_a_frame_renders_and_ends_when_none_are_left(self) -> None:
+        seen: list[bool] = []
+
+        def render_step(job_id, shot_id, attempt, retry_later):
+            seen.append(self.runner.is_live("b1"))
+
+        self.runner.track("b1", ["job"])
+        with mock.patch.object(self.module, "run_render_step", side_effect=render_step):
+            self.runner.render("job", "shot")
+            self._drain()
+        self.assertEqual(seen, [True])
+        self.assertFalse(self.runner.is_live("b1"))
+
+    def test_a_frame_that_died_leaves_no_live_work(self) -> None:
+        # Offline: the render crashes and even marking the frame failed can't reach the database.
+        self.runner.track("b1", ["job"])
+        with mock.patch.object(self.module, "run_render_step", side_effect=RuntimeError("getaddrinfo failed")), \
+                mock.patch.object(self.module, "mark_shot_failed", side_effect=RuntimeError("getaddrinfo failed")):
+            self.runner.render("job", "shot")
+            self._drain()
+        self.assertFalse(self.runner.is_live("b1"))
+
+    def test_a_scheduled_retry_keeps_the_batch_live(self) -> None:
+        def render_step(job_id, shot_id, attempt, retry_later):
+            retry_later(RuntimeError("busy"), 30.0)
+
+        self.runner.track("b1", ["job"])
+        with mock.patch.object(self.module, "run_render_step", side_effect=render_step), \
+                mock.patch.object(self.module.threading, "Timer") as timer:
+            self.runner.render("job", "shot")
+            self._drain()
+        timer.return_value.start.assert_called_once()
+        self.assertTrue(self.runner.is_live("b1"))
+
+        # When the timer fires the frame is queued again, then the waiting retry is no longer counted.
+        fire = timer.call_args.args[1]
+        job_id, _action, *rest = timer.call_args.kwargs["args"]
+        render = mock.Mock()
+        fire(job_id, render, *rest)
+        render.assert_called_once_with("job", "shot", 1)
+        self.assertFalse(self.runner.is_live("b1"))
+
+
+class OfflineStepTests(unittest.TestCase):
+    """Losing the internet while talking to the database retries the step instead of dropping it."""
+
+    def setUp(self) -> None:
+        from services import storyboard_batch_jobs as jobs
+
+        self.jobs = jobs
+        self.offline = httpx.ConnectError("[Errno 11001] getaddrinfo failed")
+
+    def test_render_step_retries_when_the_database_is_unreachable(self) -> None:
+        retry_later = mock.Mock()
+        with mock.patch.object(self.jobs.batches, "load_job", side_effect=self.offline):
+            self.jobs.run_render_step("job", "shot", 0, retry_later)
+        retry_later.assert_called_once()
+        self.assertIs(retry_later.call_args.args[0], self.offline)
+
+    def test_render_step_gives_up_after_its_last_attempt(self) -> None:
+        with mock.patch.object(self.jobs.batches, "load_job", side_effect=self.offline), \
+                self.assertRaises(httpx.ConnectError):
+            self.jobs.run_render_step("job", "shot", self.jobs.RENDER_MAX_RETRIES, mock.Mock())
+
+    def test_render_step_retries_when_saving_progress_fails_after_the_frame(self) -> None:
+        retry_later = mock.Mock()
+        job = {"id": "job", "status": "running", "storyboard_batch_id": "b1", "model": "m", "settings": {}}
+        shot = {"id": "shot", "project_id": "p", "scene_id": "s", "status": "in_progress", "metadata": {}}
+        supabase = mock.Mock()
+        supabase.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [shot]
+        with mock.patch.object(self.jobs.batches, "load_job", return_value=job), \
+                mock.patch.object(self.jobs, "require_supabase_client", return_value=supabase), \
+                mock.patch.object(self.jobs, "render_storyboard_shot", return_value="https://img"), \
+                mock.patch.object(self.jobs, "refresh_scene_job", side_effect=self.offline):
+            self.jobs.run_render_step("job", "shot", 0, retry_later)
+        retry_later.assert_called_once()
+
+    def test_plan_step_retries_when_the_database_is_unreachable(self) -> None:
+        retry_later = mock.Mock()
+        with mock.patch.object(self.jobs.batches, "load_job", side_effect=self.offline):
+            self.jobs.run_plan_step("job", 0, mock.Mock(), retry_later)
+        retry_later.assert_called_once()
+
+    def test_other_database_errors_are_not_retried(self) -> None:
+        with mock.patch.object(self.jobs.batches, "load_job", side_effect=ValueError("bad row")), \
+                self.assertRaises(ValueError):
+            self.jobs.run_render_step("job", "shot", 0, mock.Mock())
 
 
 class InterruptedBatchTests(unittest.TestCase):

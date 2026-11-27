@@ -23,8 +23,8 @@ from services.storyboard_models import storyboard_model
 router = APIRouter(prefix="/api/story/storyboard-batches", tags=["story"])
 
 INTERRUPTED_MESSAGE = (
-    "Stopped because the backend restarted. Click Generate All Scenes at Once to continue; "
-    "finished frames are kept."
+    "Stopped because the backend restarted or lost its internet connection before every frame "
+    "finished. Retry to continue; finished frames are kept."
 )
 
 
@@ -54,7 +54,7 @@ def _http_error(error: Exception, action: str) -> HTTPException:
 
 def _dispatch(runner: str, batch_id: str, plan_job_ids: Sequence[str], renders: Sequence[tuple[str, str]] = ()) -> None:
     if runner == batches.RUNNER_LOCAL:
-        local_runner.track(batch_id)
+        local_runner.track(batch_id, [*plan_job_ids, *(job_id for job_id, _ in renders)])
         for job_id in plan_job_ids:
             local_runner.plan(job_id)
         for job_id, shot_id in renders:
@@ -73,7 +73,11 @@ def _dispatch(runner: str, batch_id: str, plan_job_ids: Sequence[str], renders: 
 
 
 def _status(batch_id: str, project_id: str) -> dict[str, Any]:
-    """Batch progress; a fallback batch this backend isn't running (it restarted) is marked stopped."""
+    """Batch progress; a fallback batch with no work left in this backend is marked stopped.
+
+    That happens after a restart, or when every remaining step died (for example the internet
+    dropped and even saving the failure didn't get through), so the page doesn't load forever.
+    """
     status = batches.batch_status(batch_id, project_id)
     if (
         status["runner"] == batches.RUNNER_LOCAL

@@ -71,6 +71,18 @@ OUTPUT_FORMATS = {"png", "jpeg"}
 INPAINT_MODELS = {"wavespeed-ai/flux-fill-dev", "google/nano-banana-pro/edit"}
 
 
+DEFAULT_IMAGE_TIMEOUT_SECONDS = 600.0
+
+
+def _image_timeout_seconds() -> float:
+    """How long to wait for one image. Without a limit the SDK polls forever (and allows 10 hours
+    per HTTP read), so a request lost in an internet drop would never fail and be retried."""
+    try:
+        return max(30.0, float(os.environ.get("WAVESPEED_IMAGE_TIMEOUT_SECONDS", DEFAULT_IMAGE_TIMEOUT_SECONDS)))
+    except ValueError:
+        return DEFAULT_IMAGE_TIMEOUT_SECONDS
+
+
 def _create_wavespeed_client() -> wavespeed.Client:
     api_key = os.environ.get("WAVESPEED_API_KEY")
     if api_key:
@@ -231,7 +243,7 @@ def generate_wavespeed_images(payload: CreateImageRequest) -> CreateImageRespons
         elif "seedream-v4.5/edit" in model_name:
             params["size"] = _size_from_aspect_ratio(payload.aspect_ratio)
 
-        output = client.run(model_name, params)
+        output = client.run(model_name, params, timeout=_image_timeout_seconds())
         images = _extract_output_urls(output)
 
         if not images:

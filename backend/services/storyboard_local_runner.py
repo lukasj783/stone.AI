@@ -13,6 +13,8 @@ Redis and the workers when the backend runs with several processes.
 import logging
 import os
 import threading
+from collections import Counter
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 
 from services import storyboard_batch as batches
@@ -30,11 +32,20 @@ def _limit(name: str, default: int) -> int:
 
 
 class LocalStoryboardRunner:
+    """Runs batch steps on thread pools and knows which batches still have work here.
+
+    A batch is live while one of its steps is queued, running or waiting to be retried. When
+    none is left but the database still says the batch is running (a step died, for example
+    because the internet dropped and even saving its failure didn't get through), the batch
+    endpoint reports it as stopped instead of loading forever.
+    """
+
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._plans: ThreadPoolExecutor | None = None
         self._images: ThreadPoolExecutor | None = None
-        self._live_batches: set[str] = set()
+        self._batch_of_job: dict[str, str] = {}
+        self._work: Counter[str] = Counter()
 
     def _pools(self) -> tuple[ThreadPoolExecutor, ThreadPoolExecutor]:
         with self._lock:
@@ -47,23 +58,46 @@ class LocalStoryboardRunner:
                 )
             return self._plans, self._images
 
-    def track(self, batch_id: str) -> None:
-        """Remember that this process is running the batch."""
+    def track(self, batch_id: str, job_ids: Iterable[str]) -> None:
+        """Remember that this process runs these scene jobs of the batch."""
         with self._lock:
-            self._live_batches.add(batch_id)
+            for job_id in job_ids:
+                self._batch_of_job[job_id] = batch_id
 
     def is_live(self, batch_id: str) -> bool:
         with self._lock:
-            return batch_id in self._live_batches
+            return self._work[batch_id] > 0
+
+    def _begin(self, job_id: str) -> None:
+        with self._lock:
+            batch_id = self._batch_of_job.get(job_id)
+            if batch_id:
+                self._work[batch_id] += 1
+
+    def _end(self, job_id: str) -> None:
+        with self._lock:
+            batch_id = self._batch_of_job.get(job_id)
+            if batch_id and self._work[batch_id] > 0:
+                self._work[batch_id] -= 1
+
+    def _counted(self, job_id: str, step: Callable[..., None], *args: object) -> None:
+        try:
+            step(*args)
+        finally:
+            self._end(job_id)
 
     def plan(self, job_id: str, attempt: int = 0) -> None:
-        self._pools()[0].submit(self._run_plan, job_id, attempt)
+        self._begin(job_id)
+        self._pools()[0].submit(self._counted, job_id, self._run_plan, job_id, attempt)
 
     def render(self, job_id: str, shot_id: str, attempt: int = 0) -> None:
-        self._pools()[1].submit(self._run_render, job_id, shot_id, attempt)
+        self._begin(job_id)
+        self._pools()[1].submit(self._counted, job_id, self._run_render, job_id, shot_id, attempt)
 
-    def _later(self, delay: float, action, *args) -> None:
-        timer = threading.Timer(delay, action, args=args)
+    def _later(self, delay: float, action: Callable[..., None], job_id: str, *args: object) -> None:
+        """Run ``action(job_id, *args)`` after ``delay`` seconds; the wait counts as live work."""
+        self._begin(job_id)
+        timer = threading.Timer(delay, self._counted, args=(job_id, action, job_id, *args))
         timer.daemon = True
         timer.start()
 

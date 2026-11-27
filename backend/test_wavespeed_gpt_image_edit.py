@@ -57,6 +57,26 @@ class GPTImageEditTests(unittest.TestCase):
         self.assertEqual(client.run.call_args.args[0], GPT_IMAGE_EDIT_MODEL)
         self.assertEqual(response.model, GPT_IMAGE_EDIT_MODEL)
 
+    @patch("services.wavespeed_service._create_wavespeed_client")
+    def test_waits_a_bounded_time_for_the_image(self, create_client: MagicMock) -> None:
+        # Without a limit the SDK polls forever and allows 10 hours per HTTP read.
+        client = create_client.return_value
+        client.run.return_value = {"outputs": ["https://example.com/edited.png"]}
+
+        generate_wavespeed_images(_payload(image_mapping={"reference": "https://example.com/reference.png"}))
+
+        self.assertEqual(client.run.call_args.kwargs["timeout"], 600.0)
+
+    @patch.dict("os.environ", {"WAVESPEED_IMAGE_TIMEOUT_SECONDS": "90"})
+    @patch("services.wavespeed_service._create_wavespeed_client")
+    def test_image_wait_limit_can_be_configured(self, create_client: MagicMock) -> None:
+        client = create_client.return_value
+        client.run.return_value = {"outputs": ["https://example.com/edited.png"]}
+
+        generate_wavespeed_images(_payload(image_mapping={"reference": "https://example.com/reference.png"}))
+
+        self.assertEqual(client.run.call_args.kwargs["timeout"], 90.0)
+
     def test_requires_an_input_image(self) -> None:
         with self.assertRaises(WaveSpeedServiceError):
             generate_wavespeed_images(_payload())
