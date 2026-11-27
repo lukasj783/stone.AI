@@ -20,6 +20,7 @@ from schemas.script import (
     ConfirmCharacterScriptSyncPayload,
     ConfirmCharacterScriptSyncResponse,
     CreateObjectPayload,
+    EnvironmentProfileResponse,
     ExtractedCharacterSchema,
     ExtractedObjectSchema,
     ExtractScriptCharactersPayload,
@@ -34,6 +35,7 @@ from schemas.script import (
     MovieIdeaPayload,
     ObjectProfileResponse,
     PreviewCharacterScriptSyncPayload,
+    UpdateEnvironmentPayload,
     UpdateObjectPayload,
     UpdateCharacterProfilePayload,
 )
@@ -64,6 +66,12 @@ from services.character_views import (
 )
 from services.character_ranking import rank_characters_from_script
 from services.environment_ranking import rank_environments_from_script
+from services.entity_profiles import (
+    ENVIRONMENT_PROFILE_FIELDS,
+    OBJECT_PROFILE_FIELDS,
+    apply_profile_changes,
+    profile_values,
+)
 from services.object_ranking import ObjectRanking, rank_objects_from_script, rank_project_objects
 from services.duration_budget import PACING_GUIDANCE, format_seconds, normalize_pacing, parse_duration_seconds
 from services.gemini_client import run_gemini
@@ -306,11 +314,41 @@ def _object_profile_response(
         description=prop.get("description") if isinstance(prop.get("description"), str) else None,
         tags=[value for value in (prop.get("tags") or []) if isinstance(value, str)],
         sources=[value for value in sources if isinstance(value, str)],
-        manual_override_fields=[field for field in ("name", "description", "tags") if field in overrides],
+        manual_override_fields=[
+            field for field in ("name", "description", "tags", *OBJECT_PROFILE_FIELDS) if field in overrides
+        ],
         source_scene_ids=[value for value in metadata.get("source_scene_ids", []) if isinstance(value, str)],
         source_sluglines=[value for value in metadata.get("source_sluglines", []) if isinstance(value, str)],
         primary_image_url=primary_image_url,
+        profile=profile_values(metadata, OBJECT_PROFILE_FIELDS),
         ranking=ObjectRankingSchema(**asdict(ranking)) if ranking else None,
+    )
+
+
+def _string_list(value: object) -> list[str]:
+    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+
+def _environment_profile_response(environment: dict, primary_image_url: str | None = None) -> EnvironmentProfileResponse:
+    metadata = environment.get("metadata") if isinstance(environment.get("metadata"), dict) else {}
+    overrides = metadata.get("manual_overrides") if isinstance(metadata.get("manual_overrides"), dict) else {}
+    scene_ids = _string_list(metadata.get("source_scene_ids"))
+    scene_count = metadata.get("scene_count")
+    return EnvironmentProfileResponse(
+        id=str(environment["id"]),
+        name=str(environment["name"]),
+        description=environment.get("description") if isinstance(environment.get("description"), str) else None,
+        tags=_string_list(environment.get("tags")),
+        primary_image_url=primary_image_url,
+        profile=profile_values(metadata, ENVIRONMENT_PROFILE_FIELDS),
+        manual_override_fields=[
+            field for field in ("description", "tags", *ENVIRONMENT_PROFILE_FIELDS) if field in overrides
+        ],
+        location_types=_string_list(metadata.get("location_types")),
+        time_of_day_values=_string_list(metadata.get("time_of_day_values")),
+        source_scene_ids=scene_ids,
+        source_sluglines=_string_list(metadata.get("source_sluglines")),
+        scene_count=scene_count if isinstance(scene_count, int) else len(scene_ids),
     )
 
 
@@ -352,7 +390,7 @@ def _extract_script_environments(scenes: list[dict]) -> list[dict]:
 
 
 def _persist_script_environments(supabase: Client, project_id: str, environments: list[dict]) -> None:
-    existing_result = supabase.table("environments").select("id, metadata").eq("project_id", project_id).execute()
+    existing_result = supabase.table("environments").select("id, description, metadata").eq("project_id", project_id).execute()
     existing_by_key = {
         metadata.get("script_key"): environment
         for environment in as_records(existing_result.data)
@@ -363,7 +401,12 @@ def _persist_script_environments(supabase: Client, project_id: str, environments
 
     for environment in environments:
         script_key = _normalize_environment_name(environment["name"])
+        existing = existing_by_key.get(script_key)
+        existing_metadata = existing.get("metadata") if existing and isinstance(existing.get("metadata"), dict) else {}
+        overrides = existing_metadata.get("manual_overrides") if isinstance(existing_metadata.get("manual_overrides"), dict) else {}
         metadata = {
+            # What the user typed (profile fields and their Manual marks) survives a fresh extraction.
+            **{key: existing_metadata[key] for key in ("profile", "manual_overrides") if key in existing_metadata},
             "source": "script",
             "script_key": script_key,
             "source_scene_ids": environment["source_scene_ids"],
@@ -373,8 +416,11 @@ def _persist_script_environments(supabase: Client, project_id: str, environments
             "scene_count": len(environment["source_scene_ids"]),
             "extraction_version": 1,
         }
-        values = {"name": environment["name"], "description": None, "tags": [], "metadata": metadata}
-        existing = existing_by_key.get(script_key)
+        values: dict[str, Any] = {"name": environment["name"], "metadata": metadata}
+        if "description" not in overrides:
+            values["description"] = None
+        if "tags" not in overrides:
+            values["tags"] = []
         if existing:
             supabase.table("environments").update(values).eq("id", existing["id"]).execute()
         else:
@@ -991,6 +1037,84 @@ async def rank_environments(project_id: str) -> list[EnvironmentRankingSchema]:
     ]
 
 
+def _reject_unknown_profile_fields(profile: dict | None, fields: tuple[str, ...]) -> None:
+    unknown = sorted(key for key in (profile or {}) if key not in fields)
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown profile field: {', '.join(unknown)}")
+
+
+def _primary_image_urls(supabase: Client, rows: list[dict]) -> dict[str, str]:
+    asset_ids = [str(row["primary_asset_id"]) for row in rows if isinstance(row.get("primary_asset_id"), str)]
+    if not asset_ids:
+        return {}
+    assets = as_records(supabase.table("assets").select("id, url").in_("id", asset_ids).execute().data)
+    return {str(asset["id"]): str(asset["url"]) for asset in assets if isinstance(asset.get("url"), str)}
+
+
+_ENVIRONMENT_COLUMNS = "id, name, description, tags, primary_asset_id, metadata"
+
+
+@router.get("/environments", response_model=list[EnvironmentProfileResponse])
+async def list_environments(project_id: str) -> list[EnvironmentProfileResponse]:
+    """The project's script environments with their profile and main image, by name."""
+    supabase = get_supabase_client()
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase client not configured")
+    try:
+        rows = as_records(supabase.table("environments").select(_ENVIRONMENT_COLUMNS).eq("project_id", project_id).eq(
+            "metadata->>source", "script"
+        ).order("name").execute().data)
+        urls = _primary_image_urls(supabase, rows)
+        return [_environment_profile_response(row, urls.get(str(row.get("primary_asset_id")))) for row in rows]
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Failed to load environments: {error}") from error
+
+
+@router.patch("/environments/{environment_id}", response_model=EnvironmentProfileResponse)
+async def update_environment(environment_id: str, payload: UpdateEnvironmentPayload) -> EnvironmentProfileResponse:
+    supabase = get_supabase_client()
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase client not configured")
+    _reject_unknown_profile_fields(payload.profile, ENVIRONMENT_PROFILE_FIELDS)
+
+    def load() -> dict | None:
+        return maybe_single_record(supabase.table("environments").select(_ENVIRONMENT_COLUMNS).eq("id", environment_id).eq(
+            "project_id", payload.project_id
+        ).maybe_single().execute())
+
+    try:
+        loaded = load()
+        if not loaded:
+            raise ValueError("Environment was not found in this project")
+        metadata = dict(loaded.get("metadata") or {})
+        overrides = dict(metadata.get("manual_overrides") or {})
+        values: dict[str, Any] = {}
+        if "description" in payload.model_fields_set:
+            description = " ".join((payload.description or "").strip().split()) or None
+            values["description"] = description
+            # A cleared description goes back to "From script" like a cleared profile field.
+            if description:
+                overrides["description"] = True
+            else:
+                overrides.pop("description", None)
+        if "tags" in payload.model_fields_set:
+            values["tags"] = _normalize_object_tags(payload.tags or [])
+            overrides["tags"] = True
+        metadata["manual_overrides"] = overrides
+        if "profile" in payload.model_fields_set and payload.profile:
+            metadata = apply_profile_changes(metadata, ENVIRONMENT_PROFILE_FIELDS, payload.profile)
+        values["metadata"] = metadata
+        supabase.table("environments").update(values).eq("id", environment_id).eq("project_id", payload.project_id).execute()
+        updated = load()
+        if not updated:
+            raise ValueError("Environment was not found after updating")
+        return _environment_profile_response(updated, _primary_image_urls(supabase, [updated]).get(str(updated.get("primary_asset_id"))))
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=f"Environment update failed: {error}") from error
+
+
 @router.get("/objects", response_model=list[ObjectProfileResponse])
 async def list_objects(project_id: str) -> list[ObjectProfileResponse]:
     supabase = get_supabase_client()
@@ -1050,6 +1174,7 @@ async def update_object(object_id: str, payload: UpdateObjectPayload) -> ObjectP
     supabase = get_supabase_client()
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase client not configured")
+    _reject_unknown_profile_fields(payload.profile, OBJECT_PROFILE_FIELDS)
     try:
         loaded = maybe_single_record(supabase.table("props").select("id, name, description, tags, metadata").eq("id", object_id).eq(
             "project_id", payload.project_id
@@ -1075,6 +1200,9 @@ async def update_object(object_id: str, payload: UpdateObjectPayload) -> ObjectP
             values["tags"] = _normalize_object_tags(payload.tags or [])
             overrides["tags"] = True
         metadata["manual_overrides"] = overrides
+        if "profile" in payload.model_fields_set and payload.profile:
+            metadata = apply_profile_changes(metadata, OBJECT_PROFILE_FIELDS, payload.profile)
+            values["metadata"] = metadata
         supabase.table("props").update(values).eq("id", object_id).eq("project_id", payload.project_id).execute()
         updated = maybe_single_record(supabase.table("props").select("id, name, description, tags, metadata").eq("id", object_id).eq(
             "project_id", payload.project_id

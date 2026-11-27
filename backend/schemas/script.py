@@ -149,6 +149,8 @@ class UpdateObjectPayload(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=240)
     description: str | None = Field(default=None, max_length=2_000)
     tags: list[str] | None = None
+    # Only the keys sent are changed; a blank or null value clears that field and its Manual mark.
+    profile: dict[str, str | None] | None = None
 
 
 class ObjectProfileResponse(BaseModel):
@@ -161,6 +163,7 @@ class ObjectProfileResponse(BaseModel):
     source_scene_ids: list[str] = Field(default_factory=list)
     source_sluglines: list[str] = Field(default_factory=list)
     primary_image_url: str | None = None
+    profile: dict[str, str | None] = Field(default_factory=dict)
     ranking: "ObjectRankingSchema | None" = None
 
 
@@ -179,6 +182,28 @@ class ObjectRankingSchema(BaseModel):
 
 
 ObjectProfileResponse.model_rebuild()
+
+
+class EnvironmentProfileResponse(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    primary_image_url: str | None = None
+    profile: dict[str, str | None] = Field(default_factory=dict)
+    manual_override_fields: list[str] = Field(default_factory=list)
+    location_types: list[str] = Field(default_factory=list)
+    time_of_day_values: list[str] = Field(default_factory=list)
+    source_scene_ids: list[str] = Field(default_factory=list)
+    source_sluglines: list[str] = Field(default_factory=list)
+    scene_count: int = 0
+
+
+class UpdateEnvironmentPayload(BaseModel):
+    project_id: str = Field(min_length=1)
+    description: str | None = Field(default=None, max_length=2_000)
+    tags: list[str] | None = None
+    profile: dict[str, str | None] | None = None
 
 
 class CharacterRankingSchema(BaseModel):
