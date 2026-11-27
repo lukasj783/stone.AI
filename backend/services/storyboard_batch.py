@@ -237,6 +237,25 @@ def choose_runner() -> str:
     return runner
 
 
+CELERY_REQUIRED_MESSAGE = (
+    "Redis or the storyboard workers aren't running, and STORYBOARD_FALLBACK is off, so scenes can "
+    "only be generated through Celery. Start Redis and the storyboard workers, then try again."
+)
+
+
+def fallback_enabled() -> bool:
+    """Whether a batch may run inside the backend when Celery can't be used (STORYBOARD_FALLBACK)."""
+    return get_settings().storyboard_fallback
+
+
+def runner_for_new_work() -> str:
+    """The runner for a new batch or a retry: Celery when it runs, else the fallback if allowed."""
+    runner = choose_runner()
+    if runner == RUNNER_LOCAL and not fallback_enabled():
+        raise StoryboardQueueUnavailable(CELERY_REQUIRED_MESSAGE)
+    return runner
+
+
 CELERY_LOSS_GRACE_SECONDS = 60.0
 
 

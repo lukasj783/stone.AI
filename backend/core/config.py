@@ -41,6 +41,18 @@ class Settings:
     # Parallel TTS requests per scene; ElevenLabs caps concurrency by plan.
     elevenlabs_max_concurrency: int = 2
     audio_storage_bucket: str = "output-audio"
+    # STORYBOARD_FALLBACK=off: "Generate All Scenes" only runs on Celery. Use it when several
+    # backend processes run (production), since the in-backend fallback assumes just one.
+    storyboard_fallback: bool = True
+
+
+def _parse_switch(raw: str | None, default: bool) -> bool:
+    value = (raw or "").strip().lower()
+    if value in {"off", "false", "0", "no"}:
+        return False
+    if value in {"on", "true", "1", "yes"}:
+        return True
+    return default
 
 
 def _parse_origins(raw: str | None) -> list[str]:
@@ -106,6 +118,7 @@ def get_settings() -> Settings:
         elevenlabs_design_model=_clean(os.getenv("ELEVENLABS_DESIGN_MODEL")) or DEFAULT_ELEVENLABS_DESIGN_MODEL,
         elevenlabs_max_concurrency=max(1, int(os.getenv("ELEVENLABS_MAX_CONCURRENCY", "2"))),
         audio_storage_bucket=_clean(os.getenv("AUDIO_STORAGE_BUCKET")) or "output-audio",
+        storyboard_fallback=_parse_switch(os.getenv("STORYBOARD_FALLBACK"), True),
     )
 
 

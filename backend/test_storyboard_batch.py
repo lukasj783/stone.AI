@@ -368,6 +368,7 @@ class CeleryFallbackTests(unittest.TestCase):
         with mock.patch.object(router.batches, "batch_status", return_value=status), \
                 mock.patch.object(router.batches, "cancel_batch"), \
                 mock.patch.object(router.local_runner, "is_live", return_value=True), \
+                mock.patch.object(router.batches, "fallback_enabled", return_value=True), \
                 mock.patch.object(router.batches, "celery_lost", return_value=lost), \
                 mock.patch.object(router, "_hand_off_to_fallback") as hand_off:
             router._status("b1", "p1")
@@ -394,6 +395,72 @@ class CeleryFallbackTests(unittest.TestCase):
             router._hand_off_to_fallback("b1", "p1")  # a second poll at the same moment
         set_runner.assert_called_once_with("b1", batches.RUNNER_LOCAL)
         dispatch.assert_called_once_with(batches.RUNNER_LOCAL, "b1", ["j1"], [("j2", "shot")])
+
+
+class FallbackSettingTests(unittest.TestCase):
+    """STORYBOARD_FALLBACK=off: batches only run on Celery (for production with several backend processes)."""
+
+    def _settings(self, value: str | None):
+        from core import config
+
+        env = {} if value is None else {"STORYBOARD_FALLBACK": value}
+        with mock.patch.dict("os.environ", env), mock.patch.object(config, "_load_env_file"):
+            if value is None:
+                import os
+                os.environ.pop("STORYBOARD_FALLBACK", None)
+            config.get_settings.cache_clear()
+            try:
+                return config.get_settings().storyboard_fallback
+            finally:
+                config.get_settings.cache_clear()
+
+    def test_fallback_is_on_unless_turned_off(self) -> None:
+        self.assertTrue(self._settings(None))
+        self.assertTrue(self._settings("on"))
+        for off in ("off", "false", "0", "no", " OFF "):
+            self.assertFalse(self._settings(off), off)
+
+    def _runner(self, *, available: bool, fallback: bool):
+        with mock.patch.object(batches, "choose_runner",
+                               return_value=batches.RUNNER_CELERY if available else batches.RUNNER_LOCAL), \
+                mock.patch.object(batches, "fallback_enabled", return_value=fallback):
+            return batches.runner_for_new_work()
+
+    def test_celery_is_used_whenever_it_runs(self) -> None:
+        self.assertEqual(self._runner(available=True, fallback=False), batches.RUNNER_CELERY)
+        self.assertEqual(self._runner(available=True, fallback=True), batches.RUNNER_CELERY)
+
+    def test_fallback_runs_the_batch_when_allowed(self) -> None:
+        self.assertEqual(self._runner(available=False, fallback=True), batches.RUNNER_LOCAL)
+
+    def test_without_fallback_a_missing_celery_is_a_clear_error(self) -> None:
+        with self.assertRaises(batches.StoryboardQueueUnavailable) as raised:
+            self._runner(available=False, fallback=False)
+        self.assertIn("STORYBOARD_FALLBACK", str(raised.exception))
+
+    def test_without_fallback_a_running_celery_batch_waits_for_its_workers(self) -> None:
+        from routers import storyboard_batches as router
+
+        status = {"runner": batches.RUNNER_CELERY, "status": "running", "scenes": []}
+        with mock.patch.object(router.batches, "batch_status", return_value=status), \
+                mock.patch.object(router.batches, "fallback_enabled", return_value=False), \
+                mock.patch.object(router.batches, "celery_lost", return_value=True), \
+                mock.patch.object(router, "_hand_off_to_fallback") as hand_off:
+            router._status("b1", "p1")
+        hand_off.assert_not_called()
+
+    def test_starting_without_celery_or_fallback_creates_nothing(self) -> None:
+        from routers import storyboard_batches as router
+        from schemas.storyboard_batch import StartStoryboardBatchRequest
+
+        error = batches.StoryboardQueueUnavailable("Redis is not running")
+        with mock.patch.object(router.batches, "active_batch_id", return_value=None), \
+                mock.patch.object(router.batches, "runner_for_new_work", side_effect=error), \
+                mock.patch.object(router.batches, "create_batch") as create, \
+                self.assertRaises(batches.StoryboardQueueUnavailable):
+            router._start(StartStoryboardBatchRequest(project_id="p1"))
+        create.assert_not_called()
+        self.assertEqual(router._http_error(error, "Starting the batch").status_code, 503)
 
 
 class CeleryTaskSkipTests(unittest.TestCase):

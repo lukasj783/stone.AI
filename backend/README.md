@@ -86,6 +86,26 @@ celery -A core.celery_app.celery_app worker --loglevel=INFO --concurrency=3
 The worker needs public Supabase `output-images` URLs so WaveSpeed can read the
 storyboard stills, and it writes completed MP4s to `output-videos`.
 
+## Generate All Scenes at Once (storyboard batches)
+
+Apply `supabase/migrations/20261126090000_storyboard_batches.sql`. A batch runs on the
+Celery workers when Redis and both storyboard workers are running (`run_storyboard_workers.py`,
+or double-click `start_storyboard_workers.bat` on Windows). Otherwise it runs on worker threads
+inside the backend (the fallback), and a Celery batch whose Redis or workers stay gone for 60
+seconds is finished there.
+
+```env
+STORYBOARD_FALLBACK=on            # off: only run batches on Celery
+STORYBOARD_BATCH_CONCURRENCY=30   # frames drawn at the same time
+STORYBOARD_PLAN_CONCURRENCY=10    # scenes planned at the same time
+WAVESPEED_IMAGE_TIMEOUT_SECONDS=600
+```
+
+Set `STORYBOARD_FALLBACK=off` in production, or whenever the backend runs as more than one
+process: the fallback keeps its work in one process's memory, so another process would report
+its batches as stopped. With it off, starting a batch while Celery is down returns a clear error
+(HTTP 503), and a running batch waits in Redis until the workers come back.
+
 ## Endpoints
 
 - `GET /` health check

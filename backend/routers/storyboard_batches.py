@@ -107,6 +107,7 @@ def _status(batch_id: str, project_id: str) -> dict[str, Any]:
     if (
         status["runner"] == batches.RUNNER_CELERY
         and status["status"] in batches.ACTIVE_BATCH_STATUSES
+        and batches.fallback_enabled()
         and batches.celery_lost(batch_id)
     ):
         _hand_off_to_fallback(batch_id, project_id)
@@ -137,7 +138,7 @@ def _start(payload: StartStoryboardBatchRequest) -> StoryboardBatchResponse:
     existing = batches.active_batch_id(payload.project_id)
     if existing:
         _status(existing, payload.project_id)  # clears a batch left behind by a restart
-    runner = batches.choose_runner()
+    runner = batches.runner_for_new_work()
     batch_id, job_ids = batches.create_batch(payload.project_id, payload.model, payload.provider, runner)
     _dispatch(runner, batch_id, job_ids)
     return StoryboardBatchResponse(**_status(batch_id, payload.project_id))
@@ -183,7 +184,7 @@ async def get_batch(batch_id: str, project_id: str) -> StoryboardBatchResponse:
 def _retry(batch_id: str, project_id: str) -> StoryboardBatchResponse:
     _status(batch_id, project_id)
     replan, rerender = batches.failed_work(batch_id, project_id)
-    runner = batches.choose_runner()
+    runner = batches.runner_for_new_work()
     batches.reopen_for_retry(batch_id, replan, rerender)
     batches.set_batch_runner(batch_id, runner)
     _dispatch(runner, batch_id, replan, rerender)
