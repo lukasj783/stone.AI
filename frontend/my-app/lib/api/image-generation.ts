@@ -1,11 +1,12 @@
 import { readApiError } from './errors';
 import {
-  CharacterSheetReference,
   CharacterSheetResponse,
   CreateCharacterFromSheetRequest,
   DraftCharacterSheetRequest,
   DraftCharacterSheetResponse,
   GenerateCharacterSheetRequest,
+  GenerateObjectSheetRequest,
+  ObjectSheetResponse,
   CreateImageRequest,
   CreateImageResponse,
   GenerateScriptEnvironmentRequest,
@@ -145,7 +146,36 @@ export async function approveCharacterSheet(projectId: string, characterId: stri
   return response.json() as Promise<CharacterSheetResponse>;
 }
 
-function sheetFormData(fields: Record<string, string | undefined>, references: CharacterSheetReference[] = []): FormData {
+/**
+ * Generate one object sheet (front, back, side, three-quarter + a label close-up) from the
+ * object's profile plus an optional prompt and up to four reference images tagged object or style.
+ * The first sheet an object gets is approved automatically; later ones are candidates.
+ */
+export async function generateObjectSheet(payload: GenerateObjectSheetRequest): Promise<ObjectSheetResponse> {
+  const body = sheetFormData({
+    project_id: payload.project_id,
+    object_id: payload.object_id,
+    prompt: payload.prompt ?? '',
+    model: payload.model,
+    visual_style: payload.visual_style,
+  }, payload.references);
+  const response = await fetch(`${getApiBaseUrl()}/api/image/object-sheet/generate`, { method: 'POST', body });
+  if (!response.ok) return readApiError(response, 'Object sheet generation failed');
+  return response.json() as Promise<ObjectSheetResponse>;
+}
+
+/** Use this sheet for the object in storyboards (the gallery's main image is unchanged). */
+export async function approveObjectSheet(projectId: string, objectId: string, assetId: string): Promise<ObjectSheetResponse> {
+  const response = await fetch(`${getApiBaseUrl()}/api/image/object-sheet/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project_id: projectId, object_id: objectId, asset_id: assetId }),
+  });
+  if (!response.ok) return readApiError(response, 'Object sheet approval failed');
+  return response.json() as Promise<ObjectSheetResponse>;
+}
+
+function sheetFormData(fields: Record<string, string | undefined>, references: { file: File; tag: string }[] = []): FormData {
   const formData = new FormData();
   for (const [key, value] of Object.entries(fields)) if (value !== undefined) formData.append(key, value);
   for (const reference of references) {

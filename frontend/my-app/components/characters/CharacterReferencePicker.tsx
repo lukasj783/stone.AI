@@ -2,11 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ImagePlus, X } from 'lucide-react';
-import { CharacterReferenceTag, CharacterSheetReference } from '@/lib/types/image-generation';
+import { CharacterReferenceTag } from '@/lib/types/image-generation';
 
 export const MAX_SHEET_REFERENCES = 4;
 
-export const REFERENCE_TAG_OPTIONS: { value: CharacterReferenceTag; label: string; hint: string }[] = [
+export interface ReferenceTagOption<T extends string = CharacterReferenceTag> { value: T; label: string; hint: string; }
+
+export const REFERENCE_TAG_OPTIONS: ReferenceTagOption[] = [
   { value: 'face', label: 'Face', hint: 'Copy this face and identity' },
   { value: 'outfit', label: 'Outfit', hint: 'Copy this clothing and accessories' },
   { value: 'style', label: 'Style', hint: 'Copy only the art style' },
@@ -14,11 +16,14 @@ export const REFERENCE_TAG_OPTIONS: { value: CharacterReferenceTag; label: strin
 /** Sensible first guesses: a face, then an outfit, then style references. */
 const DEFAULT_TAGS: CharacterReferenceTag[] = ['face', 'outfit', 'style', 'style'];
 
-export interface DraftReference extends CharacterSheetReference { id: string; previewUrl: string; }
+export interface DraftReference<T extends string = CharacterReferenceTag> { file: File; tag: T; id: string; previewUrl: string; }
 
-/** Up to four tagged reference images with local previews, freed when no longer shown. */
-export function useReferenceDrafts() {
-  const [references, setReferences] = useState<DraftReference[]>([]);
+/**
+ * Up to four tagged reference images with local previews, freed when no longer shown.
+ * ``defaultTags`` gives the tag of the 1st, 2nd... image added (characters: face, outfit, style).
+ */
+export function useReferenceDrafts<T extends string = CharacterReferenceTag>(defaultTags: readonly T[] = DEFAULT_TAGS as unknown as T[]) {
+  const [references, setReferences] = useState<DraftReference<T>[]>([]);
   const latest = useRef(references);
   useEffect(() => { latest.current = references; }, [references]);
   useEffect(() => () => latest.current.forEach((reference) => URL.revokeObjectURL(reference.previewUrl)), []);
@@ -27,42 +32,54 @@ export function useReferenceDrafts() {
     const images = Array.from(files ?? []).filter((file) => file.type.startsWith('image/'));
     setReferences((current) => [
       ...current,
-      ...images.slice(0, MAX_SHEET_REFERENCES - current.length).map((file, index): DraftReference => ({
+      ...images.slice(0, MAX_SHEET_REFERENCES - current.length).map((file, index): DraftReference<T> => ({
         id: `${file.name}-${file.size}-${Date.now()}-${index}`,
         file,
-        tag: DEFAULT_TAGS[current.length + index] ?? 'style',
+        tag: defaultTags[current.length + index] ?? defaultTags[defaultTags.length - 1],
         previewUrl: URL.createObjectURL(file),
       })),
     ]);
-  }, []);
+  }, [defaultTags]);
   const remove = useCallback((id: string) => setReferences((current) => current.filter((reference) => {
     if (reference.id === id) URL.revokeObjectURL(reference.previewUrl);
     return reference.id !== id;
   })), []);
-  const setTag = useCallback((id: string, tag: CharacterReferenceTag) =>
+  const setTag = useCallback((id: string, tag: T) =>
     setReferences((current) => current.map((reference) => reference.id === id ? { ...reference, tag } : reference)), []);
   const clear = useCallback(() => setReferences((current) => {
     current.forEach((reference) => URL.revokeObjectURL(reference.previewUrl));
     return [];
   }), []);
   /** The files and tags to send, without the local preview fields. */
-  const toRequest = useCallback((): CharacterSheetReference[] => latest.current.map(({ file, tag }) => ({ file, tag })), []);
+  const toRequest = useCallback((): { file: File; tag: T }[] => latest.current.map(({ file, tag }) => ({ file, tag })), []);
 
   return { references, add, remove, setTag, clear, toRequest };
 }
 
-export type ReferenceDrafts = ReturnType<typeof useReferenceDrafts>;
+export interface ReferenceDrafts<T extends string = CharacterReferenceTag> {
+  references: DraftReference<T>[];
+  add: (files: FileList | File[] | null) => void;
+  remove: (id: string) => void;
+  setTag: (id: string, tag: T) => void;
+  clear: () => void;
+  toRequest: () => { file: File; tag: T }[];
+}
 
-interface CharacterReferencePickerProps {
-  drafts: ReferenceDrafts;
+interface CharacterReferencePickerProps<T extends string> {
+  drafts: ReferenceDrafts<T>;
+  /** Tags offered per image; characters' face / outfit / style when omitted. */
+  tagOptions?: ReferenceTagOption<T>[];
+  /** Line under the grid explaining the tags; the characters' wording when omitted. */
+  tagHint?: React.ReactNode;
   characterName?: string;
   disabled?: boolean;
   /** Grid columns, e.g. "grid-cols-2" in a side panel or "grid-cols-2 sm:grid-cols-4" on a page. */
   gridClassName?: string;
 }
 
-/** Add, drop, tag and remove up to four reference images for a character sheet. */
-export function CharacterReferencePicker({ drafts, characterName = 'the character', disabled = false, gridClassName = 'grid-cols-2' }: CharacterReferencePickerProps) {
+/** Add, drop, tag and remove up to four reference images for a character (or object) sheet. */
+export function CharacterReferencePicker<T extends string = CharacterReferenceTag>({ drafts, tagOptions, tagHint, characterName = 'the character', disabled = false, gridClassName = 'grid-cols-2' }: CharacterReferencePickerProps<T>) {
+  const options = tagOptions ?? (REFERENCE_TAG_OPTIONS as unknown as ReferenceTagOption<T>[]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const { references, add, remove, setTag } = drafts;
@@ -79,8 +96,8 @@ export function CharacterReferencePicker({ drafts, characterName = 'the characte
         </div>
         <label className="block p-1.5">
           <span className="sr-only">Use reference {index + 1} for</span>
-          <select value={reference.tag} onChange={(event) => setTag(reference.id, event.target.value as CharacterReferenceTag)} disabled={disabled} title={REFERENCE_TAG_OPTIONS.find((option) => option.value === reference.tag)?.hint} className="h-7 w-full border border-zinc-700 bg-zinc-950 px-1.5 text-[11px] text-zinc-200 outline-none focus:border-violet-400">
-            {REFERENCE_TAG_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}: {option.hint.toLowerCase()}</option>)}
+          <select value={reference.tag} onChange={(event) => setTag(reference.id, event.target.value as T)} disabled={disabled} title={options.find((option) => option.value === reference.tag)?.hint} className="h-7 w-full border border-zinc-700 bg-zinc-950 px-1.5 text-[11px] text-zinc-200 outline-none focus:border-violet-400">
+            {options.map((option) => <option key={option.value} value={option.value}>{option.label}: {option.hint.toLowerCase()}</option>)}
           </select>
         </label>
       </div>)}
@@ -98,6 +115,6 @@ export function CharacterReferencePicker({ drafts, characterName = 'the characte
         <span className="font-mono text-[10px] text-zinc-600">{references.length}/{MAX_SHEET_REFERENCES}</span>
       </button>}
     </div>
-    <p className="mt-2 text-[10px] leading-relaxed text-zinc-500">Tag each image: <span className="text-zinc-300">Face</span> keeps the likeness, <span className="text-zinc-300">Outfit</span> the costume, <span className="text-zinc-300">Style</span> only the look.</p>
+    <p className="mt-2 text-[10px] leading-relaxed text-zinc-500">{tagHint ?? <>Tag each image: <span className="text-zinc-300">Face</span> keeps the likeness, <span className="text-zinc-300">Outfit</span> the costume, <span className="text-zinc-300">Style</span> only the look.</>}</p>
   </div>;
 }

@@ -99,6 +99,36 @@ export interface CharacterSheetReference {
   tag: CharacterReferenceTag;
 }
 
+/** What an object-sheet reference image should lend the object. */
+export type ObjectReferenceTag = 'object' | 'style';
+
+export interface ObjectSheetReference {
+  file: File;
+  tag: ObjectReferenceTag;
+}
+
+export interface GenerateObjectSheetRequest {
+  project_id: string;
+  object_id: string;
+  /** Extra direction on top of the object's profile. */
+  prompt?: string;
+  /** Up to four images; empty for prompt-only creation. */
+  references?: ObjectSheetReference[];
+  /** A WaveSpeed storyboard model ID (see listStoryboardModels); the server default when omitted. */
+  model?: string;
+  visual_style?: string;
+}
+
+/** One generated object sheet (four views + a close-up). */
+export interface ObjectSheetResponse {
+  object_id: string;
+  sheet_asset_id: string;
+  sheet_url: string;
+  generation_job_id: string | null;
+  /** True when this sheet is the one storyboards use. */
+  approved: boolean;
+}
+
 export interface GenerateCharacterSheetRequest {
   project_id: string;
   character_id: string;

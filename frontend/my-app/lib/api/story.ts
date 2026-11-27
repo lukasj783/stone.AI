@@ -41,8 +41,64 @@ export interface StudioObject {
   source_scene_ids: string[];
   source_sluglines: string[];
   primary_image_url: string | null;
+  /** Size, shape, colours...: every field is present, null when not filled in. */
+  profile: Record<ObjectProfileField, string | null>;
+  /** The approved object sheet storyboard frames use; null until one is approved. */
+  sheet: { asset_id: string; url: string } | null;
+  /** Every generated object sheet, newest first. */
+  sheet_versions: { asset_id: string; url: string; approved: boolean }[];
   /** Importance from the current script; null for objects the script never mentions. */
   ranking: ObjectRanking | null;
+}
+
+/** Keep in sync with OBJECT_PROFILE_FIELDS in backend/services/entity_profiles.py. */
+export const OBJECT_PROFILE_FIELDS = ['size', 'shape', 'colors', 'material', 'branding', 'details'] as const;
+export type ObjectProfileField = typeof OBJECT_PROFILE_FIELDS[number];
+
+/** Keep in sync with ENVIRONMENT_PROFILE_FIELDS in backend/services/entity_profiles.py. */
+export const ENVIRONMENT_PROFILE_FIELDS = ['look', 'lighting', 'fixed_features'] as const;
+export type EnvironmentProfileField = typeof ENVIRONMENT_PROFILE_FIELDS[number];
+
+/** A script location with its editable profile and the gallery's main image. */
+export interface StudioEnvironment {
+  id: string;
+  name: string;
+  description: string | null;
+  tags: string[];
+  primary_image_url: string | null;
+  profile: Record<EnvironmentProfileField, string | null>;
+  /** 'description', 'tags' and profile keys the user set by hand. */
+  manual_override_fields: string[];
+  location_types: string[];
+  time_of_day_values: string[];
+  source_scene_ids: string[];
+  source_sluglines: string[];
+  scene_count: number;
+  /** Joined client-side from rankEnvironments; null when the script never sets a scene there. */
+  ranking: EnvironmentRanking | null;
+}
+
+export interface EnvironmentProfileUpdate {
+  description?: string | null;
+  tags?: string[];
+  /** Only the keys sent change; null or '' clears the field and its Manual mark. */
+  profile?: Partial<Record<EnvironmentProfileField, string | null>>;
+}
+
+/** Script environments by name, without rankings (see rankEnvironments). */
+export async function listEnvironments(projectId: string): Promise<StudioEnvironment[]> {
+  const response = await fetch(`${getApiBaseUrl()}/api/story/environments?project_id=${encodeURIComponent(projectId)}`);
+  if (!response.ok) return readApiError(response, 'Failed to load environments');
+  const rows = await response.json() as Omit<StudioEnvironment, 'ranking'>[];
+  return rows.map((row) => ({ ...row, ranking: null }));
+}
+
+export async function updateEnvironment(projectId: string, environmentId: string, payload: EnvironmentProfileUpdate): Promise<StudioEnvironment> {
+  const response = await fetch(`${getApiBaseUrl()}/api/story/environments/${environmentId}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project_id: projectId, ...payload }),
+  });
+  if (!response.ok) return readApiError(response, 'Failed to save environment');
+  return { ...await response.json() as Omit<StudioEnvironment, 'ranking'>, ranking: null };
 }
 
 export type ObjectTier = 'major' | 'medium' | 'minor';
@@ -112,6 +168,8 @@ export interface ObjectProfileUpdate {
   name?: string;
   description?: string | null;
   tags?: string[];
+  /** Only the keys sent change; null or '' clears the field and its Manual mark. */
+  profile?: Partial<Record<ObjectProfileField, string | null>>;
 }
 
 export async function extractScriptObjects(projectId: string): Promise<number> {
@@ -128,7 +186,7 @@ export async function listObjects(projectId: string): Promise<StudioObject[]> {
   return response.json() as Promise<StudioObject[]>;
 }
 
-export async function createObject(projectId: string, payload: Required<Pick<StudioObject, 'name'>> & ObjectProfileUpdate): Promise<StudioObject> {
+export async function createObject(projectId: string, payload: Required<Pick<StudioObject, 'name'>> & Omit<ObjectProfileUpdate, 'profile'>): Promise<StudioObject> {
   const response = await fetch(`${getApiBaseUrl()}/api/story/objects`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project_id: projectId, ...payload }),
   });
