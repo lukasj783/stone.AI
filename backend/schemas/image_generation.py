@@ -143,6 +143,21 @@ class ApproveCharacterSheetRequest(BaseModel):
     asset_id: str = Field(min_length=1)
 
 
+class ApproveObjectSheetRequest(BaseModel):
+    project_id: str = Field(min_length=1)
+    object_id: str = Field(min_length=1)
+    asset_id: str = Field(min_length=1)
+
+
+class ObjectSheetResponse(BaseModel):
+    """One generated object sheet (several views + a close-up) and whether it is the approved one."""
+    object_id: str
+    sheet_asset_id: str
+    sheet_url: str
+    generation_job_id: str | None = None
+    approved: bool = False
+
+
 class CharacterSheetResponse(BaseModel):
     """One generated model sheet (face close-up + turnaround) and whether it is the approved one."""
     character_id: str

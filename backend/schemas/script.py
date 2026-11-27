@@ -153,6 +153,17 @@ class UpdateObjectPayload(BaseModel):
     profile: dict[str, str | None] | None = None
 
 
+class ObjectSheetSummary(BaseModel):
+    asset_id: str
+    url: str
+
+
+class ObjectSheetVersion(BaseModel):
+    asset_id: str
+    url: str
+    approved: bool = False
+
+
 class ObjectProfileResponse(BaseModel):
     id: str
     name: str
@@ -164,6 +175,9 @@ class ObjectProfileResponse(BaseModel):
     source_sluglines: list[str] = Field(default_factory=list)
     primary_image_url: str | None = None
     profile: dict[str, str | None] = Field(default_factory=dict)
+    # The approved object sheet storyboard frames use, and every generated one (newest first).
+    sheet: ObjectSheetSummary | None = None
+    sheet_versions: list[ObjectSheetVersion] = Field(default_factory=list)
     ranking: "ObjectRankingSchema | None" = None
 
 

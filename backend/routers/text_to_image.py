@@ -1,9 +1,12 @@
 import asyncio
+from collections.abc import Callable
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 
 from schemas.image_generation import (
     ApproveCharacterSheetRequest,
+    ApproveObjectSheetRequest,
+    ObjectSheetResponse,
     CharacterSheetResponse,
     CreateCharacterFromSheetRequest,
     DraftCharacterSheetResponse,
@@ -26,6 +29,11 @@ from services.character_sheet import (
     generate_model_sheet,
     normalize_reference_tag,
     upload_reference_image,
+)
+from services.object_sheet import (
+    approve_object_sheet,
+    generate_object_sheet,
+    normalize_object_reference_tag,
 )
 from services.environment_text_to_image import (
     build_script_environment_prompt,
@@ -222,8 +230,14 @@ async def set_character_style(
     )
 
 
-async def _upload_references(images: list[UploadFile] | None, image_tags: list[str] | None) -> list[SheetReference]:
-    """Store up to four uploaded reference images and pair each with its face/outfit/style tag."""
+async def _upload_references(
+    images: list[UploadFile] | None,
+    image_tags: list[str] | None,
+    *,
+    normalize: Callable[[object], str] = normalize_reference_tag,
+) -> list[SheetReference]:
+    """Store up to four uploaded reference images and pair each with its tag (face/outfit/style
+    for characters by default; ``normalize`` sets another tag set, such as object/style)."""
     uploads = [image for image in images or [] if image.filename]
     if len(uploads) > MAX_REFERENCE_IMAGES:
         raise HTTPException(status_code=400, detail=f"Use at most {MAX_REFERENCE_IMAGES} reference images")
@@ -236,7 +250,7 @@ async def _upload_references(images: list[UploadFile] | None, image_tags: list[s
         if not content:
             raise HTTPException(status_code=400, detail=f"{upload.filename} is empty")
         url = await asyncio.to_thread(upload_reference_image, content, upload.content_type)
-        references.append(SheetReference(url=url, tag=normalize_reference_tag(tags[index] if index < len(tags) else None)))
+        references.append(SheetReference(url=url, tag=normalize(tags[index] if index < len(tags) else None)))
     return references
 
 
@@ -284,6 +298,52 @@ async def approve_character_sheet(payload: ApproveCharacterSheetRequest) -> Char
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
         raise HTTPException(status_code=500, detail=f"Character sheet approval failed: {error}") from error
+
+
+@router.post("/object-sheet/generate", response_model=ObjectSheetResponse)
+async def generate_object_sheet_endpoint(
+    project_id: str = Form(...),
+    object_id: str = Form(...),
+    prompt: str = Form("", max_length=4_000),
+    model: str | None = Form(None),
+    visual_style: str | None = Form(None),
+    images: list[UploadFile] | None = File(None),
+    image_tags: list[str] | None = Form(None),
+) -> ObjectSheetResponse:
+    """Generate one object sheet (four views + a close-up) from the object's profile, an optional
+    prompt, and up to four reference images tagged object or style."""
+    try:
+        references = await _upload_references(images, image_tags, normalize=normalize_object_reference_tag)
+        result = await asyncio.to_thread(
+            generate_object_sheet,
+            project_id,
+            object_id,
+            direction=prompt,
+            references=references,
+            model=model,
+            visual_style=visual_style,
+        )
+        return ObjectSheetResponse(**result)
+    except HTTPException:
+        raise
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except (ReplicateConfigurationError, WaveSpeedServiceError) as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Object sheet generation failed: {error}") from error
+
+
+@router.post("/object-sheet/approve", response_model=ObjectSheetResponse)
+async def approve_object_sheet_endpoint(payload: ApproveObjectSheetRequest) -> ObjectSheetResponse:
+    """Use this sheet for the object in storyboards (the gallery's main image is unchanged)."""
+    try:
+        result = await asyncio.to_thread(approve_object_sheet, payload.project_id, payload.object_id, payload.asset_id)
+        return ObjectSheetResponse(object_id=payload.object_id, **result)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Object sheet approval failed: {error}") from error
 
 
 @router.post("/character-sheet/draft", response_model=DraftCharacterSheetResponse)

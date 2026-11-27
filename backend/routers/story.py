@@ -34,6 +34,8 @@ from schemas.script import (
     GenerateScriptResponse,
     MovieIdeaPayload,
     ObjectProfileResponse,
+    ObjectSheetSummary,
+    ObjectSheetVersion,
     PreviewCharacterScriptSyncPayload,
     UpdateEnvironmentPayload,
     UpdateObjectPayload,
@@ -72,6 +74,7 @@ from services.entity_profiles import (
     apply_profile_changes,
     profile_values,
 )
+from services.object_sheet import OBJECT_SHEET_ROLE, object_sheet_versions_for
 from services.object_ranking import ObjectRanking, rank_objects_from_script, rank_project_objects
 from services.duration_budget import PACING_GUIDANCE, format_seconds, normalize_pacing, parse_duration_seconds
 from services.gemini_client import run_gemini
@@ -304,6 +307,7 @@ def _object_profile_response(
     prop: dict,
     primary_image_url: str | None = None,
     ranking: ObjectRanking | None = None,
+    sheet_versions: list[dict] | None = None,
 ) -> ObjectProfileResponse:
     metadata = prop.get("metadata") if isinstance(prop.get("metadata"), dict) else {}
     sources = metadata.get("sources") if isinstance(metadata.get("sources"), list) else []
@@ -321,8 +325,20 @@ def _object_profile_response(
         source_sluglines=[value for value in metadata.get("source_sluglines", []) if isinstance(value, str)],
         primary_image_url=primary_image_url,
         profile=profile_values(metadata, OBJECT_PROFILE_FIELDS),
+        sheet=_object_sheet_summary(metadata),
+        sheet_versions=[
+            ObjectSheetVersion(asset_id=str(version["asset_id"]), url=str(version["url"]), approved=bool(version.get("approved")))
+            for version in sheet_versions or []
+        ],
         ranking=ObjectRankingSchema(**asdict(ranking)) if ranking else None,
     )
+
+
+def _object_sheet_summary(metadata: dict) -> ObjectSheetSummary | None:
+    sheet = metadata.get(OBJECT_SHEET_ROLE)
+    if isinstance(sheet, dict) and isinstance(sheet.get("asset_id"), str) and isinstance(sheet.get("url"), str):
+        return ObjectSheetSummary(asset_id=sheet["asset_id"], url=sheet["url"])
+    return None
 
 
 def _string_list(value: object) -> list[str]:
@@ -1135,11 +1151,13 @@ async def list_objects(project_id: str) -> list[ObjectProfileResponse]:
         # Ranked fresh from the current script on every load, most important object first.
         rankings = rank_objects_from_script(project_id, props)
         props.sort(key=lambda prop: (rankings[str(prop["id"])].rank if str(prop["id"]) in rankings else 10**6))
+        versions = object_sheet_versions_for(project_id, [str(prop["id"]) for prop in props])
         return [
             _object_profile_response(
                 prop,
                 urls.get(str(prop.get("primary_asset_id"))) if isinstance(prop.get("primary_asset_id"), str) else None,
                 rankings.get(str(prop["id"])),
+                versions.get(str(prop["id"])),
             )
             for prop in props
         ]
