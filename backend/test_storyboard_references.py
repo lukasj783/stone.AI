@@ -324,3 +324,45 @@ class ManualProfileTests(unittest.TestCase):
             characters, _, _ = sg._gather_scene_linked_entities("project-1", "scene-1", [])
         description = sg._describe_character(characters[0])
         self.assertEqual(description, "VOSS (Station engineer, 48, woman): cropped grey hair, scar over the left brow")
+
+
+TAMUCOLA_WITH_SHEET = {"name": "Tamucola", "sheet_url": "S", "references": [{"angle": "detail", "url": "D"}]}
+
+
+class ObjectSheetTests(unittest.TestCase):
+    def test_object_sheet_is_sent_first_for_its_object(self) -> None:
+        refs = build_frame_references([], {}, "close-up", None, [TAMUCOLA_WITH_SHEET], 10)
+        self.assertEqual([r.url for r in refs], ["S", "D"])
+        self.assertTrue(refs[0].is_object_sheet)
+        self.assertFalse(refs[1].is_object_sheet)
+        self.assertIn("object sheet", refs[0].label)
+        self.assertFalse(refs[0].is_sheet, "an object sheet is not a character sheet")
+
+    def test_object_sheet_counts_inside_the_objects_cap(self) -> None:
+        # A wide shot allows one object image: that is the sheet, not the gallery.
+        refs = build_frame_references([], {}, "wide shot", None, [TAMUCOLA_WITH_SHEET], 10)
+        self.assertEqual([r.url for r in refs], ["S"])
+
+    def test_object_sheet_gets_a_slot_beside_character_sheets(self) -> None:
+        characters = [_sheet_character("VOSS"), _sheet_character("MARA")]
+        refs = build_frame_references(characters, {}, "medium shot", None, [TAMUCOLA_WITH_SHEET], 3)
+        self.assertIn("S", [r.url for r in refs])
+        self.assertEqual(len(refs), 3)
+
+    def test_object_without_sheet_uses_its_gallery(self) -> None:
+        for shot in ("close-up", "medium shot", "wide shot"):
+            with_key = build_frame_references([], {}, shot, None, [{**PROP_GALLERY, "sheet_url": None}], 10)
+            without_key = build_frame_references([], {}, shot, None, [PROP_GALLERY], 10)
+            self.assertEqual([(r.url, r.label) for r in with_key], [(r.url, r.label) for r in without_key])
+            self.assertFalse(any(r.is_object_sheet for r in with_key))
+        close = build_frame_references([], {}, "close-up", None, [PROP_GALLERY], 10)
+        self.assertEqual([r.url for r in close], ["http://img/gun-detail.png", "http://img/gun.png", "http://img/gun-side.png"])
+
+    def test_describe_references_says_draw_the_object_once(self) -> None:
+        refs = build_frame_references([], {}, "close-up", None, [TAMUCOLA_WITH_SHEET], 10)
+        text = describe_references(refs) or ""
+        self.assertIn("ONE object", text)
+        self.assertIn("never copy", text)
+        self.assertNotIn("ONE person", text)
+        gallery_only = describe_references(build_frame_references([], {}, "close-up", None, [PROP_GALLERY], 10)) or ""
+        self.assertNotIn("ONE object", gallery_only)

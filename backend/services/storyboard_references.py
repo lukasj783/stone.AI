@@ -17,6 +17,10 @@ full-body turnaround) sends that sheet, which carries identity, body and costume
 every angle, and the face crop cut from it for facial fidelity. The prompt tells the model
 the sheet shows one person, so it draws them once instead of copying the layout.
 Characters that only have the older separate turnaround views still use those.
+
+An object with an approved object sheet (one image: the object from several sides plus a
+close-up of its label) sends that sheet first, then its best gallery images within the same
+cap; an object without a sheet uses its gallery as before.
 """
 
 from __future__ import annotations
@@ -75,6 +79,7 @@ class ReferenceImage:
     url: str
     label: str
     is_sheet: bool = False
+    is_object_sheet: bool = False
 
 
 def shot_framing(shot_size: str | None) -> str:
@@ -165,6 +170,7 @@ OBJECT_PRIORITY = {
 }
 OBJECT_CAP = {FRAMING_WIDE: 1, FRAMING_MEDIUM: 2, FRAMING_CLOSE: 3}
 MAX_IMAGES_PER_ENTITY = 3
+OBJECT_SHEET_LABEL = "object sheet (one object shown several times: several sides and a close-up)"
 
 
 def tier_cap(framing_cap: int, tier: object) -> int:
@@ -263,13 +269,18 @@ def build_frame_references(
     ])
     for obj in objects:
         name = str(obj.get("name") or "prop")
-        images = select_entity_images(
-            entity_reference_images(obj), OBJECT_PRIORITY[framing], tier_cap(OBJECT_CAP[framing], obj.get("tier")),
-        )
-        queues.append([
+        cap = tier_cap(OBJECT_CAP[framing], obj.get("tier"))
+        sheet_url = str(obj.get("sheet_url") or "")
+        queue: list[ReferenceImage] = []
+        if sheet_url:
+            queue.append(ReferenceImage(sheet_url, f"prop: {name}, {OBJECT_SHEET_LABEL}", is_object_sheet=True))
+            cap -= 1
+        gallery = [image for image in entity_reference_images(obj) if image[1] != sheet_url]
+        queue.extend(
             ReferenceImage(url, f"prop: {name}, {ENTITY_ANGLE_LABELS.get(angle, angle.replace('_', ' '))}")
-            for angle, url in images
-        ])
+            for angle, url in (select_entity_images(gallery, OBJECT_PRIORITY[framing], cap) if cap > 0 else [])
+        )
+        queues.append(queue)
 
     limit = max_references if max_references > 0 else sum(len(queue) for queue in queues)
     taken = [0] * len(queues)
@@ -311,5 +322,11 @@ def describe_references(references: list[ReferenceImage]) -> str | None:
             "A character sheet shows ONE person several times (a face close-up and turnaround angles). "
             "Draw that person once, in this shot's pose and framing; never copy the sheet's layout, "
             "repeated figures or plain background."
+        )
+    if any(reference.is_object_sheet for reference in references):
+        lines.append(
+            "An object sheet shows ONE object several times (several sides and a close-up). "
+            "Draw that object once, as this shot needs it; never copy the sheet's layout, "
+            "repeated objects or plain background."
         )
     return "\n".join(lines)

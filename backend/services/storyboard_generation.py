@@ -33,6 +33,7 @@ from services.character_views import (
     physical_summary,
     role_summary,
 )
+from services.entity_profiles import describe_environment_details, describe_object
 from services.environment_ranking import rank_environments_from_script
 from services.object_ranking import rank_objects_from_script
 from services.storyboard_models import DEFAULT_STORYBOARD_MODEL, TEXT_ONLY_FALLBACK_MODEL, storyboard_model
@@ -491,7 +492,8 @@ def _describe_location(scene: dict[str, Any], environment: dict[str, Any] | None
     location = str(scene.get("location") or "Unknown location").strip()
     time_of_day = str(scene.get("time_of_day") or "").strip()
     details = f"{location}, {time_of_day}" if time_of_day else location
-    environment_description = str((environment or {}).get("description") or "").strip()
+    environment = environment or {}
+    environment_description = str(environment.get("profile_text") or environment.get("description") or "").strip()
     return f"{details}: {environment_description}" if environment_description else details
 
 
@@ -770,7 +772,9 @@ def _build_frames_from_shot_plans(
             prompt_parts.append("CHARACTERS: none visible in this frame.")
         prompt_parts.append(f"LOCATION: {location_text}")
         if matched_objects:
-            prompt_parts.append("PROPS: " + ", ".join(str(o.get("name")) for o in matched_objects))
+            # One line per prop with its profile, so the bottle looks the same in every shot.
+            prompt_parts.append("PROPS:")
+            prompt_parts.extend(f"- {o.get('profile_text') or o.get('name')}" for o in matched_objects)
         reference_lines = describe_references(references)
         if reference_lines:
             prompt_parts.append(reference_lines)
@@ -1170,7 +1174,7 @@ def _gather_scene_linked_entities(
     # 2. Environment
     environment_out: dict[str, Any] | None = None
     env_res = supabase.table("environments").select(
-        "id, name, description, primary_asset_id"
+        "id, name, description, primary_asset_id, metadata"
     ).eq("project_id", project_id).execute()
     all_envs = _rows(env_res)
     if all_envs:
@@ -1189,6 +1193,7 @@ def _gather_scene_linked_entities(
                 **matched_env,
                 "image_url": gallery[0]["url"] if gallery else None,
                 "references": gallery,
+                "profile_text": describe_environment_details(matched_env),
             }
 
     # 3. Objects / Props
@@ -1199,10 +1204,14 @@ def _gather_scene_linked_entities(
     prop_galleries = _entity_galleries(supabase, project_id, "prop", props)
     for obj in props:
         gallery = prop_galleries.get(obj["id"], [])
+        metadata = obj.get("metadata") if isinstance(obj.get("metadata"), dict) else {}
+        sheet = metadata.get("object_sheet") if isinstance(metadata.get("object_sheet"), dict) else {}
         objects_out.append({
             **obj,
             "image_url": gallery[0]["url"] if gallery else None,
             "references": gallery,
+            "sheet_url": sheet.get("url") if isinstance(sheet.get("url"), str) else None,
+            "profile_text": describe_object(obj),
         })
 
     _attach_importance_tiers(project_id, environment_out, objects_out, characters_out)
