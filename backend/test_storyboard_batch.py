@@ -297,6 +297,7 @@ class InterruptedBatchTests(unittest.TestCase):
         stopped = {"runner": runner, "status": "cancelled"}
         with mock.patch.object(router.batches, "batch_status", side_effect=[running, stopped]) as status, \
                 mock.patch.object(router.batches, "cancel_batch") as cancel, \
+                mock.patch.object(router.batches, "celery_lost", return_value=False), \
                 mock.patch.object(router.local_runner, "is_live", return_value=live):
             result = router._status("b1", "p1")
         return result, cancel, status
@@ -315,6 +316,111 @@ class InterruptedBatchTests(unittest.TestCase):
     def test_celery_batches_are_never_stopped_by_a_backend_restart(self) -> None:
         _, cancel, _ = self._status(batches.RUNNER_CELERY, live=False)
         cancel.assert_not_called()
+
+
+class CeleryLossWatchTests(unittest.TestCase):
+    """Celery counts as gone only after staying unavailable for the grace period."""
+
+    def test_a_short_blip_is_not_a_loss(self) -> None:
+        watch = batches.CeleryLossWatch(grace_seconds=60)
+        self.assertFalse(watch.lost("b1", available=False, now=0))
+        self.assertFalse(watch.lost("b1", available=False, now=59))
+        self.assertFalse(watch.lost("b1", available=True, now=61))
+        self.assertFalse(watch.lost("b1", available=False, now=100), "the clock restarts after Celery came back")
+
+    def test_unavailable_past_the_grace_period_is_a_loss(self) -> None:
+        watch = batches.CeleryLossWatch(grace_seconds=60)
+        watch.lost("b1", available=False, now=0)
+        self.assertTrue(watch.lost("b1", available=False, now=60))
+
+    def test_batches_are_watched_separately(self) -> None:
+        watch = batches.CeleryLossWatch(grace_seconds=60)
+        watch.lost("b1", available=False, now=0)
+        self.assertFalse(watch.lost("b2", available=False, now=60))
+
+
+class UnfinishedWorkTests(unittest.TestCase):
+    def test_scenes_not_planned_yet_are_planned_and_unimaged_frames_rendered(self) -> None:
+        scenes = [
+            {"scene_id": "s1", "generation_job_id": "j1", "status": "queued"},
+            {"scene_id": "s2", "generation_job_id": "j2", "status": "planning"},
+            {"scene_id": "s3", "generation_job_id": "j3", "status": "rendering"},
+            {"scene_id": "s4", "generation_job_id": "j4", "status": "complete"},
+            {"scene_id": "s5", "generation_job_id": "j5", "status": "cancelled"},
+        ]
+        unfinished_shots = {"s3": ["shot-a", "shot-b"]}
+        replan, rerender = batches.split_unfinished_work(scenes, unfinished_shots)
+        self.assertEqual(replan, ["j1", "j2"])
+        self.assertEqual(rerender, [("j3", "shot-a"), ("j3", "shot-b")])
+
+    def test_a_rendering_scene_with_no_unfinished_frames_is_left_to_settle(self) -> None:
+        scenes = [{"scene_id": "s1", "generation_job_id": "j1", "status": "rendering"}]
+        self.assertEqual(batches.split_unfinished_work(scenes, {}), ([], []))
+
+
+class CeleryFallbackTests(unittest.TestCase):
+    """A Celery batch whose Redis or workers went away is finished by the in-backend fallback."""
+
+    def _status(self, *, runner: str, lost: bool, active: bool = True):
+        from routers import storyboard_batches as router
+
+        status = {"runner": runner, "status": "running" if active else "complete", "scenes": []}
+        with mock.patch.object(router.batches, "batch_status", return_value=status), \
+                mock.patch.object(router.batches, "cancel_batch"), \
+                mock.patch.object(router.local_runner, "is_live", return_value=True), \
+                mock.patch.object(router.batches, "celery_lost", return_value=lost), \
+                mock.patch.object(router, "_hand_off_to_fallback") as hand_off:
+            router._status("b1", "p1")
+        return hand_off
+
+    def test_lost_celery_hands_the_batch_to_the_fallback(self) -> None:
+        self._status(runner=batches.RUNNER_CELERY, lost=True).assert_called_once_with("b1", "p1")
+
+    def test_running_celery_keeps_its_batch(self) -> None:
+        self._status(runner=batches.RUNNER_CELERY, lost=False).assert_not_called()
+
+    def test_finished_celery_batches_are_left_alone(self) -> None:
+        self._status(runner=batches.RUNNER_CELERY, lost=True, active=False).assert_not_called()
+
+    def test_hand_off_queues_the_unfinished_work_once(self) -> None:
+        from routers import storyboard_batches as router
+
+        runners = iter([batches.RUNNER_CELERY, batches.RUNNER_LOCAL])
+        with mock.patch.object(router.batches, "batch_runner", side_effect=lambda _b: next(runners)), \
+                mock.patch.object(router.batches, "unfinished_work", return_value=(["j1"], [("j2", "shot")])), \
+                mock.patch.object(router.batches, "set_batch_runner") as set_runner, \
+                mock.patch.object(router, "_dispatch") as dispatch:
+            router._hand_off_to_fallback("b1", "p1")
+            router._hand_off_to_fallback("b1", "p1")  # a second poll at the same moment
+        set_runner.assert_called_once_with("b1", batches.RUNNER_LOCAL)
+        dispatch.assert_called_once_with(batches.RUNNER_LOCAL, "b1", ["j1"], [("j2", "shot")])
+
+
+class CeleryTaskSkipTests(unittest.TestCase):
+    """Tasks left in Redis for a batch the fallback took over are skipped, so no frame is paid twice."""
+
+    def setUp(self) -> None:
+        from tasks import storyboard_tasks as tasks
+
+        self.tasks = tasks
+
+    def test_render_task_skips_a_batch_now_run_by_the_fallback(self) -> None:
+        with mock.patch.object(self.tasks, "runs_on_celery", return_value=False), \
+                mock.patch.object(self.tasks, "run_render_step") as step:
+            self.tasks.render_storyboard_frame.run("job", "shot")
+        step.assert_not_called()
+
+    def test_plan_task_skips_a_batch_now_run_by_the_fallback(self) -> None:
+        with mock.patch.object(self.tasks, "runs_on_celery", return_value=False), \
+                mock.patch.object(self.tasks, "run_plan_step") as step:
+            self.tasks.plan_storyboard_scene.run("job")
+        step.assert_not_called()
+
+    def test_render_task_runs_for_a_celery_batch(self) -> None:
+        with mock.patch.object(self.tasks, "runs_on_celery", return_value=True), \
+                mock.patch.object(self.tasks, "run_render_step") as step:
+            self.tasks.render_storyboard_frame.run("job", "shot")
+        step.assert_called_once()
 
 
 if __name__ == "__main__":

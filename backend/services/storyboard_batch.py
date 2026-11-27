@@ -11,6 +11,7 @@ shot when it is planned, together with the project's visual style.
 """
 
 import random
+import threading
 import time
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
@@ -234,6 +235,81 @@ def choose_runner() -> str:
     runner = RUNNER_CELERY if _redis_reachable() and _celery_storyboard_workers_running() else RUNNER_LOCAL
     _runner_cache = (now, runner)
     return runner
+
+
+CELERY_LOSS_GRACE_SECONDS = 60.0
+
+
+class CeleryLossWatch:
+    """Celery counts as gone for a batch only once it has stayed unavailable for the grace period.
+
+    A worker that is briefly slow to answer must not hand its batch to the fallback, or frames
+    would be drawn (and paid for) twice.
+    """
+
+    def __init__(self, grace_seconds: float = CELERY_LOSS_GRACE_SECONDS) -> None:
+        self._grace = grace_seconds
+        self._missing_since: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def lost(self, batch_id: str, *, available: bool, now: float) -> bool:
+        with self._lock:
+            if available:
+                self._missing_since.pop(batch_id, None)
+                return False
+            since = self._missing_since.setdefault(batch_id, now)
+            return now - since >= self._grace
+
+
+_celery_loss = CeleryLossWatch()
+
+
+def celery_lost(batch_id: str) -> bool:
+    """True once Redis or the storyboard workers have been unavailable for the grace period."""
+    return _celery_loss.lost(batch_id, available=choose_runner() == RUNNER_CELERY, now=time.monotonic())
+
+
+def split_unfinished_work(
+    scenes: Sequence[dict[str, Any]], unfinished_shots: dict[str, list[str]],
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """(scene jobs to plan, (job, shot) frames to render) for a running batch moving to another runner."""
+    replan: list[str] = []
+    rerender: list[tuple[str, str]] = []
+    for scene in scenes:
+        if scene["status"] in {"queued", "planning"}:
+            replan.append(scene["generation_job_id"])
+        elif scene["status"] == "rendering":
+            rerender.extend((scene["generation_job_id"], shot_id) for shot_id in unfinished_shots.get(scene["scene_id"], []))
+    return replan, rerender
+
+
+def unfinished_work(batch_id: str, project_id: str) -> tuple[list[str], list[tuple[str, str]]]:
+    """What is still left in a running batch: scenes to plan and frames without an image."""
+    status = batch_status(batch_id, project_id)
+    rendering = [scene["scene_id"] for scene in status["scenes"] if scene["status"] == "rendering"]
+    unfinished_shots: dict[str, list[str]] = {}
+    if rendering:
+        rows = as_records(require_supabase_client().table("shots").select("id, scene_id").in_(
+            "scene_id", rendering
+        ).in_("status", ["pending", "in_progress"]).execute().data)
+        for row in rows:
+            unfinished_shots.setdefault(str(row["scene_id"]), []).append(str(row["id"]))
+    return split_unfinished_work(status["scenes"], unfinished_shots)
+
+
+def batch_runner(batch_id: str) -> str:
+    rows = as_records(require_supabase_client().table("storyboard_batches").select("settings").eq(
+        "id", batch_id
+    ).limit(1).execute().data)
+    settings = (as_record(rows[0].get("settings")) if rows else None) or {}
+    return str(settings.get("runner") or RUNNER_CELERY)
+
+
+def runs_on_celery(job_id: str) -> bool:
+    """False when the job's batch was handed to the fallback, so leftover Celery tasks skip it."""
+    job = load_job(job_id)
+    batch_id = job.get("storyboard_batch_id") if job else None
+    return not isinstance(batch_id, str) or batch_runner(batch_id) == RUNNER_CELERY
 
 
 def set_batch_runner(batch_id: str, runner: str) -> None:

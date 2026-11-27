@@ -5,6 +5,8 @@ otherwise runs on worker threads inside this backend (services/storyboard_local_
 """
 
 import asyncio
+import logging
+import threading
 from collections.abc import Sequence
 from typing import Any
 
@@ -19,6 +21,8 @@ from schemas.storyboard_batch import (
 from services import storyboard_batch as batches
 from services.storyboard_local_runner import local_runner
 from services.storyboard_models import storyboard_model
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/story/storyboard-batches", tags=["story"])
 
@@ -72,6 +76,27 @@ def _dispatch(runner: str, batch_id: str, plan_job_ids: Sequence[str], renders: 
         raise batches.StoryboardQueueUnavailable(str(error)) from error
 
 
+_hand_off_lock = threading.Lock()
+
+
+def _hand_off_to_fallback(batch_id: str, project_id: str) -> None:
+    """Finish a Celery batch on this backend's worker threads after Redis or the workers went away.
+
+    Only unfinished work moves: scenes still to plan and frames without an image. Tasks left in
+    Redis skip the batch once it is marked local, so no frame is drawn twice.
+    """
+    with _hand_off_lock:
+        if batches.batch_runner(batch_id) != batches.RUNNER_CELERY:
+            return  # another request already handed it off
+        replan, rerender = batches.unfinished_work(batch_id, project_id)
+        batches.set_batch_runner(batch_id, batches.RUNNER_LOCAL)
+        logger.warning(
+            "Celery is unavailable: storyboard batch %s continues on the fallback (%d scenes to plan, %d frames to draw)",
+            batch_id, len(replan), len(rerender),
+        )
+        _dispatch(batches.RUNNER_LOCAL, batch_id, replan, rerender)
+
+
 def _status(batch_id: str, project_id: str) -> dict[str, Any]:
     """Batch progress; a fallback batch with no work left in this backend is marked stopped.
 
@@ -79,6 +104,13 @@ def _status(batch_id: str, project_id: str) -> dict[str, Any]:
     dropped and even saving the failure didn't get through), so the page doesn't load forever.
     """
     status = batches.batch_status(batch_id, project_id)
+    if (
+        status["runner"] == batches.RUNNER_CELERY
+        and status["status"] in batches.ACTIVE_BATCH_STATUSES
+        and batches.celery_lost(batch_id)
+    ):
+        _hand_off_to_fallback(batch_id, project_id)
+        return batches.batch_status(batch_id, project_id)
     if (
         status["runner"] == batches.RUNNER_LOCAL
         and status["status"] in batches.ACTIVE_BATCH_STATUSES
