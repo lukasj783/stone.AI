@@ -1182,10 +1182,8 @@ def _gather_scene_linked_entities(
             supabase.table("scenes").select("location").eq("id", scene_id).maybe_single().execute()
         )
         loc_name = str(scene_info.get("location") or "").strip().upper()
-        matched_env = next(
-            (e for e in all_envs if str(e.get("name") or "").strip().upper() == loc_name),
-            all_envs[0],
-        )
+        named_env = next((e for e in all_envs if str(e.get("name") or "").strip().upper() == loc_name), None)
+        matched_env = named_env or all_envs[0]
         if matched_env:
             galleries = _entity_galleries(supabase, project_id, "environment", [matched_env])
             gallery = galleries.get(matched_env["id"], [])
@@ -1193,8 +1191,11 @@ def _gather_scene_linked_entities(
                 **matched_env,
                 "image_url": gallery[0]["url"] if gallery else None,
                 "references": gallery,
-                "profile_text": describe_environment_details(matched_env),
+                "profile_text": describe_environment_details(matched_env) if named_env else "",
             }
+            if not named_env:
+                # Another place, borrowed only for its images: its words must not describe this scene.
+                environment_out["description"] = None
 
     # 3. Objects / Props
     objects_out: list[dict[str, Any]] = []

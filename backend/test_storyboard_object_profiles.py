@@ -83,6 +83,21 @@ class GatherTests(unittest.TestCase):
         self.assertEqual(by_name["Crate"]["profile_text"], "Crate")
         self.assertEqual(environment["profile_text"], "Small wooden kiosk; hard noon sun")
 
+    def test_unmatched_location_does_not_borrow_another_places_profile(self) -> None:
+        kiosk = {
+            "id": "e1", "name": "LOCAL KIOSK", "description": "Small wooden kiosk", "primary_asset_id": None,
+            "metadata": {"profile": {"lighting": "hard noon sun"}},
+        }
+        tables = {"props": [], "environments": [kiosk], "scenes": {"location": "Moon Base"}}
+        supabase = MagicMock()
+        supabase.table.side_effect = lambda name: _FakeQuery(tables.get(name, []))
+        with patch.object(sg, "require_supabase_client", return_value=supabase), patch.object(
+            sg, "_attach_importance_tiers"
+        ), patch.object(sg, "character_type_map", return_value={}):
+            _, environment, _ = sg._gather_scene_linked_entities("project-1", "scene-1", [])
+        self.assertEqual((environment or {}).get("profile_text", ""), "")
+        self.assertEqual(sg._describe_location({"location": "Moon Base"}, environment), "Moon Base")
+
 
 if __name__ == "__main__":
     unittest.main()
