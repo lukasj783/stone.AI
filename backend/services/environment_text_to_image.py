@@ -3,6 +3,7 @@ import uuid
 
 import httpx
 
+from services.entity_profiles import ENVIRONMENT_PROFILE_FIELDS, profile_values
 from core.supabase_client import get_supabase_client
 from core.provider_errors import describe_error
 from schemas.image_generation import CreateImageRequest
@@ -14,7 +15,7 @@ def load_script_environment(project_id: str, environment_id: str) -> dict[str, o
     if not supabase:
         raise RuntimeError("Supabase client not initialized")
 
-    result = supabase.table("environments").select("id, name, metadata").eq("id", environment_id).eq(
+    result = supabase.table("environments").select("id, name, description, metadata").eq("id", environment_id).eq(
         "project_id", project_id
     ).maybe_single().execute()
     environment = result.data
@@ -40,6 +41,14 @@ def build_script_environment_prompt(
         fields.append(("Setting", ", ".join(str(value) for value in location_types if str(value).strip())))
     if isinstance(time_of_day_values, list) and time_of_day_values:
         fields.append(("Time of day", ", ".join(str(value) for value in time_of_day_values if str(value).strip())))
+    # What the user wrote on the Environments page is a stated fact too.
+    description = environment.get("description")
+    if isinstance(description, str) and description.strip():
+        fields.append(("Description", " ".join(description.split())))
+    profile = profile_values(metadata, ENVIRONMENT_PROFILE_FIELDS)
+    for key, label in (("look", "Look / architecture"), ("lighting", "Lighting & colour palette"), ("fixed_features", "Fixed features (must appear)")):
+        if profile[key]:
+            fields.append((label, profile[key]))
 
     facts = "\n".join(f"- {label}: {value}" for label, value in fields if value)
     if not facts:

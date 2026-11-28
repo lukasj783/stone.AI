@@ -1,26 +1,70 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import Image from 'next/image';
-import { Eye, EyeOff, FileText, Image as ImageIcon, MountainSnow, RefreshCw, Wand2 } from 'lucide-react';
+import { CheckCircle2, Clapperboard, Expand, Eye, EyeOff, FileText, Image as ImageIcon, MountainSnow, Pencil, RefreshCw, Save, Users, Wand2 } from 'lucide-react';
 import ImagePreviewModal, { ImagePreview } from '@/components/ui/ImagePreviewModal';
 import { generateEnvironmentImageFromUpload, generateScriptEnvironmentImage } from '@/lib/api/image-generation';
-import { EnvironmentRanking, ObjectTier, extractScriptEnvironments, rankEnvironments } from '@/lib/api/story';
+import {
+  ENVIRONMENT_PROFILE_FIELDS,
+  EnvironmentProfileField,
+  EnvironmentProfileUpdate,
+  EnvironmentRanking,
+  ObjectTier,
+  StudioEnvironment,
+  extractScriptEnvironments,
+  listEnvironments,
+  rankEnvironments,
+  updateEnvironment,
+} from '@/lib/api/story';
 import { RankingStat, TierBadge } from './ImportanceTier';
 import { ReferenceGallery } from './ReferenceGallery';
 import { supabase } from '@/lib/supabaseClient';
 import { ErrorBanner } from '@/components/ui/ErrorBanner';
+import { EntityCard, EntityRow, EntityStat, EntityThumb, TierGroups } from './entity/EntityCards';
+import { ProfileFact, SectionHeading } from './entity/ProfileFact';
+import { PanelTabs } from './entity/PanelTabs';
 
 interface EnvironmentsProps { projectId: string | null; onSelect: (item: Record<string, unknown>) => void; }
-interface EnvironmentMetadata { source_scene_ids?: string[]; source_sluglines?: string[]; location_types?: string[]; time_of_day_values?: string[]; scene_count?: number; }
-interface StudioEnvironment { id: string; name: string; description: string | null; tags: string[]; primaryImageUrl: string | null; metadata: EnvironmentMetadata; ranking: EnvironmentRanking | null; }
 interface SourceScene { id: string; sceneNumber: number | null; slugline: string; locationType: string | null; timeOfDay: string | null; summary: string | null; }
 type GenerationMode = 'text' | 'image';
-const displayValues = (values: string[] | undefined) => values?.length ? values.join(', ') : 'Not specified';
+type PanelTab = 'profile' | 'references';
+
+const FIELD_LABELS: Record<EnvironmentProfileField, string> = {
+  look: 'Look / architecture', lighting: 'Lighting & colour palette', fixed_features: 'Fixed features',
+};
+const FIELD_PLACEHOLDERS: Record<EnvironmentProfileField, string> = {
+  look: 'Small wooden kiosk, sky-blue paint peeling at the corners, corrugated tin roof',
+  lighting: 'Hard noon sun, warm dusty yellows, deep shade under the awning',
+  fixed_features: 'Red Tamucola fridge on the left, hand-painted price board above the counter',
+};
+
+interface EnvironmentForm { description: string; profile: Record<EnvironmentProfileField, string>; }
+
+const formFrom = (environment: StudioEnvironment): EnvironmentForm => ({
+  description: environment.description ?? '',
+  profile: Object.fromEntries(ENVIRONMENT_PROFILE_FIELDS.map((field) => [field, environment.profile?.[field] ?? ''])) as Record<EnvironmentProfileField, string>,
+});
+
+/** Only what changed, so untouched fields keep their source. */
+function changesFrom(environment: StudioEnvironment, form: EnvironmentForm): EnvironmentProfileUpdate {
+  const update: EnvironmentProfileUpdate = {};
+  if (form.description.trim() !== (environment.description ?? '')) update.description = form.description.trim() || null;
+  const profile: Partial<Record<EnvironmentProfileField, string | null>> = {};
+  for (const field of ENVIRONMENT_PROFILE_FIELDS) {
+    if (form.profile[field].trim() !== (environment.profile?.[field] ?? '')) profile[field] = form.profile[field].trim() || null;
+  }
+  if (Object.keys(profile).length) update.profile = profile;
+  return update;
+}
+
+const displayValues = (values: string[] | undefined) => values?.length ? values.join(', ') : null;
+const settingLine = (environment: StudioEnvironment) => [displayValues(environment.location_types), displayValues(environment.time_of_day_values)].filter(Boolean).join(' · ') || null;
+const missingCount = (environment: StudioEnvironment) => (environment.description ? 0 : 1) + ENVIRONMENT_PROFILE_FIELDS.filter((field) => !environment.profile?.[field]).length;
+
 const TIER_ADVICE: Record<ObjectTier, string> = {
-  major: 'Key location: add several reference angles (establishing, reverse, side, detail).',
-  medium: 'Add one or two reference images.',
-  minor: 'One establishing image is enough.',
+  major: 'Key location: fill in the profile, then add several reference angles (establishing, reverse, side, detail).',
+  medium: 'Fill in the profile and add one or two reference images.',
+  minor: 'A description and one establishing image are enough.',
 };
 
 /** Why a location got its rank: scenes set there, characters who appear there, screen time. */
@@ -39,9 +83,13 @@ export function Environments({ projectId, onSelect }: EnvironmentsProps) {
   const [environments, setEnvironments] = useState<StudioEnvironment[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [sourceScenes, setSourceScenes] = useState<SourceScene[]>([]);
-  const [isProfileVisible, setIsProfileVisible] = useState(true);
+  const [isPanelVisible, setIsPanelVisible] = useState(true);
+  const [panelTab, setPanelTab] = useState<PanelTab>('profile');
   const [isLoading, setIsLoading] = useState(false);
   const [isExtracting, setIsExtracting] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [form, setForm] = useState<EnvironmentForm>({ description: '', profile: { look: '', lighting: '', fixed_features: '' } });
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationProgress, setGenerationProgress] = useState(0);
   const [generationMode, setGenerationMode] = useState<GenerationMode | null>(null);
@@ -50,22 +98,19 @@ export function Environments({ projectId, onSelect }: EnvironmentsProps) {
   const [isImagePreviewOpen, setIsImagePreviewOpen] = useState(false);
   const [galleryRefreshKey, setGalleryRefreshKey] = useState(0);
   const [error, setError] = useState<string | Error | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const loadEnvironments = useCallback(async () => {
     if (!projectId) { setEnvironments([]); return; }
     setIsLoading(true); setError(null);
     try {
-      const { data: rows, error: environmentsError } = await supabase.from('environments').select('id, name, description, tags, primary_asset_id, metadata').eq('project_id', projectId).eq('metadata->>source', 'script').order('name');
-      if (environmentsError) throw environmentsError;
-      const environmentRows = rows ?? [];
-      const assetIds = environmentRows.map((row) => row.primary_asset_id as string | null).filter(Boolean) as string[];
-      const { data: assets, error: assetsError } = assetIds.length ? await supabase.from('assets').select('id, url').in('id', assetIds) : { data: [], error: null };
-      if (assetsError) throw assetsError;
-      const urls = new Map((assets ?? []).map((asset) => [asset.id as string, asset.url as string]));
-      // Ranking is a bonus: if it fails, the environments still load in name order.
-      const rankings = await rankEnvironments(projectId).catch(() => [] as EnvironmentRanking[]);
+      const [rows, rankings] = await Promise.all([
+        listEnvironments(projectId),
+        // Ranking is a bonus: if it fails, the environments still load in name order.
+        rankEnvironments(projectId).catch(() => [] as EnvironmentRanking[]),
+      ]);
       const rankingById = new Map(rankings.map((ranking) => [ranking.environment_id, ranking]));
-      const loaded = environmentRows.map((row): StudioEnvironment => ({ id: row.id as string, name: row.name as string, description: row.description as string | null, tags: (row.tags as string[] | null) ?? [], primaryImageUrl: urls.get(row.primary_asset_id as string) ?? null, metadata: (row.metadata ?? {}) as EnvironmentMetadata, ranking: rankingById.get(row.id as string) ?? null }))
+      const loaded = rows.map((row) => ({ ...row, ranking: rankingById.get(row.id) ?? null }))
         .sort((a, b) => (a.ranking?.rank ?? Number.MAX_SAFE_INTEGER) - (b.ranking?.rank ?? Number.MAX_SAFE_INTEGER));
       setEnvironments(loaded); setSelectedId((current) => loaded.some((environment) => environment.id === current) ? current : null);
     } catch (loadError) { setError(loadError instanceof Error ? loadError : 'Failed to load script environments.'); }
@@ -81,70 +126,46 @@ export function Environments({ projectId, onSelect }: EnvironmentsProps) {
   }, [isGenerating]);
 
   const selected = environments.find((environment) => environment.id === selectedId) ?? null;
+  const sceneIdsKey = selected?.source_scene_ids.join(',') ?? '';
   useEffect(() => {
-    const sourceSceneIds = selected?.metadata.source_scene_ids ?? [];
-    if (!projectId || sourceSceneIds.length === 0) {
-      setSourceScenes([]);
-      return;
-    }
-
+    const sourceSceneIds = sceneIdsKey ? sceneIdsKey.split(',') : [];
+    if (!projectId || sourceSceneIds.length === 0) { setSourceScenes([]); return; }
     let isMounted = true;
-    const loadSourceScenes = async () => {
+    // Scene summaries for "Used in scenes"; the environment itself comes from the API.
+    void (async () => {
       try {
-        const { data, error: scenesError } = await supabase
-          .from('scenes')
-          .select('id, scene_number, slugline_raw, location_type, time_of_day, summary')
-          .eq('project_id', projectId)
-          .in('id', sourceSceneIds);
+        const { data, error: scenesError } = await supabase.from('scenes').select('id, scene_number, slugline_raw, location_type, time_of_day, summary').eq('project_id', projectId).in('id', sourceSceneIds);
         if (scenesError) throw scenesError;
-
         const scenesById = new Map((data ?? []).map((scene) => [scene.id as string, scene]));
-        const orderedScenes = sourceSceneIds.flatMap((sceneId): SourceScene[] => {
+        const ordered = sourceSceneIds.flatMap((sceneId): SourceScene[] => {
           const scene = scenesById.get(sceneId);
-          if (!scene) return [];
-          return [{
+          return scene ? [{
             id: scene.id as string,
             sceneNumber: typeof scene.scene_number === 'number' ? scene.scene_number : null,
             slugline: (scene.slugline_raw as string | null) ?? 'Untitled scene',
             locationType: (scene.location_type as string | null) ?? null,
             timeOfDay: (scene.time_of_day as string | null) ?? null,
             summary: (scene.summary as string | null) ?? null,
-          }];
+          }] : [];
         });
-        if (isMounted) setSourceScenes(orderedScenes);
-      } catch (sceneLoadError) {
-        if (isMounted) setError(sceneLoadError instanceof Error ? sceneLoadError : 'Failed to load source scenes.');
-      }
-    };
-
-    void loadSourceScenes();
+        if (isMounted) setSourceScenes(ordered);
+      } catch (sceneLoadError) { if (isMounted) setError(sceneLoadError instanceof Error ? sceneLoadError : 'Failed to load source scenes.'); }
+    })();
     return () => { isMounted = false; };
-  }, [projectId, selected]);
-  const selectedPreview: ImagePreview[] = selected?.primaryImageUrl ? [{
-    id: selected.id,
-    url: selected.primaryImageUrl,
-    prompt: [selected.name, displayValues(selected.metadata.location_types), displayValues(selected.metadata.time_of_day_values)].filter((value) => value !== 'Not specified').join(' - '),
-    model: 'Environment reference',
-    aspect_ratio: '16:9',
+  }, [projectId, sceneIdsKey]);
+
+  const selectedPreview: ImagePreview[] = selected?.primary_image_url ? [{
+    id: selected.id, url: selected.primary_image_url, prompt: [selected.name, settingLine(selected)].filter(Boolean).join(' - '), model: 'Environment main image', aspect_ratio: '16:9',
   }] : [];
-  const continuitySceneList = sourceScenes.length > 0 ? (
-    <div className="mt-4">
-      <h3 className="text-xs font-semibold text-zinc-300">Used in scenes</h3>
-      <div className="mt-2 space-y-2">
-        {sourceScenes.map((scene, index) => (
-          <div key={scene.id} className="border-l-2 border-violet-500/40 bg-zinc-900/50 px-3 py-2">
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-xs font-semibold text-zinc-200">Scene {scene.sceneNumber ?? index + 1}</span>
-              <span className="text-[10px] font-mono text-zinc-500">{[scene.locationType, scene.timeOfDay].filter(Boolean).join(' · ') || 'Not specified'}</span>
-            </div>
-            <p className="mt-1 text-xs leading-5 text-zinc-400">{scene.slugline}</p>
-            {scene.summary && <p className="mt-1 text-[11px] leading-4 text-zinc-500">{scene.summary}</p>}
-          </div>
-        ))}
-      </div>
-    </div>
-  ) : null;
-  const extractEnvironments = async () => { if (!projectId) return; setIsExtracting(true); setError(null); try { await extractScriptEnvironments(projectId); await loadEnvironments(); } catch (reason) { setError(reason instanceof Error ? reason : 'Failed to extract environments from the current script.'); } finally { setIsExtracting(false); } };
+
+  const extractEnvironments = async () => {
+    if (!projectId) return;
+    setIsExtracting(true); setError(null);
+    try { await extractScriptEnvironments(projectId); await loadEnvironments(); }
+    catch (reason) { setError(reason instanceof Error ? reason : 'Failed to extract environments from the current script.'); }
+    finally { setIsExtracting(false); }
+  };
+
   const generateEnvironmentImage = async (mode: GenerationMode) => {
     if (!projectId || !selected) return;
     if (mode === 'image' && !referenceImage) { setError('Choose a reference image before generating the environment.'); return; }
@@ -156,15 +177,114 @@ export function Environments({ projectId, onSelect }: EnvironmentsProps) {
     } catch (reason) { setError(reason instanceof Error ? reason : 'Failed to generate the environment reference image.'); }
     finally { setIsGenerating(false); }
   };
-  const selectEnvironment = (environment: StudioEnvironment) => { setSelectedId(environment.id); setGenerationMode(null); setReferenceImage(null); setReferenceGuidance(''); setIsProfileVisible(true); onSelect(environment as unknown as Record<string, unknown>); };
+
+  const selectEnvironment = (environment: StudioEnvironment) => {
+    setSelectedId(environment.id); setForm(formFrom(environment)); setIsEditing(false); setGenerationMode(null); setReferenceImage(null); setReferenceGuidance(''); setIsPanelVisible(true);
+    onSelect(environment as unknown as Record<string, unknown>);
+  };
+  const beginEdit = () => { if (selected) { setForm(formFrom(selected)); setIsEditing(true); setPanelTab('profile'); } };
+
+  const saveProfile = async () => {
+    if (!projectId || !selected) return;
+    const update = changesFrom(selected, form);
+    if (Object.keys(update).length === 0) { setIsEditing(false); return; }
+    setIsSaving(true); setError(null); setNotice(null);
+    try { await updateEnvironment(projectId, selected.id, update); await loadEnvironments(); setIsEditing(false); setNotice(`${selected.name} saved. Storyboard shots set here now use this profile.`); }
+    catch (reason) { setError(reason instanceof Error ? reason : 'Failed to save the environment.'); }
+    finally { setIsSaving(false); }
+  };
+
+  const resetField = async (update: EnvironmentProfileUpdate, label: string) => {
+    if (!projectId || !selected) return;
+    setIsSaving(true); setError(null); setNotice(null);
+    try { await updateEnvironment(projectId, selected.id, update); await loadEnvironments(); setNotice(`${label} cleared.`); }
+    catch (reason) { setError(reason instanceof Error ? reason : 'Failed to reset the field.'); }
+    finally { setIsSaving(false); }
+  };
+
   if (!projectId) return <div className="flex h-full items-center justify-center text-sm text-zinc-500">Loading project...</div>;
 
+  const stats = (environment: StudioEnvironment): EntityStat[] => [
+    { icon: <Clapperboard className="h-3 w-3" />, value: environment.ranking?.scene_count ?? environment.scene_count, title: 'Scenes' },
+    { icon: <Users className="h-3 w-3" />, value: environment.ranking?.character_count ?? 0, title: environment.ranking?.characters.length ? `Appearing here: ${environment.ranking.characters.join(', ')}` : 'Characters' },
+  ];
+  const itemProps = (environment: StudioEnvironment) => {
+    const missing = missingCount(environment);
+    return {
+      name: environment.name, imageUrl: environment.primary_image_url, rank: environment.ranking?.rank ?? null,
+      badge: { label: environment.primary_image_url ? 'Main image' : 'No image', ok: Boolean(environment.primary_image_url) },
+      subtitle: environment.description ?? settingLine(environment), stats: stats(environment), note: missing ? `${missing} to fill` : null,
+      selected: environment.id === selectedId, onSelect: () => selectEnvironment(environment),
+    };
+  };
+
+  const usedInScenes = sourceScenes.length > 0 && <section className="mt-4 border-t border-zinc-800 pt-4">
+    <h3 className="text-xs font-semibold text-zinc-300">Used in scenes</h3>
+    <div className="mt-2 space-y-2">{sourceScenes.map((scene, index) => <div key={scene.id} className="border-l-2 border-violet-500/40 bg-zinc-900/50 px-3 py-2">
+      <div className="flex items-center justify-between gap-3"><span className="text-xs font-semibold text-zinc-200">Scene {scene.sceneNumber ?? index + 1}</span><span className="font-mono text-[10px] text-zinc-500">{[scene.locationType, scene.timeOfDay].filter(Boolean).join(' · ') || 'Not specified'}</span></div>
+      <p className="mt-1 text-xs leading-5 text-zinc-400">{scene.slugline}</p>
+      {scene.summary && <p className="mt-1 text-[11px] leading-4 text-zinc-500">{scene.summary}</p>}
+    </div>)}</div>
+  </section>;
+
   return <div className="h-full overflow-auto px-6 py-7 lg:px-8"><div className="mx-auto max-w-7xl">
-    <header className="mb-6 flex flex-wrap items-start justify-between gap-4 border-b border-zinc-800 pb-5"><div><div className="flex items-center gap-2.5"><MountainSnow className="h-5 w-5 text-violet-400" /><h1 className="text-xl font-bold text-zinc-100">Script Environments</h1></div><p className="mt-1 text-sm text-zinc-500">Locations explicitly identified in the saved screenplay scene headings.</p></div><div className="flex items-center gap-2"><button type="button" onClick={() => setIsProfileVisible((visible) => !visible)} disabled={!selected} className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-zinc-700 bg-zinc-900 text-zinc-300 disabled:opacity-50">{isProfileVisible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}</button><button type="button" onClick={() => void loadEnvironments()} disabled={isLoading} className="inline-flex h-9 items-center gap-2 rounded-md border border-zinc-700 bg-zinc-900 px-3 text-xs font-semibold text-zinc-300"><RefreshCw className={`h-3.5 w-3.5 ${isLoading ? 'animate-spin' : ''}`} />Refresh</button></div></header>
-    <ErrorBanner error={error} onDismiss={() => setError(null)} className="mb-5 rounded-md" />
-    {isLoading ? <div className="flex min-h-72 items-center justify-center gap-3 text-sm text-zinc-500"><RefreshCw className="h-5 w-5 animate-spin" />Loading script environments...</div> : environments.length === 0 ? <div className="flex min-h-72 flex-col items-center justify-center border border-dashed border-zinc-800 px-6 text-center"><FileText className="mb-3 h-7 w-7 text-zinc-600" /><h2 className="text-sm font-semibold text-zinc-300">No extracted environments yet</h2><button type="button" onClick={() => void extractEnvironments()} disabled={isExtracting} className="mt-4 inline-flex h-9 items-center justify-center gap-2 rounded-md bg-violet-600 px-3 text-xs font-semibold text-white">{isExtracting ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <MountainSnow className="h-3.5 w-3.5" />}{isExtracting ? 'Extracting environments...' : 'Extract from current script'}</button></div> : <div className={`grid gap-6 ${isProfileVisible ? 'xl:grid-cols-[minmax(0,1fr)_26rem]' : ''}`}><div className="overflow-x-auto border border-zinc-800 bg-zinc-950"><table className="w-full min-w-220 text-left text-sm"><thead className="border-b border-zinc-800 bg-zinc-900/50 text-xs font-semibold uppercase tracking-wide text-zinc-500"><tr><th className="w-12 px-4 py-3 text-right">#</th><th className="px-4 py-3">Environment</th><th className="px-4 py-3">Tier</th><th className="px-4 py-3 text-right" title="Scenes set in this location">Scenes</th><th className="px-4 py-3 text-right" title="Different characters who appear here">Characters</th><th className="px-4 py-3">Setting</th><th className="px-4 py-3">Time</th><th className="px-4 py-3 text-right">Reference</th></tr></thead><tbody className="divide-y divide-zinc-800/80">{environments.map((environment) => <tr key={environment.id} onClick={() => selectEnvironment(environment)} className={`cursor-pointer hover:bg-zinc-900/70 ${selectedId === environment.id ? 'bg-violet-500/10' : ''}`}><td className="px-4 py-3 text-right font-mono text-xs text-zinc-500">{environment.ranking?.rank ?? '–'}</td><td className="px-4 py-3 font-semibold text-zinc-200">{environment.name}</td><td className="px-4 py-3"><TierBadge ranking={environment.ranking} emptyLabel="Unranked" /></td><td className="px-4 py-3 text-right font-mono text-xs text-zinc-400">{environment.ranking?.scene_count ?? environment.metadata.scene_count ?? environment.metadata.source_scene_ids?.length ?? 0}</td><td className="px-4 py-3 text-right font-mono text-xs text-zinc-400" title={environment.ranking?.characters.join(', ') || undefined}>{environment.ranking?.character_count ?? 0}</td><td className="px-4 py-3 text-zinc-400">{displayValues(environment.metadata.location_types)}</td><td className="px-4 py-3 text-zinc-400">{displayValues(environment.metadata.time_of_day_values)}</td><td className="px-4 py-3 text-right">{environment.primaryImageUrl ? <span className="text-xs text-emerald-400">Attached</span> : <span className="text-xs text-zinc-600">None</span>}</td></tr>)}</tbody></table></div>
-    {isProfileVisible && <aside className="border border-zinc-800 bg-zinc-950">{selected ? <div><div className="relative aspect-video overflow-hidden border-b border-zinc-800 bg-zinc-900">{selected.primaryImageUrl ? <button type="button" onClick={() => setIsImagePreviewOpen(true)} aria-label={`Preview ${selected.name}`} className="absolute inset-0 block w-full cursor-zoom-in"><Image src={selected.primaryImageUrl} alt={selected.name} fill sizes="416px" unoptimized className="object-cover" /></button> : <div className="flex h-full flex-col items-center justify-center gap-2 text-zinc-600"><ImageIcon className="h-7 w-7" /><span className="text-xs">No reference image attached</span></div>}</div><div className="p-4"><h2 className="text-base font-bold text-zinc-100">{selected.name}</h2><dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 border-y border-zinc-800 py-3 text-xs"><div><dt className="text-zinc-600">Setting</dt><dd className="mt-1 text-zinc-300">{displayValues(selected.metadata.location_types)}</dd></div><div><dt className="text-zinc-600">Time</dt><dd className="mt-1 text-zinc-300">{displayValues(selected.metadata.time_of_day_values)}</dd></div><div className="col-span-2"><dt className="text-zinc-600">Source scenes</dt><dd className="mt-1 text-zinc-300">{selected.metadata.scene_count ?? selected.metadata.source_scene_ids?.length ?? 0}</dd></div></dl><EnvironmentImportance ranking={selected.ranking} /><input ref={referenceImageInputRef} type="file" accept="image/*" className="hidden" onChange={(event) => setReferenceImage(event.target.files?.[0] ?? null)} />{isGenerating ? <div className="mt-4" role="status"><div className="mb-1.5 flex items-center justify-between text-xs"><span className="text-zinc-400">Generating reference image</span><span className="font-mono text-violet-300">{generationProgress}%</span></div><div className="h-1.5 overflow-hidden bg-zinc-800"><div className="h-full bg-violet-500 transition-[width] duration-500" style={{ width: `${generationProgress}%` }} /></div></div> : generationMode === 'image' ? <div className="mt-4 border border-zinc-800 bg-zinc-900/50 p-3"><div className="mb-3 flex items-center justify-between"><span className="text-xs font-semibold text-zinc-200">Reference image</span><button type="button" onClick={() => { setGenerationMode(null); setReferenceImage(null); setReferenceGuidance(''); }} className="text-xs text-zinc-500">Back</button></div><button type="button" onClick={() => referenceImageInputRef.current?.click()} className="flex h-10 w-full items-center justify-between border border-dashed border-zinc-700 bg-zinc-950 px-3 text-xs text-zinc-400"><span className="truncate">{referenceImage?.name ?? 'Choose image'}</span><ImageIcon className="h-4 w-4" /></button><textarea value={referenceGuidance} onChange={(event) => setReferenceGuidance(event.target.value)} placeholder="Optional visual direction" className="mt-2 min-h-20 w-full resize-none border border-zinc-700 bg-zinc-950 p-2 text-xs text-zinc-200" /><button type="button" onClick={() => void generateEnvironmentImage('image')} disabled={!referenceImage} className="mt-2 flex h-10 w-full items-center justify-center gap-2 bg-violet-600 text-sm font-semibold text-white disabled:bg-zinc-800"><ImageIcon className="h-4 w-4" />Generate from image</button></div> : <div className="mt-4 grid grid-cols-2 gap-2"><button type="button" onClick={() => void generateEnvironmentImage('text')} className="flex min-h-20 flex-col items-start justify-center border border-violet-400/40 bg-violet-500/10 px-3 text-left text-violet-200"><Wand2 className="mb-2 h-4 w-4" /><span className="text-xs font-semibold">Create from text</span><span className="mt-0.5 text-[10px] text-violet-300/80">Use saved script facts</span></button><button type="button" onClick={() => setGenerationMode('image')} className="flex min-h-20 flex-col items-start justify-center border border-zinc-700 bg-zinc-900 px-3 text-left text-zinc-200"><ImageIcon className="mb-2 h-4 w-4" /><span className="text-xs font-semibold">Use reference image</span><span className="mt-0.5 text-[10px] text-zinc-500">Preserve visual direction</span></button></div>}<ReferenceGallery projectId={projectId} entityType="environment" entityId={selected.id} entityName={selected.name} refreshKey={galleryRefreshKey} onChanged={() => void loadEnvironments()} /></div></div> : <div className="flex min-h-96 flex-col items-center justify-center px-6 text-center text-sm text-zinc-600"><MountainSnow className="mb-3 h-6 w-6" />Select an environment to inspect its script profile.</div>}</aside>}</div>}
-    {selected && continuitySceneList && <section className="mt-6 border-t border-zinc-800 pt-5">{continuitySceneList}</section>}
+    <header className="mb-6 flex flex-wrap items-start justify-between gap-4 border-b border-zinc-800 pb-5">
+      <div><div className="flex items-center gap-2.5"><MountainSnow className="h-5 w-5 text-violet-400" /><h1 className="text-xl font-bold text-zinc-100">Script Environments</h1></div><p className="mt-1 text-sm text-zinc-500">Describe each location and pick its main image so every shot set there looks like the same place.</p></div>
+      <div className="flex items-center gap-2">
+        <button type="button" onClick={() => setIsPanelVisible((visible) => !visible)} disabled={!selected} title={isPanelVisible ? 'Hide environment panel' : 'Show environment panel'} className="inline-flex h-9 w-9 items-center justify-center border border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800 disabled:opacity-50">{isPanelVisible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}</button>
+        <button type="button" onClick={() => void extractEnvironments()} disabled={isExtracting} className="inline-flex h-9 items-center gap-2 bg-violet-600 px-3 text-xs font-semibold text-white hover:bg-violet-500 disabled:opacity-50">{isExtracting ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <FileText className="h-3.5 w-3.5" />}{isExtracting ? 'Extracting...' : 'Extract from script'}</button>
+        <button type="button" onClick={() => void loadEnvironments()} disabled={isLoading} title="Refresh environments" className="inline-flex h-9 w-9 items-center justify-center border border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"><RefreshCw className={`h-3.5 w-3.5 ${isLoading ? 'animate-spin' : ''}`} /></button>
+      </div>
+    </header>
+    <ErrorBanner error={error} onDismiss={() => setError(null)} className="mb-5" />
+    {notice && <div className="mb-5 border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">{notice}</div>}
+    {isLoading && environments.length === 0 ? <div className="flex min-h-72 items-center justify-center gap-3 text-sm text-zinc-500"><RefreshCw className="h-5 w-5 animate-spin" />Loading script environments...</div>
+      : environments.length === 0 ? <div className="flex min-h-72 flex-col items-center justify-center border border-dashed border-zinc-800 px-6 text-center"><FileText className="mb-3 h-7 w-7 text-zinc-600" /><h2 className="text-sm font-semibold text-zinc-300">No extracted environments yet</h2><p className="mt-1 max-w-sm text-sm text-zinc-500">Locations come from the scene headings of the saved script.</p><button type="button" onClick={() => void extractEnvironments()} disabled={isExtracting} className="mt-4 inline-flex h-9 items-center justify-center gap-2 bg-violet-600 px-3 text-xs font-semibold text-white disabled:opacity-50">{isExtracting ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <MountainSnow className="h-3.5 w-3.5" />}{isExtracting ? 'Extracting environments...' : 'Extract from current script'}</button></div>
+      : <div className={`grid gap-6 ${isPanelVisible && selected ? 'xl:grid-cols-[minmax(0,1fr)_26rem]' : ''}`}>
+        <TierGroups
+          items={environments}
+          tierOf={(environment) => environment.ranking?.tier ?? null}
+          renderCard={(environment) => <EntityCard key={environment.id} {...itemProps(environment)} aspect="video" />}
+          renderRow={(environment) => <EntityRow key={environment.id} {...itemProps(environment)} />}
+        />
+        {isPanelVisible && selected && <aside className="self-start border border-zinc-800 bg-zinc-950 xl:sticky xl:top-0 xl:max-h-[calc(100vh-9rem)] xl:overflow-y-auto">
+          <div className="flex items-start gap-3 border-b border-zinc-800 p-4">
+            <button type="button" onClick={() => selected.primary_image_url && setIsImagePreviewOpen(true)} disabled={!selected.primary_image_url} aria-label={`Preview ${selected.name}`} className="shrink-0 cursor-zoom-in border border-zinc-800 disabled:cursor-default"><EntityThumb name={selected.name} imageUrl={selected.primary_image_url} className="aspect-video w-28" initialsClassName="text-lg" sizes="112px" /></button>
+            <div className="min-w-0 flex-1">
+              <h2 className="truncate text-base font-bold text-zinc-100">{selected.name}</h2>
+              <p className={`truncate text-xs ${settingLine(selected) ? 'text-zinc-400' : 'italic text-zinc-600'}`}>{settingLine(selected) ?? 'Setting and time not in the script'}</p>
+              <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-zinc-500"><TierBadge ranking={selected.ranking} emptyLabel="Unranked" />{selected.ranking && <span className="font-mono">#{selected.ranking.rank}</span>}</div>
+              <button type="button" onClick={() => setIsImagePreviewOpen(true)} disabled={!selected.primary_image_url} title={selected.primary_image_url ? 'Open the main image' : 'No main image yet'} className="mt-2 inline-flex h-7 items-center gap-1.5 border border-violet-400/40 px-2 text-[11px] font-semibold text-violet-300 hover:bg-zinc-900 disabled:opacity-40"><Expand className="h-3.5 w-3.5" />Preview</button>
+            </div>
+            <button type="button" onClick={beginEdit} className="inline-flex h-8 w-8 shrink-0 items-center justify-center border border-zinc-700 text-zinc-300 hover:bg-zinc-900" title="Edit environment profile"><Pencil className="h-3.5 w-3.5" /></button>
+          </div>
+          <PanelTabs<PanelTab> active={panelTab} onChange={setPanelTab} tabs={[
+            { key: 'profile', label: 'Profile' },
+            { key: 'references', label: <>References {selected.primary_image_url ? <CheckCircle2 className="ml-1 inline h-3 w-3 text-emerald-400" /> : <span className="ml-1 font-normal text-zinc-500">none</span>}</> },
+          ]} />
+          <div className="p-4">{panelTab === 'profile' ? <>
+            {!isEditing && missingCount(selected) > 0 && <button type="button" onClick={beginEdit} className="mb-4 flex w-full items-center justify-between gap-3 border border-amber-400/25 bg-amber-400/5 px-3 py-2 text-left text-xs text-amber-200 hover:bg-amber-400/10"><span>{missingCount(selected)} detail{missingCount(selected) === 1 ? '' : 's'} missing</span><span className="shrink-0 font-semibold">Fill in</span></button>}
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-xs">
+              <ProfileFact label="Description" value={selected.description} manual={selected.manual_override_fields.includes('description')} isEditing={isEditing} draft={form.description} placeholder="What the place is, in a sentence or two" multiline busy={isSaving}
+                onChange={(value) => setForm((current) => ({ ...current, description: value }))} onReset={() => void resetField({ description: null }, 'Description')} />
+              <SectionHeading title="Look" hint="stays the same in every shot" />
+              {ENVIRONMENT_PROFILE_FIELDS.map((field) => <ProfileFact key={field} label={FIELD_LABELS[field]} value={selected.profile?.[field] ?? null} manual={selected.manual_override_fields.includes(field)} isEditing={isEditing} draft={form.profile[field]} placeholder={FIELD_PLACEHOLDERS[field]} multiline busy={isSaving}
+                onChange={(value) => setForm((current) => ({ ...current, profile: { ...current.profile, [field]: value } }))} onReset={() => void resetField({ profile: { [field]: null } }, FIELD_LABELS[field])} />)}
+            </dl>
+            {isEditing && <p className="mt-2 text-[10px] leading-relaxed text-zinc-500">Fixed features are things that must look the same every time, like a sign or a fridge in a set place.</p>}
+            {isEditing && <div className="mt-3 flex gap-2"><button type="button" onClick={() => void saveProfile()} disabled={isSaving} className="inline-flex h-9 flex-1 items-center justify-center gap-2 bg-violet-600 text-xs font-semibold text-white hover:bg-violet-500 disabled:opacity-50"><Save className="h-3.5 w-3.5" />{isSaving ? 'Saving...' : 'Save profile'}</button><button type="button" onClick={() => { setIsEditing(false); setForm(formFrom(selected)); }} className="h-9 border border-zinc-700 px-3 text-xs text-zinc-300 hover:bg-zinc-900">Cancel</button></div>}
+            <div className="mt-4 border-t border-zinc-800 pt-1"><EnvironmentImportance ranking={selected.ranking} /></div>
+            {usedInScenes}
+          </> : <>
+            <input ref={referenceImageInputRef} type="file" accept="image/*" className="hidden" onChange={(event) => setReferenceImage(event.target.files?.[0] ?? null)} />
+            {isGenerating ? <div role="status"><div className="mb-1.5 flex items-center justify-between text-xs"><span className="text-zinc-400">Generating reference image</span><span className="font-mono text-violet-300">{generationProgress}%</span></div><div className="h-1.5 overflow-hidden bg-zinc-800"><div className="h-full bg-violet-500 transition-[width] duration-500" style={{ width: `${generationProgress}%` }} /></div></div>
+              : generationMode === 'image' ? <div className="border border-zinc-800 bg-zinc-900/50 p-3"><div className="mb-3 flex items-center justify-between"><span className="text-xs font-semibold text-zinc-200">Reference image</span><button type="button" onClick={() => { setGenerationMode(null); setReferenceImage(null); setReferenceGuidance(''); }} className="text-xs text-zinc-500 hover:text-zinc-300">Back</button></div><button type="button" onClick={() => referenceImageInputRef.current?.click()} className="flex h-10 w-full items-center justify-between border border-dashed border-zinc-700 bg-zinc-950 px-3 text-xs text-zinc-400"><span className="truncate">{referenceImage?.name ?? 'Choose image'}</span><ImageIcon className="h-4 w-4" /></button><textarea value={referenceGuidance} onChange={(event) => setReferenceGuidance(event.target.value)} placeholder="Optional visual direction" className="mt-2 min-h-20 w-full resize-none border border-zinc-700 bg-zinc-950 p-2 text-xs text-zinc-200 outline-none focus:border-violet-400" /><button type="button" onClick={() => void generateEnvironmentImage('image')} disabled={!referenceImage} className="mt-2 flex h-10 w-full items-center justify-center gap-2 bg-violet-600 text-sm font-semibold text-white disabled:bg-zinc-800"><ImageIcon className="h-4 w-4" />Generate from image</button></div>
+              : <div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => void generateEnvironmentImage('text')} className="flex min-h-20 flex-col items-start justify-center border border-violet-400/40 bg-violet-500/10 px-3 text-left text-violet-200 hover:bg-violet-500/15"><Wand2 className="mb-2 h-4 w-4" /><span className="text-xs font-semibold">Create from text</span><span className="mt-0.5 text-[10px] text-violet-300/80">Use the script and profile</span></button><button type="button" onClick={() => setGenerationMode('image')} className="flex min-h-20 flex-col items-start justify-center border border-zinc-700 bg-zinc-900 px-3 text-left text-zinc-200 hover:bg-zinc-800"><ImageIcon className="mb-2 h-4 w-4" /><span className="text-xs font-semibold">Use reference image</span><span className="mt-0.5 text-[10px] text-zinc-500">Preserve visual direction</span></button></div>}
+            <ReferenceGallery projectId={projectId} entityType="environment" entityId={selected.id} entityName={selected.name} refreshKey={galleryRefreshKey} onChanged={() => void loadEnvironments()}
+              hint="The starred main image is the chosen look of this place; wide shots also take the other angles." />
+          </>}</div>
+        </aside>}
+      </div>}
     <ImagePreviewModal isOpen={isImagePreviewOpen} onClose={() => setIsImagePreviewOpen(false)} images={selectedPreview} selectedIndex={0} onNavigate={() => undefined} />
   </div></div>;
 }
