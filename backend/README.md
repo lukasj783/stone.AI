@@ -106,6 +106,42 @@ process: the fallback keeps its work in one process's memory, so another process
 its batches as stopped. With it off, starting a batch while Celery is down returns a clear error
 (HTTP 503), and a running batch waits in Redis until the workers come back.
 
+## Objects and Environments (profiles and object sheets)
+
+No migration: everything lives in `metadata` JSONB and `asset_links` roles.
+
+**Profiles.** Fields the user types are stored in `metadata.profile` and marked in
+`metadata.manual_overrides`. A blank or `null` value removes both the value and the mark.
+Re-running "Extract from script" keeps them. The field lists are in `services/entity_profiles.py`.
+
+- Objects (`props`): `size`, `shape`, `colors`, `material`, `branding`, `details`.
+  Read with `GET /api/story/objects?project_id=` and change with
+  `PATCH /api/story/objects/{id}` (`{"project_id", "profile": {"size": "330 ml"}}`).
+- Environments: the `description` column plus `look`, `lighting`, `fixed_features`.
+  `GET /api/story/environments?project_id=` lists script environments with their main image;
+  `PATCH /api/story/environments/{id}` takes `description`, `tags` and `profile`.
+  An unknown profile key is a 400.
+
+**Object sheets** (`services/object_sheet.py`) work like character sheets, without the
+automatic check. One 16:9 image shows the object from the front, back, left side and
+three-quarter view, plus a close-up of its label. It is drawn by a storyboard model on the
+blank canvas from the profile, an optional prompt and up to four reference images
+tagged `object` or `style`.
+
+- `POST /api/image/object-sheet/generate` (form: `project_id`, `object_id`, `prompt`, `model`,
+  `images[]`, `image_tags[]`). Every result is linked as `object_sheet_candidate`, and the first
+  one is approved automatically. An object with nothing but a name is refused with a 400.
+- `POST /api/image/object-sheet/approve` (JSON `{project_id, object_id, asset_id}`) makes a
+  candidate the `object_sheet` and records it in `props.metadata.object_sheet`. An asset that
+  is not one of this object's candidates is a 404. The gallery's main image is not changed.
+
+**What the storyboard sends.** A frame that shows an object with an approved sheet sends the
+sheet first, then gallery images within the object's cap. The prompt says the sheet shows one
+object several times, to be drawn once. An object without a sheet uses its gallery as before.
+The `PROPS:` line has one `- Name: description; size; ...` entry per object. The `LOCATION:`
+line adds the environment's description, look, lighting and `always: <fixed features>`.
+Existing frames change only when their scene is regenerated.
+
 ## Endpoints
 
 - `GET /` health check
