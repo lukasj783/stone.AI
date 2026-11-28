@@ -13,8 +13,8 @@ interface ProfileFactProps {
   multiline?: boolean;
   busy: boolean;
   onChange: (value: string) => void;
-  /** Clear the manual value; the field goes back to what the script says (often nothing). */
-  onReset: () => void;
+  /** Clear the manual value (the field goes back to what the script says, often nothing); no Reset link when omitted. */
+  onReset?: () => void;
 }
 
 /** One profile field: read-only with its source badge, or an input while editing. */
@@ -31,7 +31,7 @@ export function ProfileFact({ label, value, manual, isEditing, draft, placeholde
   return <div className={multiline ? 'col-span-2' : ''}>
     <dt className="flex items-center gap-1 text-zinc-600">{label}{value && <span className={`border px-1 text-[9px] font-semibold uppercase ${manual ? 'border-violet-400/30 text-violet-300' : 'border-zinc-700 text-zinc-500'}`}>{manual ? 'Manual' : 'From script'}</span>}</dt>
     <dd className={`mt-1 ${value ? 'text-zinc-300' : 'italic text-zinc-600'}`}>{value || 'Not specified'}</dd>
-    {manual && <button type="button" onClick={onReset} disabled={busy} className="mt-1 inline-flex items-center gap-1 text-[10px] text-zinc-500 hover:text-zinc-200 disabled:opacity-50"><RotateCcw className="h-3 w-3" />Reset</button>}
+    {manual && onReset && <button type="button" onClick={onReset} disabled={busy} className="mt-1 inline-flex items-center gap-1 text-[10px] text-zinc-500 hover:text-zinc-200 disabled:opacity-50"><RotateCcw className="h-3 w-3" />Reset</button>}
   </div>;
 }
 

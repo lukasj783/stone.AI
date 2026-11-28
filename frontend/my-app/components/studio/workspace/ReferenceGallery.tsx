@@ -22,13 +22,17 @@ interface ReferenceGalleryProps {
   refreshKey?: number;
   /** Called after the gallery changes, so the parent can refresh its main image. */
   onChanged?: () => void;
+  /** Section heading; "Reference images" when omitted. */
+  title?: string;
+  /** One line under the heading saying how storyboards use these images. */
+  hint?: string;
 }
 
 /**
  * Several reference images for one environment or object. The storyboard picks from
  * these per shot: wide shots take more of the location, close-ups more of the object.
  */
-export function ReferenceGallery({ projectId, entityType, entityId, entityName, refreshKey = 0, onChanged }: ReferenceGalleryProps) {
+export function ReferenceGallery({ projectId, entityType, entityId, entityName, refreshKey = 0, onChanged, title = 'Reference images', hint }: ReferenceGalleryProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [references, setReferences] = useState<EntityReference[]>([]);
   const [angles, setAngles] = useState<EntityReferenceAngle[]>([]);
@@ -93,9 +97,10 @@ export function ReferenceGallery({ projectId, entityType, entityId, entityName, 
 
   return <section className="mt-4 border-t border-zinc-800 pt-4">
     <div className="mb-2 flex items-center justify-between">
-      <span className="flex items-center gap-1.5 text-xs font-semibold text-zinc-300"><Images className="h-3.5 w-3.5" />Reference images</span>
+      <span className="flex items-center gap-1.5 text-xs font-semibold text-zinc-300"><Images className="h-3.5 w-3.5" />{title}</span>
       <span className="font-mono text-[10px] text-zinc-600">{busy === 'load' ? 'Loading...' : `${references.length} image${references.length === 1 ? '' : 's'}`}</span>
     </div>
+    {hint && <p className="-mt-1 mb-2 text-[11px] leading-relaxed text-zinc-500">{hint}</p>}
     {references.length > 0 ? <div className="grid grid-cols-3 gap-2">{references.map((reference, index) => (
       <div key={reference.asset_id} className={`group relative ${aspectClass} overflow-hidden border bg-zinc-900 ${reference.is_primary ? 'border-violet-400' : 'border-zinc-800'}`}>
         <button type="button" onClick={() => setPreviewIndex(index)} aria-label={`Preview ${reference.label}`} className="absolute inset-0 cursor-zoom-in"><Image src={reference.url} alt={`${entityName} ${reference.label}`} fill sizes="128px" unoptimized className={entityType === 'environment' ? 'object-cover' : 'object-contain'} /></button>
