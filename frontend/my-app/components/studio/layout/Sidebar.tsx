@@ -91,8 +91,10 @@ export function StudioSidebar({ activeView, onNavigate, videoType }: SidebarProp
   }));
 
   return (
-    <aside className="h-full w-64 xl:w-72 shrink-0 border-r border-zinc-800 bg-zinc-950 flex flex-col overflow-y-auto shadow-2xl shadow-black/50">
-      <div className="p-4">
+    // Fills the studio page's 16rem sidebar slot exactly: a wider aside had its right edge,
+    // and with it the scrollbar, cut off, so nothing showed that more items sit below.
+    <aside className="h-full w-full shrink-0 border-r border-zinc-800 bg-zinc-950 flex flex-col overflow-y-auto scrollbar-visible shadow-2xl shadow-black/50">
+      <div className="p-4 pb-16">
         {navigation.map((section, idx) => (
           <div key={idx} className="mb-6 last:mb-0">
             <h3 className="px-3 mb-2 text-xs font-semibold uppercase tracking-wider text-zinc-500">
